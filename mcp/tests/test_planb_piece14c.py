@@ -150,10 +150,8 @@ def test_a_channel_confirmation_moves_and_an_old_one_of_the_name_goes(state: Pat
     (state / f"channel-{NAME}.env").write_text("CONFIRMED=0\n")  # an earlier process's
     _on(monkeypatch)
     assert (state / f"channel-{NAME}.env").read_text() == "CONFIRMED=1\n"
-    (state / f"channel-{UID}.env").unlink()
+    assert channel.confirmed(UID) and (state / f"channel-{UID}.env").exists()  # now the mirror
     (state / f"channel-{NAME}.env").unlink()
-    (state / f"channel-{UID}.env").write_text("CONFIRMED=2\n")
-    session_file.use_nats_name(NAME, HOME)
     assert not channel.confirmed(UID)
     assert not (state / f"channel-{UID}.env").exists()  # the bot id's follows the name's
 
@@ -184,3 +182,86 @@ def test_session_end_forgets_both_keys_and_keeps_the_marker(state: Path, monkeyp
     watermark.remove(UID)
     assert not (state / f"read-{NAME}.env").exists() and not (state / f"read-{UID}.env").exists()
     assert (state / f"copied-{NAME}.env").exists()
+
+
+# --- review round 1 -------------------------------------------------------------------------
+
+
+async def test_the_latch_names_the_key_in_the_endpoint_file(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every hook reads one key (CB_STATE_KEY), from the endpoint file alone too."""
+    from mattermost_ai_agent_bus import hookapi
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-14c")
+
+    async def no_client() -> None:
+        return None
+
+    api = hookapi.HookAPI(no_client)  # type: ignore[arg-type]
+    await api.start()
+    try:
+        f = hookapi.file_path()
+        assert "CB_STATE_KEY" not in session_file.parse(f)
+        _on(monkeypatch)
+        assert session_file.parse(f)["CB_STATE_KEY"] == NAME
+    finally:
+        await api.close()
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_one_sender_locks_stay_keyed_by_the_bot_id(state: Path, monkeypatch: pytest.MonkeyPatch, on: bool) -> None:
+    """Two servers of one bot, one latched on the name and one refused, still take turns."""
+    if on:
+        _on(monkeypatch)
+    assert session_file.lock_key(UID) == UID
+    fd = remind._lock(UID)
+    assert fd is not None and (state / f"remind-{UID}.lock").exists()
+    os.close(fd)
+    with asks._queue_lock(UID):
+        assert (state / f"asks-{UID}.lock").exists()
+    fd = stats._lock(UID)
+    assert fd is not None and (state / f"stats-{UID}.lock").exists()
+    os.close(fd)
+    assert not list(state.glob(f"*-{NAME}.lock")) or on  # only key-<name>.lock with the latch
+    assert sorted(p.name for p in state.glob(f"*-{NAME}.lock")) == ([f"key-{NAME}.lock"] if on else [])
+    if on:
+        assert remind._path(UID).name == f"remind-{NAME}.env"  # the state stays on the key
+        monkeypatch.delenv("CB_MM_BOT_USER_ID")
+        assert session_file.lock_key("") == NAME
+
+
+def test_mirrors_never_touch_another_servers_files(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The second holder of the bot keys its own coord- and channel- by the bot id."""
+    _on(monkeypatch)
+    theirs_coord, theirs_chan = state / f"coord-{UID}.env", state / f"channel-{UID}.env"
+    theirs_coord.write_text("CROWN_UNTIL=1\n")
+    theirs_chan.write_text("CONFIRMED=9\n")
+    lease._save_coord(UID, 2_000_000_000, 0, 0, "c" * 26)
+    assert theirs_coord.read_text() == "CROWN_UNTIL=1\n"
+    assert not channel.confirmed(UID)  # this process confirmed nothing
+    assert theirs_chan.read_text() == "CONFIRMED=9\n"
+
+
+def test_mirrors_this_process_wrote_follow_it(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _on(monkeypatch)
+    lease._save_coord(UID, 2_000_000_000, 0, 0, "c" * 26)
+    lease._save_coord(UID, 2_000_000_001, 0, 0, "c" * 26)
+    assert "CROWN_UNTIL=2000000001" in (state / f"coord-{UID}.env").read_text()
+    session_file.drop_mirror(state / f"coord-{UID}.env")
+    assert not (state / f"coord-{UID}.env").exists()
+    channel.confirmed_file(UID).write_text("CONFIRMED=1\n")
+    assert channel.confirmed(UID) and (state / f"channel-{UID}.env").exists()
+    channel.confirmed_file(UID).unlink()
+    assert not channel.confirmed(UID) and not (state / f"channel-{UID}.env").exists()
+
+
+def test_a_repeated_latch_moves_nothing(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _on(monkeypatch)
+    (state / f"channel-{NAME}.env").write_text("CONFIRMED=1\n")  # confirmed after the latch
+    (state / f"last-{UID}.env").write_text("MSG=x\n")
+    assert session_file.latch(NAME, HOME, UID) == []
+    assert (state / f"channel-{NAME}.env").exists() and not (state / f"last-{NAME}.env").exists()
+
+
+def test_the_copy_source_is_the_bot_id_today() -> None:
+    assert session_file._copy_source(UID, NAME) == UID
+    assert session_file._copy_source("", NAME) is None

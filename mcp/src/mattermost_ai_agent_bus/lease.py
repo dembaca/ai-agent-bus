@@ -194,7 +194,8 @@ def _bot_coord(user_id: str) -> Path | None:
 
 def _write_coord(user_id: str, text: str) -> None:
     _write(_file("coord", user_id), text)
-    _write(_bot_coord(user_id), text)
+    if (bot := _bot_coord(user_id)) is not None:
+        session_file.write_mirror(bot, text)  # never over another server's own file
 
 
 def _coord(user_id: str) -> dict[str, int]:
@@ -751,9 +752,11 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         text = f"{SILENT} · no sign since {time.strftime('%H:%MZ', time.gmtime(since))}"
 
     if state == "offline":
-        for f in (pres, coord, _bot_coord(uid)):
+        for f in (pres, coord):
             if f is not None:
                 f.unlink(missing_ok=True)
+        if (bot := _bot_coord(uid)) is not None:
+            session_file.drop_mirror(bot)
     else:
         _write(pres, f"STATE={state}\nLABEL={label}\n")
 

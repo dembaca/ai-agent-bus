@@ -556,6 +556,26 @@ async def test_the_file_learns_the_bot_id(api, monkeypatch):
                                      "MM_BUS_PID": str(os.getpid()), "MM_BOT_USER_ID": OTHER}
 
 
+async def test_the_file_names_the_state_key_for_the_sweep(api, monkeypatch):
+    """RT-6.1 step 7, RT-6.2 step 9: once the kept state is keyed by the NATS name, the
+    endpoint file names it (CB_STATE_KEY), so mm-agent-sweep.sh keeps that name's files while
+    the server runs, whichever bot it runs as; before that the file names none."""
+    from mattermost_ai_agent_bus import planb
+
+    monkeypatch.setattr(session_file, "_nats_name", None)
+    monkeypatch.setattr(session_file, "_key_listener", None)
+    monkeypatch.setattr(planb, "on", lambda piece, home: True)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-key")
+    a, h = await api(FakeClient(), write_file=True)
+    f = hookapi.file_path()
+    assert "CB_STATE_KEY" not in session_file.parse(f)
+    session_file.use_nats_name("g" * 25, "home")
+    assert session_file.parse(f)["CB_STATE_KEY"] == "g" * 25
+    assert (await h.get("/v1/me")).status_code == 200   # the bot id arrives: the key stays
+    assert session_file.parse(f)["CB_MM_BOT_USER_ID"] == UID
+    assert session_file.parse(f)["CB_STATE_KEY"] == "g" * 25
+
+
 async def _raw(endpoint):
     host, port = endpoint.removeprefix("http://").split(":")
     return await asyncio.open_connection(host, int(port))

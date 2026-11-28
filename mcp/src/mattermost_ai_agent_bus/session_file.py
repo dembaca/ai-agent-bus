@@ -31,7 +31,7 @@ import stat
 import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -351,6 +351,27 @@ def use_nats_name(name: str, home: str) -> None:
 
     global _nats_name
     _nats_name = (name, home) if name and key_ok(name) and planb.on(2, home) else None
+    if _nats_name is not None and _key_listener is not None:
+        try:
+            _key_listener()
+        except Exception as exc:  # noqa: BLE001 — bookkeeping (the endpoint file)
+            logging.getLogger(__name__).debug("state key not announced: %s", type(exc).__name__)
+
+
+# Told once the key is latched: the hook API writes it into its endpoint file (CB_STATE_KEY),
+# so mm-agent-sweep.sh keeps the name's files while this server runs (RT-6.1 step 7).
+_key_listener: Callable[[], None] | None = None
+
+
+def on_state_key(listener: Callable[[], None] | None) -> None:
+    """Call `listener` when use_nats_name latches a NATS name (one per process: the last set)."""
+    global _key_listener
+    _key_listener = listener
+
+
+def nats_state_key() -> str:
+    """The NATS name the kept state is keyed by (RT-6.2 step 9), "" while that is the bot id."""
+    return _nats_name[0] if _nats_name else ""
 
 
 def key_ok(key: str) -> bool:
@@ -368,7 +389,7 @@ def state_key(uid: str, nats_name: str | None = None, home: str | None = None) -
     latched it (plan B piece 2 was on at the start), else `uid`, the bot's Mattermost id.
     An empty `uid` (no bot) is the latched name too, else empty: no key, no state (piece 14c-1).
     `nats_name` is the session's own, unless named (tests); `home` is unused then."""
-    name =nats_name if nats_name is not None else (_nats_name[0] if _nats_name else None)
+    name = nats_name if nats_name is not None else (_nats_name[0] if _nats_name else None)
     if name is not None and key_ok(name):
         return name
     return uid
@@ -447,6 +468,58 @@ def _hold_key(name: str) -> str:
     return ""
 
 
+def lock_key(uid: str) -> str:
+    """The key of a lock meant for one sender per bot (the reminders, the ask queue, the stats
+    part): the bot id whenever there is one, so two servers of one bot (one latched on the
+    name, one refused) still take turns; else the state key."""
+    return uid if _BOT_ID_RE.fullmatch(uid) else state_key(uid)
+
+
+# The bot-id files this process wrote as mirrors of its name-keyed ones (mixed versions,
+# RT-6.2 step 9): path -> (text, mtime_ns). A mirror is rewritten or removed only while it is
+# still what this process wrote: a second server of the bot, refused the name, keys its own
+# state by the bot id and owns the file then.
+_mirrors: dict[str, tuple[str, int]] = {}
+
+
+def _mine(path: Path) -> bool:
+    kept = _mirrors.get(str(path))
+    try:
+        return kept is not None and path.stat().st_mtime_ns == kept[1] and path.read_text() == kept[0]
+    except OSError:
+        return False
+
+
+def write_mirror(path: Path, text: str) -> None:
+    """Write the bot-id mirror `path`, unless another process's file is there."""
+    if path.is_symlink() or (path.exists() and not _mine(path)):
+        return
+    try:
+        write_private(path, text)
+        _mirrors[str(path)] = (text, path.stat().st_mtime_ns)
+    except OSError:
+        pass
+
+
+def drop_mirror(path: Path) -> None:
+    """Remove the bot-id mirror `path`, only if this process wrote it."""
+    if _mine(path):
+        path.unlink(missing_ok=True)
+    _mirrors.pop(str(path), None)
+
+
+def _copy_source(bot_id: str, name: str) -> str | None:
+    """The key whose kept state the latch copies to `name` (RT-6.2 step 9): today the bot id,
+    None without one. The one place for the owner's pending decision on a restart under
+    CB_LOGIN_NKEY=ephemeral, where every process has a new name and this copy goes back to
+    what the bot id held at the first latch (PR #328, open point): either carry over from the
+    newest predecessor name of the same Claude session id (else workspace), the tie written
+    into the marker, a non-blocking flock on its key-<name>.lock proving that predecessor
+    gone, and the counters moved, not copied; or require CB_LOGIN_NKEY=host. Neither is
+    built."""
+    return bot_id if _BOT_ID_RE.fullmatch(bot_id) and bot_id != name else None
+
+
 def latch(name: str, home: str, uid: str) -> list[str]:
     """The bus has the session's NATS name `name` in `home` (RT-6.2 step 9): with plan B piece 2
     on there, take the name's lock, copy the state the bot `uid` kept (copy_state_once), write
@@ -460,11 +533,13 @@ def latch(name: str, home: str, uid: str) -> list[str]:
     global _refused
     if not (name and key_ok(name) and planb.on(2, home)):
         return []
+    first = _nats_name is None  # the latch is once per process; a repeat moves nothing
     if why := _hold_key(name):
         _refused = why
         logging.getLogger(__name__).warning("session: the kept state stays keyed by the bot id: %s", why)
         return []
-    copied = copy_state_once(uid, name) if uid else []
+    src_key = _copy_source(uid, name) if first else None
+    copied = copy_state_once(src_key, name) if src_key else []
     d = state_dir()
     marker = d / f"copied-{name}.env"
     try:
@@ -476,10 +551,14 @@ def latch(name: str, home: str, uid: str) -> list[str]:
     # of the name left nothing that counts, and a confirmation made under the bot id moves.
     src, dst = d / f"channel-{uid}.env", d / f"channel-{name}.env"
     try:
-        if not dst.is_symlink():
+        if first and not dst.is_symlink():
             dst.unlink(missing_ok=True)
             if _BOT_ID_RE.fullmatch(uid) and src.is_file() and not src.is_symlink():
-                write_private(dst, src.read_text())
+                text = src.read_text()
+                write_private(dst, text)
+                # Made before the latch, by this process (the start removed any older one):
+                # from now on its mirror.
+                _mirrors[str(src)] = (text, src.stat().st_mtime_ns)
     except OSError:
         pass
     use_nats_name(name, home)

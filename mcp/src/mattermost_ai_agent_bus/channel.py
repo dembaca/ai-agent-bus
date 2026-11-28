@@ -176,12 +176,10 @@ def confirmed(user_id: str) -> bool:
     if _BOT.fullmatch(user_id) and f.name != f"channel-{user_id}.env":
         bot = f.with_name(f"channel-{user_id}.env")
         try:
-            if bot.is_symlink():
-                pass
-            elif yes and not bot.exists():
-                session_file.write_private(bot, f.read_text())
+            if yes and not bot.exists():
+                session_file.write_mirror(bot, f.read_text())
             elif not yes:
-                bot.unlink(missing_ok=True)
+                session_file.drop_mirror(bot)  # only the one this process wrote
         except OSError:
             pass
     return yes

@@ -245,7 +245,19 @@ class HookAPI:
         self._writes = write_file
         if write_file:
             self._write_file()
+            session_file.on_state_key(self._note_state_key)
         return self.endpoint
+
+    def _note_state_key(self) -> None:
+        """The kept state's key became the NATS name (RT-6.2 step 9): into the file, while
+        it is this server's, so mm-agent-sweep.sh keeps that name's files (RT-6.1 step 7)."""
+        if self._file is None:
+            return
+        try:
+            if config.value(session_file.parse(self._file), "CB_BUS_KEY") == self.key:
+                self._write_file(self._uid or None)
+        except OSError as exc:
+            log.info("hook API: endpoint file not updated: %s", exc)
 
     def rekey(self) -> None:
         """The workspace is known now (the client's roots arrived): the file
@@ -343,6 +355,9 @@ class HookAPI:
             # plugin or hook of an update in progress reads the old one.
             values = {"CB_BUS_ENDPOINT": self.endpoint, "CB_BUS_KEY": self.key, "CB_BUS_PID": str(os.getpid()),
                       **({"CB_MM_BOT_USER_ID": self._uid} if self._uid else {}),
+                      # The NATS name the kept state is keyed by (plan B piece 2b): the sweep
+                      # keeps that name's files while CB_BUS_PID lives (RT-6.1 step 7).
+                      **({"CB_STATE_KEY": key} if (key := session_file.nats_state_key()) else {}),
                       **({"CB_BUS_CLIENT": self.client} if self.client else {})}
             fh.write("".join(f"{k}={v}\n" for name, value in values.items()
                              for k, v in config.both(name, value).items()))

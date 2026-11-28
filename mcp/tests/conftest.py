@@ -76,6 +76,8 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
     monkeypatch.setattr(session_file, "_nats_name", None)
     monkeypatch.setattr(session_file, "_key_fds", {})
     monkeypatch.setattr(session_file, "_refused", "")
+    monkeypatch.setattr(session_file, "_mirrors", {})
+    monkeypatch.setattr(session_file, "_key_listener", None)
     # RT-6.6 step 5: the thread records, failed reads and roster of another test.
     from mattermost_ai_agent_bus import gate as _gate
 

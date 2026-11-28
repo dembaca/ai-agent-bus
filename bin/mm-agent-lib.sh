@@ -745,8 +745,9 @@ mm_bus_me() {
   [[ "${uid:-}" =~ ^[a-z0-9]{26}$ ]] || return 1
   mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID "$uid"
   mm_env_set CB_MM_BOT_USERNAME MM_BOT_USERNAME "${name:-}"
-  # The kept state's key when it is not the bot id (RT-6.2 step 9): for mm_state_key.
-  CB_STATE_KEY="$(jq -r '.state_key // ""' <<<"$CB_BUS_BODY" 2>/dev/null)" || CB_STATE_KEY=""
+  # The kept state's key when it is not the bot id (RT-6.2 step 9): for mm_state_key. A
+  # variable of this process only, never one inherited from the environment.
+  mm_state_key_me="$(jq -r '.state_key // ""' <<<"$CB_BUS_BODY" 2>/dev/null)" || mm_state_key_me=""
   CB_BUS_PROJECT="${project:-0}"
   CB_BUS_CHANNEL="${channel:-0}"
   CB_CROWN_UNTIL="${crown:-0}"
@@ -756,14 +757,16 @@ mm_bus_me() {
 
 # The key of this session's kept state (RT-6.2 step 9, plan B piece 14c-1): the NATS
 # name once the MCP server keys its state by it (plan B piece 2 on), as its endpoint
-# file says (CB_STATE_KEY), else its /v1/me answer (state_key, kept by mm_bus_me);
+# file says (CB_STATE_KEY), else its /v1/me answer (state_key, kept by mm_bus_me in
+# mm_state_key_me; an inherited CB_STATE_KEY variable is never read);
 # else the bot id, $1 or CB_MM_BOT_USER_ID. Fails without a key. The one place the
 # scripts take a per-bot state file's key from (tests/hooks/test_state_key_shell.py):
 # with the switch off it is the bot id, as before.
+mm_state_key_me=""
 mm_state_key() {
   local key="" f
   if f="$(mm_bus_file 2>/dev/null)"; then key="$(mm_kv "$f" CB_STATE_KEY)"; fi
-  [[ -n "$key" ]] || key="${CB_STATE_KEY:-}"
+  [[ -n "$key" ]] || key="${mm_state_key_me:-}"
   [[ "$key" =~ ^[a-z0-9][a-z0-9_-]{0,127}$ ]] || key="${1:-${CB_MM_BOT_USER_ID:-}}"
   [[ "$key" =~ ^[a-z0-9][a-z0-9_-]{0,127}$ ]] || return 1
   printf '%s' "$key"

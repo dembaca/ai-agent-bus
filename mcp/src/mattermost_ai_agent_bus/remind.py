@@ -163,7 +163,7 @@ def _lock(uid: str) -> int | None:
     """An exclusive advisory lock on remind-<uid>.lock around read, decide,
     post and write, so two servers of one bot send no reminder twice. None
     while another holds it; a state dir that cannot be written locks nothing."""
-    path = session_file.state_dir() / f"remind-{session_file.state_key(uid)}.lock"
+    path = session_file.state_dir() / f"remind-{session_file.lock_key(uid)}.lock"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)

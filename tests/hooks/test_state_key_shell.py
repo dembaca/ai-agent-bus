@@ -88,8 +88,10 @@ def test_a_junk_key_falls_back_to_the_bot_id(tmp_path):
 def test_without_an_endpoint_file_me_names_the_key(tmp_path):
     """A keyless session (RT-6.18) has no endpoint file here: mm_bus_me keeps /v1/me's state_key."""
     env = _key_env(tmp_path, None)
-    assert _lib('CB_STATE_KEY="$1"; mm_state_key', env, NATS25).stdout == NATS25
+    assert _lib('mm_state_key_me="$1"; mm_state_key', env, NATS25).stdout == NATS25
     assert _lib("mm_state_key", env).stdout == BOT
+    # A CB_STATE_KEY inherited from the environment is no key (switch off: the bot id).
+    assert _lib("mm_state_key", {**env, "CB_STATE_KEY": NATS25}).stdout == BOT
 
 
 # Every per-bot state path the scripts name: a kind, a dash and a bot id, or mm_bot_state_file
@@ -111,3 +113,73 @@ def test_the_guard_finds_the_paths_it_was_written_for():
     for line in ('printf \'%s\' "$(mm_state_dir)/turn-${uid}.env"', 'f="$(mm_state_dir)/stats-${CB_MM_BOT_USER_ID}.jsonl"',
                  '"${STATE}/coord-${uid}.env"', 'mm_bot_state_file presence "$UID_"', 'mm_bot_state_file listen "$ME"'):
         assert _BOT_PATH.search(line), line
+
+
+def _fake_api(body: dict):
+    """A hook API (RT-6.17) that answers /v1/me with `body`, every other call with {}."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _answer(self):
+            b = json.dumps(body if self.path.startswith("/v1/me") else {}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        do_GET = do_POST = _answer
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+# The first lines of hooks/turn-status.sh and hooks/stop-inbox-check.sh: how each learns who
+# the session is before it names its turn and listen files.
+_PROMPT_START = "mm_bus_uid || mm_bus_me || exit 1"
+_STOP_START = "mm_bus_me || exit 1"
+
+
+@pytest.mark.parametrize("me_names_it", [True, False])
+def test_the_prompt_and_the_stop_hook_name_the_same_files(tmp_path, me_names_it):
+    """Review of #328: the prompt hook learns the bot from the endpoint file, the Stop hook
+    from /v1/me; both name the same turn- and listen- file, since the endpoint file names the
+    key (CB_STATE_KEY, written at the latch) whatever /v1/me says."""
+    srv = _fake_api({"user_id": BOT, "username": "agent-x", "crown_until": 0,
+                     **({"state_key": NATS25} if me_names_it else {})})
+    try:
+        ep = f"http://127.0.0.1:{srv.server_address[1]}"
+        env = _key_env(tmp_path, f"CB_BUS_ENDPOINT={ep}\nCB_BUS_KEY=k\nCB_BUS_PID=1\n"
+                                 f"CB_MM_BOT_USER_ID={BOT}\nCB_STATE_KEY={NATS25}\n", CB_MM_BOT_USER_ID="")
+        names = 'mm_turn_state_file; echo; mm_bot_state_file listen'
+        prompt = _lib(f"{_PROMPT_START}; {names}", env)
+        stop = _lib(f"{_STOP_START}; {names}", env)
+    finally:
+        srv.shutdown()
+    state = f"{tmp_path}/s/mm-agent-bus"
+    assert prompt.stdout == stop.stdout == f"{state}/turn-{NATS25}.env\n{state}/listen-{NATS25}.env"
+
+
+def test_the_hooks_preambles_are_the_ones_tested():
+    assert _PROMPT_START.removesuffix(" || exit 1") + " || exit 0" in (ROOT / "hooks" / "turn-status.sh").read_text()
+    assert _STOP_START.removesuffix(" || exit 1") + " || exit 0" in (ROOT / "hooks" / "stop-inbox-check.sh").read_text()
+
+
+def test_the_prompt_hook_clears_the_name_keyed_turn_from_the_endpoint_file(tmp_path):
+    """No server: the real prompt hook (hooks/turn-status.sh) still finds the name-keyed turn
+    and listen files by the endpoint file's CB_STATE_KEY and removes them."""
+    env = _key_env(tmp_path, f"CB_BUS_ENDPOINT=http://127.0.0.1:9\nCB_BUS_KEY=x\nCB_BUS_PID=999999\n"
+                             f"CB_MM_BOT_USER_ID={BOT}\nCB_STATE_KEY={NATS25}\n", CB_MM_BOT_USER_ID="")
+    state = tmp_path / "s" / "mm-agent-bus"
+    (state / f"turn-{NATS25}.env").write_text("DRAINS=1\n")
+    (state / f"listen-{NATS25}.env").write_text("UNTIL=1\nENDED=\n")
+    r = subprocess.run(["bash", str(ROOT / "hooks" / "turn-status.sh")], input="{}", env=env,
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0
+    assert not (state / f"turn-{NATS25}.env").exists()
+    assert not (state / f"listen-{NATS25}.env").exists()
