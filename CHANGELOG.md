@@ -27,11 +27,14 @@ before 0.5.0 are described in the git history.
   bot-id mirror only while it is its own. Once piece 2 is on, hooks and server must be the
   same version: an older hook's `presence-<bot id>.env` is not read and its
   `stats-<bot id>.jsonl` not published, and it may miss the channel confirmation for one
-  turn. The way back (switch off again) publishes `stats-<bot id>.jsonl` as it was at the
-  copy, so those counts are counted twice. Open: under `CB_LOGIN_NKEY=ephemeral` every
-  start has a new name and copies again from the bot id's files as they were at the first
-  latch (asks, reminders, read marks, gate, stall, notice, ask mode, crown and permission
-  logs go back, the counters are published again); with `CB_LOGIN_NKEY=host` they survive.
+  turn. Across a restart (every start a new name, `CB_LOGIN_NKEY` stays `ephemeral`) a new
+  name takes over the state of its session's predecessor once that one's lock shows it
+  gone: the marker names the session as `CB_TIE` (Claude Code's, OpenCode's or pi's
+  session id, else the workspace, hashed as the endpoint file's name is), the predecessor's
+  marker gets `CB_TAKEN_BY`, and the sweep then removes its files by the day rule. The pi
+  extension passes pi's session id to the server as `PI_SESSION_ID`. The counters
+  (`stats-`) are moved, not copied, so no part publishes them twice, also on the way back.
+  No nonce, endpoint or session file moves, so no session gets a new name by this.
   Switch off: every file name is as before.
 
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
