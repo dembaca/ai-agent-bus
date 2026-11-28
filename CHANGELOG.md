@@ -562,6 +562,13 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **Until piece 14c the decision about a bot waits for nothing: plan B piece 14a** (#313,
+  RT-6.10 step 8, RT-6.18 step 13). While the crown still needs the bot's identity
+  (`nobot.CROWN_NEEDS_BOT`), `nobot.decide` answers "the crown needs the bot's identity
+  until piece 14c" at once, before any read: a session whose channels `CB_NATS_HOMES` all
+  lists no longer waits up to 60 s for its login and presence replay before it registers
+  as before. With the constant off, as piece 14c will run it, the wait is unchanged.
+
 - **The sweep removes state keyed by a NATS name** (#244 plan B piece 14 gate 8, #253,
   RT-6.1 step 7, RT-6.2 step 9). Since plan B piece 2b a session keeps `last-`,
   `threads-`, `unanswered-<name>.env` and the marker `copied-<name>.env` under its NATS
