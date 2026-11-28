@@ -4599,6 +4599,35 @@ which each piece reads for itself.
       - Test: wake rules over NATS; the guest channels in the credential;
         `testrig`: delivery in a guest channel. Lab: an agent as guest in
         another home, woken by a mention; the lobby's `@channel`.
+      - Built (after 0.104.0), behind `planb.on(12, channel)` (the channel's
+        switch, RT-6.39 step 5, off by default; RT-6.22 step 7). The login
+        service already granted guests and the lobby and wrote their switches
+        and ids with the credential; no session asked for them. A session
+        whose home runs over NATS now asks in its hello also for a guest
+        `CB_MM_PROJECT_CHANNEL` names and for the lobby, each only when
+        `CB_NATS_HOMES` lists it (the opt-in for a channel over NATS), since a
+        switch reaches it only for a granted channel; with `CB_NATS_HOMES`
+        naming the home alone the hello is unchanged, and for a channel asked
+        for whose switch is off the session drops what comes there and
+        announces no membership, so it behaves as before. With it
+        on, read after the bus is up and latched with the channel ids, the
+        channel is one of `NatsPort`'s like a home, without crown or roster
+        of its own: the id from the channel record, no join, posts, reads
+        and reactions over NATS, the membership announced, the inbox told so
+        that the wake rules count the directory's id. Where the build settles
+        what the text leaves open: a channel switched on whose id the record
+        does not name is not reachable (refused, its events on both sides
+        dropped), never Mattermost instead; a read of such a channel holds
+        its NATS posts alone and people's posts there are not caught up on
+        Mattermost, both people's history (piece 5); the join at the start
+        (the host hook and `session_start`) stays, as it runs before the
+        switch is read; replies and reactions to a person's post stay
+        piece 7's. A real `nats-server` test in
+        `mcp/tests/test_planb_piece12.py` checks both switch states and the
+        unreachable case, with no Mattermost call naming the channel when on,
+        and that the hello is byte-identical when `CB_NATS_HOMES` names the
+        home alone.
+        The `testrig` run and the lab check follow when the switch lands.
   13. **STATS and the shell clients on the NATS side.**
       - Moves: the STATS of the stats channel (`CB_MM_STATS_CHANNEL`) go
         on NATS alone (RT-6.43), and `stats_report` and
