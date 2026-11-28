@@ -24,12 +24,19 @@ func tctx(t *testing.T) context.Context {
 	return c
 }
 
-// logRecorder keeps the level and message of every record.
-type logRecorder struct{ msgs []string }
+// logRecorder keeps the level and message of every record, and each
+// record's "reason" attribute.
+type logRecorder struct{ msgs, reasons []string }
 
 func (r *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
 func (r *logRecorder) Handle(_ context.Context, rec slog.Record) error {
 	r.msgs = append(r.msgs, rec.Level.String()+" "+rec.Message)
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == "reason" {
+			r.reasons = append(r.reasons, a.Value.String())
+		}
+		return true
+	})
 	return nil
 }
 func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler { return r }
@@ -389,6 +396,10 @@ func TestARefusedStatsSizeRaiseWarnsAndKeepsTheOldSize(t *testing.T) {
 	if rec.count("WARN consumers: stats stream size not raised") != 1 {
 		t.Fatalf("want the warning: %v", rec.msgs)
 	}
+	// The refusal is the server's storage limit, not some other error.
+	if len(rec.reasons) != 1 || !strings.Contains(rec.reasons[0], "insufficient") {
+		t.Fatalf("want the storage refusal as the reason: %v", rec.reasons)
+	}
 }
 
 // The age is updated, the size is not, and there is no error.
@@ -409,7 +420,10 @@ func TestARefusedStatsSizeRaiseStillUpdatesTheAge(t *testing.T) {
 	}
 }
 
-// A refused age change stays an error (here: the JetStream user may not update).
+// A refused age change stays an error. Here the JetStream user may not
+// update, so this reaches the no-answer path: a server that refuses an age
+// with an API error is not cheap to build, since the ceilings are checked
+// before the request.
 func TestARefusedStatsAgeChangeIsStillAnError(t *testing.T) {
 	admin, js := statsLabStore(t, 256<<20)
 	m := manager(t, admin, nil, 0)
