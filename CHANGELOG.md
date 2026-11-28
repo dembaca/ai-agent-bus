@@ -21,6 +21,20 @@ before 0.5.0 are described in the git history.
   the flip (14c-2c) follow. The docs no longer say the crown claim carries the bot's id:
   it is `{"v":1}` under the session's NATS name.
 
+- **A stranded counter claim keeps the takeover open: plan B piece 14c-1c** (#244, RT-6.2
+  step 9), behind piece 2's switch. A claim the counter move leaves behind (its pid runs
+  again, or an append whose journal line failed) no longer lets the takeover be marked
+  done: the source gets no `CB_TAKEN_BY`, the intent narrows to the counters (`CB_MOVING`),
+  and a later start moves only the counters, so a file the
+  name deleted while it ran does not come back. An append cut short by a full disk is cut
+  back to its journaled size. The narrowing resolves the journal while the name still owns
+  its file (`CB_APPENDED` for a claim appended whole whose removal failed: removed later,
+  never appended again); when it cannot be written the latch refuses and the key stays the
+  bot id. A start re-reads under a predecessor's lock whether another
+  start began to take it, and an unfinished takeover whose source another name took
+  meanwhile drops its intent instead of taking it again. RT-6.1 step 7 says why the
+  workspace tie's lock is never swept. Switch off: nothing differs.
+
 ### Docs
 
 - Plan B piece 14 becomes a cutover (the owner's decision of 2026-11-28, #244): the flip of the crown without a bot (14c-2c) and the removal of the host side (14d) in one release, every piece switched on in the lab first with a smoke test, the registrar one day as the way back, then the shutdown; the plan's last six gates (the measured acceptance, the console's signature check and the offline token's lifetime among them) give way to a cutover checklist after release 0.105.0 (`docs/plan-b-piece-14.md`, ADR-014 item 14).

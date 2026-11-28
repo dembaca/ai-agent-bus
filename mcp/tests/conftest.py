@@ -79,6 +79,7 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
     monkeypatch.setattr(session_file, "_tie_fd", None)
     monkeypatch.setattr(session_file, "_tie_refused", "")
     monkeypatch.setattr(session_file, "_claims", set())
+    monkeypatch.setattr(session_file, "_stranded", [])
     monkeypatch.setattr(session_file, "_mirrors", {})
     monkeypatch.setattr(session_file, "_key_listener", None)
     # RT-6.6 step 5: the thread records, failed reads and roster of another test.

@@ -502,11 +502,17 @@ def _journal(marker: Path | None) -> dict[str, int]:
     return out
 
 
+def _appended(marker: Path | None) -> set[str]:
+    """The claims `marker` says were appended whole and only their removal failed
+    (CB_APPENDED=<claim>, written at the narrowing, _narrow): removed, never appended again."""
+    return {ln.removeprefix("CB_APPENDED=") for ln in _marker_lines(marker) if ln.startswith("CB_APPENDED=")}
+
+
 def _journaled_elsewhere(claim: str, marker: Path | None) -> bool:
-    """Whether another name's marker journals an append of `claim`: that name's takeover
-    resolves it against its own file, not this one."""
+    """Whether another name's marker journals an append of `claim` (CB_APPENDING or
+    CB_APPENDED): that name's takeover resolves it against its own file, not this one."""
     for other in state_dir().glob("copied-*.env"):
-        if other != marker and not other.is_symlink() and claim in _journal(other):
+        if other != marker and not other.is_symlink() and (claim in _journal(other) or claim in _appended(other)):
             return True
     return False
 
@@ -530,9 +536,19 @@ def _append(claim: Path, data: bytes, dst: Path, marker: Path | None) -> None:
     if not dst.exists() and not dst.is_symlink():
         os.rename(claim, dst)
         return
-    if marker is None or not _mark(marker, add=[f"CB_APPENDING={claim.name}:{dst.stat().st_size}"]):
+    size = dst.stat().st_size
+    if marker is None or not _mark(marker, add=[f"CB_APPENDING={claim.name}:{size}"]):
         raise OSError(errno.EIO, "the counter move cannot be journaled", str(marker))
-    _append_bytes(dst, data)
+    try:
+        _append_bytes(dst, data)
+    except OSError:
+        # A short write (a full disk) leaves no fragment for the next line to glue onto, and
+        # the retry appends the claim whole: cut back to the journaled size, if that works.
+        try:
+            os.truncate(dst, size)
+        except OSError:
+            pass
+        raise
     claim.unlink()
 
 
@@ -543,16 +559,28 @@ def _move(src: Path, dst: Path, marker: Path | None = None) -> bool:
     (`<src>.moving-<pid>` of a dead pid, not journaled by another name) is taken along
     first: one this marker journals is appended only as far as `dst` lacks it, so a kill
     between the append and the removal doubles nothing. The caller holds the lock of the
-    source's name. Whether anything moved."""
+    source's name. Whether anything moved. A claim it leaves behind that is not another
+    name's to finish (a pid that runs again, a claim under this pid it did not make, an
+    append that failed) goes into _stranded: the takeover is then not done (_take)."""
     moved = False
-    journal = _journal(marker)
+    journal, appended = _journal(marker), _appended(marker)
     for left in sorted(src.parent.glob(f"{src.name}.moving-*")):
         pid = left.name.rpartition("-")[2]
         if left.is_symlink() or not left.is_file() or not pid.isdigit() or left.name in _claims:
             continue
+        if left.name in appended:  # counted in the name's file already: only its removal is left
+            try:
+                left.unlink()
+                moved = True
+            except OSError:
+                _stranded.append(left.name)
+            continue
+        if _journaled_elsewhere(left.name, marker):
+            continue  # that name's takeover resolves it
         if int(pid) != os.getpid() and _pid_alive(pid):
-            continue  # a taker that still runs
-        if _journaled_elsewhere(left.name, marker) or (data := _utf8(left)) is None:
+            _stranded.append(left.name)  # a taker that still runs, or its pid reused: later
+            continue
+        if (data := _utf8(left)) is None:
             continue
         if left.name in journal and dst.is_file() and not dst.is_symlink():
             have = dst.read_bytes()[journal[left.name]:]
@@ -562,17 +590,31 @@ def _move(src: Path, dst: Path, marker: Path | None = None) -> bool:
                 continue
             if have and data.startswith(have):  # appended in part: that part goes, then the whole
                 os.truncate(dst, journal[left.name])
-        _append(left, data, dst, marker)
+        _append_or_strand(left, data, dst, marker)
         moved = True
     if src.is_symlink() or dst.is_symlink() or not src.is_file() or _utf8(src) is None:
         return moved
     claim = src.with_name(f"{src.name}.moving-{os.getpid()}")
     if claim.exists() or claim.is_symlink():
-        return moved  # a dead process's claim under this pid that stays: never overwritten
+        _stranded.append(claim.name)  # a dead process's claim under this pid: never overwritten
+        return moved
     os.rename(src, claim)
     _claims.add(claim.name)
-    _append(claim, claim.read_bytes(), dst, marker)
+    _append_or_strand(claim, claim.read_bytes(), dst, marker)
     return True
+
+
+# The counter claims the last _move left behind (it fills them, _take resets them): while one
+# is there the takeover keeps its intent, and a later start's _finish tries again.
+_stranded: list[str] = []
+
+
+def _append_or_strand(claim: Path, data: bytes, dst: Path, marker: Path | None) -> None:
+    try:
+        _append(claim, data, dst, marker)
+    except OSError:
+        _stranded.append(claim.name)
+        raise
 
 
 def _marker_lines(marker: Path | None) -> list[str]:
@@ -820,7 +862,8 @@ def _candidates(bot_id: str, name: str) -> list[str]:
     (the bot is the lineage across --resume and the workspace's next server, so another
     session on a shared tie is never one). Without a bot the tie alone decides: on the
     workspace tie only the holder of tie-<hash>.lock gets here (_hold_tie). A name another
-    name's unfinished takeover is taking (its CB_TAKING) is that one's to finish (_finish)."""
+    name's unfinished takeover is taking (its CB_TAKING or CB_MOVING) is that one's to finish
+    (_finish)."""
     me, out = f"CB_TIE={tie()}", []
     taking: set[str] = set()
     markers: list[tuple[Path, list[str]]] = []
@@ -828,7 +871,7 @@ def _candidates(bot_id: str, name: str) -> list[str]:
         if marker.is_symlink():
             continue
         lines = _marker_lines(marker)
-        taking.update(ln.partition("=")[2] for ln in lines if ln.startswith("CB_TAKING="))
+        taking.update(ln.partition("=")[2] for ln in lines if ln.startswith(_INTENTS))
         markers.append((marker, lines))
     for marker, lines in markers:
         pred = marker.name.removeprefix("copied-").removesuffix(".env")
@@ -845,31 +888,109 @@ def _candidates(bot_id: str, name: str) -> list[str]:
     return [pred for _, pred in sorted(out, reverse=True)]
 
 
-def _take(src: str, name: str, add_ids: list[str] | None = None, add: list[str] | None = None) -> list[str]:
+def _take(src: str, name: str, add_ids: list[str] | None = None,
+          add: list[str] | None = None) -> tuple[list[str], str]:
     """Copy the state `src` kept (a predecessor's name or the bot id) to `name`, resumable
     after a kill (RT-6.2 step 9): the intent goes into name's marker first (CB_TAKING=<src>,
     with `add_ids` and `add`: the tie and the bot), then the copy and the counter move, then
     src's CB_TAKEN_BY=<name> and the end of the intent (CB_TAKING and CB_APPENDING go). A
-    later start that finds the intent finishes it under name's lock (_finish). Returns the
-    kinds copied; nothing when the marker cannot be written."""
+    later start that finds the intent finishes it under name's lock (_finish). A counter
+    claim the move left behind (_stranded) leaves src unmarked and narrows the intent to the
+    counters (CB_MOVING=<src>, its journal resolved while name still owns its file, _narrow):
+    name runs on and may delete files of its own, so that later start moves only the
+    counters, never copies again. Returns the kinds copied and "done", "open" (narrowed) or
+    "failed" (the narrowing could not be written: the caller must not run under the name,
+    latch refuses); nothing copied when the marker cannot be written."""
     d = state_dir()
     marker = d / f"copied-{name}.env"
     since = _marked_at(marker, src)
     if not _mark(marker, add_ids=add_ids or [], add=[*(add or []), f"CB_TAKING={src}"]):
-        return []
+        return [], "failed"
+    _stranded.clear()
     copied = copy_state_once(src, name, since=since)
+    if _stranded:
+        logging.getLogger(__name__).warning("session: the counter move from %s stays open: %s left behind",
+                                            src, ", ".join(_stranded))
+        return copied, ("open" if _narrow(src, name, marker) else "failed")
     if not _BOT_ID_RE.fullmatch(src):
         _mark(d / f"copied-{src}.env", add=[f"CB_TAKEN_BY={name}"])
-    _mark(marker, drop=("CB_TAKING=", "CB_APPENDING="))
-    return copied
+    _mark(marker, drop=("CB_TAKING=", "CB_APPENDING=", "CB_APPENDED="))
+    return copied, "done"
+
+
+def _narrow(src: str, name: str, marker: Path) -> bool:
+    """Narrow name's open takeover to its counters (CB_MOVING=<src> instead of CB_TAKING),
+    resolving every CB_APPENDING line now, while name has not run yet and owns its file:
+    once it runs, its own appends and the part cut (stats.cut, which replaces the file) make
+    the sizes meaningless. A claim appended whole whose removal failed gets CB_APPENDED
+    (removed later, never appended); one not appended, or cut back to its size, becomes a
+    plain claim (its line goes). False, and nothing written, when a claim cannot be told
+    apart or the marker not written: then name must not run (latch refuses)."""
+    d = state_dir()
+    dst = d / _kind_file("stats.jsonl", name)
+    appended: list[str] = []
+    for claim_name, size in _journal(marker).items():
+        claim = d / claim_name
+        if claim.is_symlink() or not claim.is_file():
+            continue  # appended and removed
+        try:
+            data = claim.read_bytes()
+            have = dst.read_bytes()[size:] if dst.is_file() and not dst.is_symlink() else b""
+        except OSError:
+            return False
+        if data and have[:len(data)] == data:
+            try:
+                claim.unlink()
+            except OSError:
+                appended.append(f"CB_APPENDED={claim_name}")
+            continue
+        if have:
+            if not data.startswith(have):
+                return False
+            try:
+                os.truncate(dst, size)  # a part appended: cut back, the claim stays whole
+            except OSError:
+                return False
+    return _mark(marker, add=[f"CB_MOVING={src}", *appended], drop=("CB_TAKING=", "CB_APPENDING="))
+
+
+# The two intents a marker can carry (RT-6.2 step 9): a whole takeover under way
+# (CB_TAKING, _take), and only its counter move (CB_MOVING, left open by a stranded claim).
+_INTENTS = ("CB_TAKING=", "CB_MOVING=")
+
+
+def _move_only(src: str, name: str, mark_taken: bool) -> bool:
+    """Only the counter move of an open intent, src's `stats-` into name's (journaled in
+    name's marker), then, with `mark_taken`, src's CB_TAKEN_BY=<name>, and the intent goes.
+    False while a claim stays behind."""
+    d = state_dir()
+    marker = d / f"copied-{name}.env"
+    _stranded.clear()
+    try:
+        _move(d / _kind_file("stats.jsonl", src), d / _kind_file("stats.jsonl", name), marker)
+    except OSError:
+        return False
+    if _stranded:
+        return False
+    if mark_taken and not _BOT_ID_RE.fullmatch(src):
+        _mark(d / f"copied-{src}.env", add=[f"CB_TAKEN_BY={name}"])
+    _mark(marker, drop=(*_INTENTS, "CB_APPENDING=", "CB_APPENDED="))
+    return True
 
 
 def _finish(name: str, held: list[int], depth: int = 0) -> bool:
-    """The takeover `name` began (CB_TAKING in its marker) and its process did not finish (it
-    was killed in its latch, before it ever used the name): finish it now, under name's lock
-    (the caller holds it), first the one its source began, if any. The locks taken go into
-    `held`. False when a source's process still runs (or the chain is too long)."""
-    src = _value(name, "CB_TAKING")
+    """An intent `name`'s marker still carries, under name's lock (the caller holds it; the
+    source's is taken here, into `held`): CB_TAKING, a takeover its process began and did
+    not finish (it was killed in its latch, before it used the name), is done again, first
+    the one its source began, if any; CB_MOVING, a takeover whose counter move a stranded
+    claim left open while the name ran on, gets only that move (_move_only), since the name
+    may have deleted files of its own since. False when a source's process still runs, a
+    counter claim stays behind, or the chain is too long. A source another name took over
+    meanwhile (its CB_TAKEN_BY names another) is not taken again: only the counter claims
+    this marker journals are resolved into name's file, then the intent goes."""
+    src, moving = _value(name, "CB_TAKING"), False
+    if src is None:
+        src, moving = _value(name, "CB_MOVING"), True
     if src is None:
         return True
     if depth >= 8 or src == name or not key_ok(src):
@@ -879,10 +1000,21 @@ def _finish(name: str, held: list[int], depth: int = 0) -> bool:
         if fd is None:
             return False
         held.append(fd)
-        if not _finish(src, held, depth + 1):
+        if (by := _value(src, "CB_TAKEN_BY")) is not None and by != name:
+            return _move_only(src, name, mark_taken=False)
+        if not moving and not _finish(src, held, depth + 1):
             return False
-    _take(src, name)
-    return True
+    if moving:
+        return _move_only(src, name, mark_taken=True)
+    return _take(src, name)[1] == "done"
+
+
+def _being_taken(name: str) -> bool:
+    """Whether another name's marker carries CB_TAKING=<name> or CB_MOVING=<name>: that
+    takeover is its to finish."""
+    lines = {f"{intent}{name}" for intent in _INTENTS}
+    return any(lines & set(_marker_lines(m)) for m in state_dir().glob("copied-*.env")
+               if m.name != f"copied-{name}.env" and not m.is_symlink())
 
 
 def _copy_source(bot_id: str, name: str) -> tuple[str | None, list[int]]:
@@ -901,7 +1033,9 @@ def _copy_source(bot_id: str, name: str) -> tuple[str | None, list[int]]:
         if fd is None:
             continue
         held = [fd]
-        if _value(pred, "CB_TAKEN_BY") is not None or not _finish(pred, held):
+        # Read again under the lock: another start may have taken it, or begun to take it
+        # (its CB_TAKING or CB_MOVING, written after this process listed the candidates).
+        if _value(pred, "CB_TAKEN_BY") is not None or _being_taken(pred) or not _finish(pred, held):
             for h in held:
                 os.close(h)
             continue
@@ -924,6 +1058,8 @@ def latch(name: str, home: str, uid: str) -> list[str]:
     if not (name and key_ok(name) and planb.on(2, home)):
         return []
     first = _nats_name is None  # the latch is once per process; a repeat moves nothing
+    if _refused:
+        return []  # refused once: the key stays the bot id for the rest of the process
     if why := _hold_key(name):
         _refused = why
         logging.getLogger(__name__).warning("session: the kept state stays keyed by the bot id: %s", why)
@@ -940,7 +1076,15 @@ def latch(name: str, home: str, uid: str) -> list[str]:
             ids = [uid] if _BOT_ID_RE.fullmatch(uid) else []
             tied = [] if _tie_refused else [f"CB_TIE={tie()}"]
             if src_key:
-                copied = _take(src_key, name, add_ids=ids, add=tied)
+                copied, state = _take(src_key, name, add_ids=ids, add=tied)
+                if state == "failed" and _value(name, "CB_TAKING") is not None:
+                    # The open takeover could not be narrowed to its counters: running under
+                    # the name with CB_TAKING would let the next start copy back what this
+                    # process deletes. The name stays unused, its lock held, the key the bot id.
+                    _refused = "the open counter move could not be recorded (the state directory may be full)"
+                    logging.getLogger(__name__).warning("session: the kept state stays keyed by the bot id: %s",
+                                                        _refused)
+                    return copied
             else:
                 _mark(marker, add_ids=ids, add=tied)
     finally:
