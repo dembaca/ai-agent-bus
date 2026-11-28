@@ -768,7 +768,7 @@ mm_bus_uid() {
 }
 
 # Who this session's bot is, from the hook API: exports CB_MM_BOT_USER_ID and
-# CB_MM_BOT_USERNAME (the per-bot state files key on them), sets CB_BUS_ME (the
+# CB_MM_BOT_USERNAME (the per-bot state files key on them), sets mm_bus_me_id (the
 # session's own id: the bot id, or the NATS name of a session without a bot),
 # CB_BUS_PROJECT (1 in a project channel), CB_CROWN_UNTIL (epoch, 0 without the
 # crown) and CB_BUS_CHANNEL (1 once the agent confirmed the channel check,
@@ -776,7 +776,7 @@ mm_bus_uid() {
 # with its NATS name: a state key (mm_state_key_re), never exported as
 # CB_MM_BOT_USER_ID, which mm_bus_uid and the status line take for a bot id.
 # Fails without jq or a bus session: the hook then exits 0 and stays quiet (RT-6.4).
-# shellcheck disable=SC2034  # CB_BUS_ME, CB_BUS_PROJECT, CB_CROWN_UNTIL are read by the callers
+# shellcheck disable=SC2034  # mm_bus_me_id, CB_BUS_PROJECT, CB_CROWN_UNTIL are read by the callers
 mm_bus_me() {
   local uid name project crown channel
   command -v jq >/dev/null 2>&1 || return 1
@@ -785,7 +785,7 @@ mm_bus_me() {
     (.user_id // ""), (.username // ""), (if .project then 1 else 0 end), (.crown_until // 0),
     (if .channel then 1 else 0 end)' <<<"$CB_BUS_BODY" 2>/dev/null)
   [[ "${uid:-}" =~ $mm_state_key_re ]] || return 1
-  CB_BUS_ME="$uid"
+  mm_bus_me_id="$uid"
   [[ "$uid" =~ ^[a-z0-9]{26}$ ]] && mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID "$uid"
   mm_env_set CB_MM_BOT_USERNAME MM_BOT_USERNAME "${name:-}"
   # The kept state's key when it is not the bot id (RT-6.2 step 9): for mm_state_key. A

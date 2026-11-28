@@ -23,7 +23,7 @@ def test_me_takes_the_nats_name_and_keys_the_files_by_it(tmp_path):
     srv = _fake_api({"user_id": NATS25, "username": "nats-x", "crown_until": 0, "channel": True})
     try:
         env = _me_env(tmp_path, srv)
-        r = _lib('mm_bus_me || exit 9; printf "%s|%s|%s|%s\\n" "$CB_BUS_ME" "${CB_MM_BOT_USER_ID:-}" '
+        r = _lib('mm_bus_me || exit 9; printf "%s|%s|%s|%s\\n" "$mm_bus_me_id" "${CB_MM_BOT_USER_ID:-}" '
                  '"$CB_MM_BOT_USERNAME" "$CB_BUS_CHANNEL"; mm_turn_state_file; echo; mm_bot_state_file listen', env)
     finally:
         srv.shutdown()

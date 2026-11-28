@@ -63,7 +63,7 @@ if ! mm_bus_me; then
   fi
   exit 0
 fi
-ME="$CB_BUS_ME"  # the bot id, or the NATS name of a session without a bot (its posts' user_id)
+ME="$mm_bus_me_id"  # the bot id, or the NATS name of a session without a bot (its posts' user_id)
 LF="$(mm_bot_state_file listen "$(mm_state_key "$ME")")" || exit 0
 
 POLL="${CB_LISTEN_POLL_SEC:-15}"
