@@ -312,9 +312,8 @@ def _open_asks() -> list[natsbus.OpenAsk]:
     me = stats.bot_id()
     if not me:
         return []
-    return [natsbus.OpenAsk(mm=pid, kind=kind, human=human, title=title, asked=at, answered=done,
-                            answers=tuple(answers), chosen=chosen)
-            for pid, at, human, title, kind, done, answers, chosen in asks.records(me)]
+    return [natsbus.OpenAsk(mm=pid, kind=kind, human=human, title=title, asked=at, answered=done)
+            for pid, at, human, title, kind, done in asks.records(me)]
 
 
 # What this session's last HELLO stated (announce): model, task, branch, for the presence
@@ -2964,13 +2963,12 @@ async def _roots_from_trusted(client: ChatPort, roots: set[str],
     return out
 
 
-def _note_answer(uid: str, root: str, create_at_ms: int, *, thread: bool, questions: Mapping[str, str],
-                 chosen: str = "") -> None:
+def _note_answer(uid: str, root: str, create_at_ms: int, *, thread: bool, questions: Mapping[str, str]) -> None:
     """RT-6.9: a trusted human's first answer to an ask, with its wait and its
     own time (`at`, for the saved waiting); `coord` when it answers a question
     to the 👑 (RT-6.25), which the asks' waits leave out, also in a later part
     than the question's."""
-    got = asks.answered(uid, root, create_at_ms / 1000, thread=thread, chosen=chosen)
+    got = asks.answered(uid, root, create_at_ms / 1000, thread=thread)
     if got:
         stats.record("answer", id=got[0], wait=got[1], at=int(create_at_ms / 1000),
                      **({"coord": 1} if got[0] in questions else {}))
@@ -3083,8 +3081,7 @@ async def _event_items(events: list[Any], raw: bool = False) -> list[dict[str, A
         if uid and root and cls == gate.TRUSTED and not item.get("not_approver") and (
                 e.kind != "reaction" or item.get("answer") or item.get("choice")):
             # RT-6.42 step 9: a not_approver answer leaves the ask waiting (reminded, queue held).
-            _note_answer(uid, root, e.post.create_at, thread=e.kind != "reaction", questions=questions,
-                         chosen=str(item.get("chosen") or ""))
+            _note_answer(uid, root, e.post.create_at, thread=e.kind != "reaction", questions=questions)
         if raw:
             item |= {"post": e.post.json(), "channel": e.channel.json() if e.channel else None}
         else:

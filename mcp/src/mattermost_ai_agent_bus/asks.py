@@ -10,8 +10,6 @@ look at. It lives next to the other per-bot state, asks-<uid>.env:
     SEEN=<post_id>:<user_id>:<emoji>   a reaction already handed to the agent
     ANSWERED=<post_id>                 a trusted human answered it (RT-6.9): the
                                        wait is counted once, whatever comes next
-    CHOSEN=<post_id> <answer>          the answer a trusted human's reaction picked,
-                                       for the record on NATS; kept like TITLE
     TITLE=<post_id> <headline>         the ask's bold title: its links show it
                                        (RT-6.15 step 2); kept after resolve for
                                        the newest TITLES asks, open or not
@@ -212,17 +210,6 @@ def kinds(uid: str) -> dict[str, str]:
     return out
 
 
-def chosen_answers(uid: str) -> dict[str, str]:
-    """The answer a trusted human's reaction picked, per ask (record on NATS)."""
-    out: dict[str, str] = {}
-    for v in _lines(uid, "CHOSEN"):
-        pid, _, word = v.partition(" ")
-        if word.strip():
-            out.pop(pid, None)
-            out[pid] = word.strip()
-    return out
-
-
 def questions(uid: str) -> dict[str, str]:
     """The questions to the 👑 (RT-6.25), open or not: "<human> <0|1>" each,
     oldest first."""
@@ -237,8 +224,7 @@ def _write(uid: str, asks: dict[str, float], seen: set[str],
            whom: dict[str, str] | None = None, done: set[str] | None = None,
            title: dict[str, str] | None = None, question: dict[str, str] | None = None,
            answers: dict[str, str] | None = None,
-           queue: list[dict[str, Any]] | None = None, kind: dict[str, str] | None = None,
-           chosen: dict[str, str] | None = None) -> None:
+           queue: list[dict[str, Any]] | None = None, kind: dict[str, str] | None = None) -> None:
     if whom is None:
         whom = _read_all(uid)[2]
     if done is None:
@@ -255,10 +241,6 @@ def _write(uid: str, asks: dict[str, float], seen: set[str],
     for pid, val in (kind or {}).items():
         ks.pop(pid, None)
         ks[pid] = val
-    picks = chosen_answers(uid)
-    for pid, val in (chosen or {}).items():
-        picks.pop(pid, None)
-        picks[pid] = val
     qs = questions(uid)
     for pid, val in (question or {}).items():
         qs.pop(pid, None)
@@ -272,7 +254,6 @@ def _write(uid: str, asks: dict[str, float], seen: set[str],
     lines += [f"ANSWERS={p} {b}" for p, b in list(ans.items())[-TITLES:]]
     lines += [f"QUESTION={p} {v}" for p, v in list(qs.items())[-TITLES:]]
     lines += [f"KIND={p} {v}" for p, v in list(ks.items())[-TITLES:]]
-    lines += [f"CHOSEN={p} {v}" for p, v in list(picks.items())[-TITLES:]]
     lines += [f"QUEUED={e['target']} " + base64.b64encode(json.dumps(e).encode()).decode()
               for e in (queued(uid) if queue is None else queue)]
     path = _path(uid)
@@ -329,25 +310,22 @@ def add(uid: str, post_id: str, human: str = "", root_id: str = "", title: str =
            kind={post_id: "question"} if kind == "question" else None)
 
 
-def records(uid: str) -> list[tuple[str, int, str, str, str, bool, list[str], str]]:
+def records(uid: str) -> list[tuple[str, int, str, str, str, bool]]:
     """The open asks to someone, for the record on NATS (RT-6.43 step 5), oldest first: post
     id, when (seconds), the asked name ('' for none), the title, the kind (`approval` or
-    `question`), whether a trusted human answered it, the answers it was posted with and the
-    one a reaction picked ('' for none or a reply). A permission prompt, which names
+    `question`) and whether a trusted human answered it. A permission prompt, which names
     no one here, is left out."""
     asks, _, whom = _read_all(uid)
     done = _read_answered(uid)
     heads = titles(uid)
     ks = kinds(uid)
-    picks = chosen_answers(uid)
     out = []
     for pid, at in sorted(asks.items(), key=lambda kv: kv[1]):
         if pid not in whom:
             continue
         human = whom[pid].split(" ")[0]
         out.append((pid, int(at), "" if human == "-" else human, heads.get(pid, ""),
-                    ks.get(pid) or "approval", pid in done, answers_of(uid, pid),
-                    picks.get(pid, "")))
+                    ks.get(pid) or "approval", pid in done))
     return out
 
 
@@ -386,8 +364,7 @@ def expired(uid: str, post_id: str, at: float = 0, *, thread: bool = False) -> b
     return bool(hits) and all(when - t >= APPROVAL_SEC for t in hits)
 
 
-def answered(uid: str, post_id: str, at: float = 0, *, thread: bool = False,
-             chosen: str = "") -> tuple[str, int] | None:
+def answered(uid: str, post_id: str, at: float = 0, *, thread: bool = False) -> tuple[str, int] | None:
     """A trusted human's answer at `at` (default now) to an ask_human ask: with
     thread, to the asks in the thread with that root. Returns the ask and how
     many seconds it waited, once per ask (RT-6.9); None for a later answer, and
@@ -400,7 +377,7 @@ def answered(uid: str, post_id: str, at: float = 0, *, thread: bool = False,
     if not hits:
         return None
     t, pid = hits[0]
-    _write(uid, asks, seen, whom, done | {pid}, chosen={pid: " ".join(chosen.split())} if chosen else None)
+    _write(uid, asks, seen, whom, done | {pid})
     return pid, max(0, round((at or time.time()) - t))
 
 

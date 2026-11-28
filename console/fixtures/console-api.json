@@ -94,12 +94,7 @@
     "for_me": null,
     "may_answer": null,
     "agent_gone": false,
-    "thread_id": "8xqk3b1zwtrd5mfy6nqpe4hc1o",
-    "answers": [
-      "go",
-      "no-go"
-    ],
-    "chosen": null
+    "thread_id": "8xqk3b1zwtrd5mfy6nqpe4hc1o"
   },
   "me": {
     "username": "dembaca",

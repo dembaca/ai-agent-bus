@@ -174,11 +174,12 @@ export interface Ask {
   agentGone: boolean
   /** The thread the ask sits in, for the detail (GET /v1/threads/<id>). */
   threadId: string
-  /** The ask's own answers, in the order and words it was posted with; [] for
-   * none (an approval then reads go / no-go; the console invents no others). */
-  answers: string[]
-  /** The answer a reaction picked, null for none or a reply. */
-  chosen: string | null
+  /** The ask's own answers, in the order and words it was posted with. The wire
+   * does not carry them yet (the ask record needs a change decided separately,
+   * #285); absent or empty, an approval reads go / no-go and a question has none. */
+  answers?: string[]
+  /** The answer a reaction picked; absent as long as the answers are. */
+  chosen?: string | null
 }
 
 /** A thread from the server's memory, paged, when the detail opens

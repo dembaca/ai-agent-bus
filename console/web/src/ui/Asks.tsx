@@ -47,7 +47,7 @@ const APPROVAL_ANSWERS = ["go", "no-go"]
 const KEYS = ["A", "B", "C", "D"]
 
 export function answersOf(ask: Ask): string[] {
-  if (ask.answers.length > 0) return ask.answers
+  if (ask.answers && ask.answers.length > 0) return ask.answers
   return ask.kind === "approval" ? APPROVAL_ANSWERS : []
 }
 
@@ -56,7 +56,7 @@ export function answersOf(ask: Ask): string[] {
  * the bus did not say which one. */
 export function answeredText(ask: Ask): string {
   const list = answersOf(ask)
-  const at = ask.chosen === null ? -1 : list.indexOf(ask.chosen)
+  const at = ask.chosen == null ? -1 : list.indexOf(ask.chosen)
   if (at < 0) return "answered"
   return list.length > 2 ? `answered: ${KEYS[at]}` : `answered: ${list[at]}`
 }
@@ -165,7 +165,8 @@ export function Asks({ api, asks, cards = [], reads = {}, operator = null, onThr
 
 /** What the unfolded row shows of an ask: the need's decision and the ask's own
  * answers, as the bus carries them. The API sends no context, recommendation or
- * "where" (the ask record holds a title and the answers, never the ask's body), so
+ * "where" (the ask record holds a title, never the ask's body) and, until a record
+ * change is decided separately (#285), none of the ask's own answers either, so
  * none is drawn, and no caption stands over nothing. The answer box is shown to the
  * asked human and to those the asking agent trusts ("may answer"); everybody else
  * reads, and sees the answers as plain text. The box's buttons are disabled. */

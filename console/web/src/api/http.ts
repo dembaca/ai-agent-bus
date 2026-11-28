@@ -36,8 +36,6 @@ export interface WireAsk {
   may_answer: boolean | null
   agent_gone: boolean
   thread_id: string
-  answers: string[]
-  chosen: string | null
 }
 
 /** `GET /v1/me`: the operator in the ADR's spelling, and the console's
@@ -98,8 +96,6 @@ function askOf(row: WireAsk): Ask {
     mayAnswer: row.may_answer,
     agentGone: row.agent_gone,
     threadId: row.thread_id,
-    answers: row.answers,
-    chosen: row.chosen,
   }
 }
 

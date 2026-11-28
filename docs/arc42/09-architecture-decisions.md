@@ -6201,22 +6201,21 @@ of the console's credential and no answer binding is built or switched on.
 The read position per person and ask (the replies by others seen when the
 thread was last open) is kept in the browser's `localStorage` under the
 operator's name, since the server has no per-person store and no write path to
-the bus. Design contact's answers, same day: the console shows exactly the ask's
-own answers in their order and words (an approval posted with none reads go /
-no-go; nothing is invented); exactly two stand side by side without letters,
-more stand as rows with the key caps A to D; an answered ask says "answered: go"
-or "answered: A" in the state column; the red count is the replies by others
-since the operator last opened the thread, never the ask's own post or the
+the bus. Design contact's answers, same day: the answer box of an approval shows go / no-go
+(RT-6.11), a question has none, and nothing is invented; once the bus carries an
+ask's own answers, exactly two stand side by side without letters and more stand
+as rows with the key caps A to D (the layout is built and works with none); an
+answered ask says "answered" in the state column; the red count is the replies by
+others since the operator last opened the thread, never the ask's own post or the
 operator's own posts; the "for you" chip stays in a narrow window, above the
-need; an ask that is not the operator's to answer has no answer box and shows
-the answers as plain text; the thread button is a small speech-bubble SVG with
-the number alone. For this `GET /v1/asks` gained two read-only fields, `answers`
-and `chosen`, from the ask record the agent's MCP server publishes (the next release; the
-record gained the optional keys of the same names, [protocol.md](../protocol.md)):
-the console server reads no ask post, so the card's `Answer` line is not its
-source but the server's own `answers` of the ask. The ask record still holds no
-context, recommendation or "where" (its size and its rule of a title, no body),
-so none is shown and no caption stands over nothing; `GET /v1/threads/<id>`
+need; an ask that is not the operator's to answer has no answer box; the thread
+button is a small speech-bubble SVG with the number alone. The ask's own answers
+(and the one chosen) are not on the ask record, and **carrying them is not
+decided here**: it takes optional record keys that widen the rule of a title, no
+body, and that couple the console server's rollout to the agents' (an older
+console server refuses a whole record with unknown keys), so it is the owner's
+separate decision. The ask record holds no context, recommendation or "where"
+either, so none is shown and no caption stands over nothing; `GET /v1/threads/<id>`
 returns no posts yet, so nothing there is drawn. A restriction to an approval goes into the thread and the agent asks
 again (RT-6.11); there is no "go with a comment". Rejected: everything in the
 drawer without unfolding in the list, and a free "write to an agent" or a
