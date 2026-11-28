@@ -10,7 +10,7 @@ the numbers ``stats_report`` gives on the same lines: the bus overhead share of 
 per version over 7 days, the asks over 24 hours and 7 days, the bus traffic by category over
 7 days (RT-6.9 step 3: exact counts, grouped by ``stats.CATEGORY_OF``) and the tokens by
 category over 7 days (an estimate, marked so: one stacked bar of task work, bus overhead and
-coordination for the fleet, per version, per role and per harness). A missing value is ``None``
+coordination for the flock, per version, per role and per harness). A missing value is ``None``
 ("n/a", never 0); each report says the age of the oldest line it holds. The reports carry
 no agent's name and no report by home or owner, and every operator sees them over every
 agent. Only the per-agent rows (``agent_rows``, ``/v1/agent-stats``) carry an agent's
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Collection
@@ -32,14 +33,37 @@ log = logging.getLogger(__name__)
 
 WEEK_SEC = 7 * 86400
 DAY_SEC = 86400
-# Lines held at most: the stream keeps 500 per name and 64 MiB in all; a week's lines of a
-# large fleet fit, and a flood cannot grow the console's memory without bound.
-MAX_LINES = 50_000
+YEAR_SEC = 365 * 86400   # the STATS stream's age (RT-6.45): the longest time range
+# Lines held at most: the stream keeps 500 per name and 64 MiB in all; a year's lines of a
+# large flock fit, and a flood cannot grow the console's memory without bound.
+MAX_LINES = 100_000
+
+# The time ranges of the Stats page (#284): key, the label every card shows, seconds, the
+# bars' bucket. The range before it is the same length straight back.
+RANGES: dict[str, tuple[str, int, str]] = {
+    "24h": ("24 h", DAY_SEC, "hour"),
+    "7d": ("7 d", WEEK_SEC, "day"),
+    "30d": ("30 d", 30 * DAY_SEC, "day"),
+    "90d": ("90 d", 90 * DAY_SEC, "week"),
+    "12m": ("12 mo", YEAR_SEC, "month"),
+}
+DEFAULT_RANGE = "7d"
+BARS = {"day": {"7d": 7, "30d": 30}, "week": {"90d": 13}, "month": {"12m": 12}}
+HOURLY_NOTE = "hourly figures need agents that publish hourly"
+
+# The bus words of an agent's own posts in four groups (#284); a word outside the lists
+# (BLOCKED, DELEGATE, a plain post, "other") is organising.
+ACTIVITY_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("working", "working on it", ("ACK", "PROGRESS")),
+    ("finished", "finished something", ("RESULT", "DONE")),
+    ("asking", "asking a human", ("ask",)),
+    ("organising", "organising", ()),
+)
 
 
 @dataclass
 class StatsBook:
-    """The STATS lines of the last 7 days, by server time, decoded strictly."""
+    """The STATS lines of the last 365 days, by server time, decoded strictly."""
 
     stats_subject: str = "stats"
     # (server time, stream sequence, agent, line) in arrival order
@@ -81,7 +105,7 @@ class StatsBook:
             self._seen_at = (ack.time, time.monotonic())
         self._lines.append((ack.time, ack.stream_seq, t[1], line))
         self._seqs.add(ack.stream_seq)
-        edge = self.server_now - WEEK_SEC
+        edge = self.server_now - YEAR_SEC
         while self._lines and (self._lines[0][0] < edge or len(self._lines) > MAX_LINES):
             self._seqs.discard(self._lines.popleft()[1])
         return True
@@ -97,25 +121,34 @@ class StatsBook:
         edge = self.server_now - sec
         return [(at, seq, line) for at, seq, _agent, line in self._lines if at >= edge]
 
-    def reports(self) -> list[dict[str, Any]]:
-        """`/v1/stats`: the share per version over 7 days, the asks over 24 h and 7 days, the
-        bus traffic by category over 7 days."""
-        edge = self.server_now - WEEK_SEC
-        held = [at for at, _seq, _agent, _line in self._lines if at >= edge]
+    def _between(self, newer: float, older: float) -> list[dict[str, Any]]:
+        """The lines received from `older` seconds back up to `newer` seconds back."""
+        now = self.server_now
+        return [line for at, _seq, _agent, line in self._lines if now - older <= at < now - newer]
+
+    def reports(self, range_key: str = DEFAULT_RANGE) -> list[dict[str, Any]]:
+        """`/v1/stats?range=` (#284): over the chosen time range (24 h, 7, 30, 90 days, 12
+        months, 7 days by default) the activity bars, the bus overhead share per version, the
+        asks over the range and over the range before it, the bus traffic by category and the
+        tokens by category."""
+        label, sec, _bucket = RANGES[range_key]
+        held = [at for at, _seq, _agent, _line in self._lines if at >= self.server_now - sec]
         oldest = {"label": "age of the oldest line", "unit": "s",
                   "value": round(self.server_now - min(held)) if held else None}
-        week = self._within(WEEK_SEC)
+        week = self._within(sec)
         rows = _safe(stats.report, week) or []
         # The overhead segment of the token split (RT-6.9 step 3), in input-token
         # equivalents: a version without the split is n/a, never 0.
         share = [{"label": f"version {row['version']}", "unit": "%",
                   "value": _pct(((row.get("split") or {}).get("eq_pct") or {}).get(stats.OVERHEAD))}
                  for row in rows]
-        out = [{"id": "share-per-version", "title": "bus overhead share of all tokens, per version",
-                "window": "7 d", "note": stats.SPLIT_NOTE,
+        out = [self._activity(range_key),
+               {"id": "share-per-version", "title": "bus overhead share of all tokens, per version",
+                "window": label, "note": stats.SPLIT_NOTE,
                 "fields": [*share, {"label": "lines", "unit": "count", "value": len(week) or None}, oldest]}]
-        for rid, window, sec in (("asks-24h", "24 h", DAY_SEC), ("asks-7d", "7 d", WEEK_SEC)):
-            a = _safe(stats.asks_summary, self._within(sec)) or {}
+        for rid, window, lines in (("asks", label, week),
+                                   ("asks-before", f"the {label} before", self._between(sec, 2 * sec))):
+            a = _safe(stats.asks_summary, lines) or {}
             out.append({"id": rid, "title": "asks to humans", "window": window, "fields": [
                 {"label": "asks", "unit": "count", "value": a.get("asks")},
                 {"label": "answered", "unit": "count", "value": a.get("answered")},
@@ -126,7 +159,7 @@ class StatsBook:
                 oldest]})
         t = _safe(stats.traffic_summary, week) or {}
         ovh, coord = t.get("overhead") or [None, None], t.get("coordination") or [None, None]
-        out.append({"id": "traffic-by-category", "title": "bus traffic by category", "window": "7 d", "fields": [
+        out.append({"id": "traffic-by-category", "title": "bus traffic by category", "window": label, "fields": [
             {"label": "bus overhead, items", "unit": "count", "value": ovh[0]},
             {"label": "bus overhead, characters", "unit": "count", "value": ovh[1]},
             {"label": "coordination, items", "unit": "count", "value": coord[0]},
@@ -137,16 +170,43 @@ class StatsBook:
             {"label": "lines with these counts", "unit": "count", "value": t.get("lines")},
             {"label": "lines", "unit": "count", "value": len(week) or None},
             oldest]})
-        out.append(self._split_report(week, rows, oldest))
+        out.append(self._split_report(week, rows, oldest, label))
         return out
 
+    def _activity(self, range_key: str) -> dict[str, Any]:
+        """The first card (#284): the agents' own posts by bus word, one bar per bucket, the
+        words bundled into four groups (`ACTIVITY_GROUPS`) and every word kept for the hover.
+        A part counts in the bucket it was received in, by the server's time (UTC). A part
+        covers up to a day, so there are no hourly bars: "24 h" says why instead."""
+        label, _sec, bucket = RANGES[range_key]
+        card: dict[str, Any] = {
+            "id": "activity", "title": "Activity · what the agents posted", "window": label,
+            "fields": [], "activity": {
+                "bucket": bucket, "groups": [{"id": g, "label": name} for g, name, _w in ACTIVITY_GROUPS],
+                "bars": []}}
+        if bucket == "hour":
+            card["activity"]["unavailable"] = HOURLY_NOTE
+            return card
+        starts = _bucket_starts(self.server_now, bucket, BARS[bucket][range_key])
+        bars = [{"start": s, "groups": {g: 0 for g, _n, _w in ACTIVITY_GROUPS}, "words": {}}
+                for s in starts]
+        for at, _seq, _agent, line in self._lines:
+            if at < starts[0]:
+                continue
+            i = max(i for i, s in enumerate(starts) if s <= at)
+            for word, n in _words(line):
+                bars[i]["words"][word] = bars[i]["words"].get(word, 0) + n
+                bars[i]["groups"][_group_of(word)] += n
+        card["activity"]["bars"] = bars
+        return card
+
     def _split_report(self, week: list[dict[str, Any]], rows: list[dict[str, Any]],
-                      oldest: dict[str, Any]) -> dict[str, Any]:
+                      oldest: dict[str, Any], window: str) -> dict[str, Any]:
         """The tokens by category over 7 days (RT-6.9 step 3, RT-6.43 step 8): one stacked
-        bar for the fleet, per version, per role and per harness, in input-token
+        bar for the flock, per version, per role and per harness, in input-token
         equivalents (`segments`) and raw tokens (`raw`), each marked estimated."""
         fleet = _safe(stats.split_summary, week)
-        stacks = [_stack("fleet", fleet)]
+        stacks = [_stack("flock", fleet)]
         stacks += [_stack(f"version {row['version']}", row.get("split")) for row in rows]
         for key, name in (("role", stats.role_of), ("harness", lambda r: str(r.get("rt") or "other"))):
             groups: dict[str, list[dict[str, Any]]] = {}
@@ -155,7 +215,7 @@ class StatsBook:
             stacks += [_stack(f"{key} {g}", _safe(stats.split_summary, ls)) for g, ls in sorted(groups.items())]
         f = fleet or {}
         harnesses = ", ".join(f.get("harnesses") or []) or "none"
-        return {"id": "tokens-by-category", "title": "tokens by category", "window": "7 d",
+        return {"id": "tokens-by-category", "title": "tokens by category", "window": window,
                 "note": f"{stats.SPLIT_NOTE}; from {f.get('lines', 0)} of {len(week)} lines ({harnesses})",
                 "fields": [{"label": "lines with the split", "unit": "count", "value": f.get("lines")},
                            {"label": "lines", "unit": "count", "value": len(week) or None},
@@ -186,6 +246,41 @@ class StatsBook:
                 groups.setdefault(agent, []).append((at, line))
         return [_safe(lambda rs, a=agent: _row(a, rs, day), rows) or _row_na(agent)
                 for agent, rows in sorted(groups.items())]
+
+
+def _group_of(word: str) -> str:
+    for gid, _name, words in ACTIVITY_GROUPS:
+        if word in words:
+            return gid
+    return "organising"
+
+
+def _words(line: dict[str, Any]) -> list[tuple[str, int]]:
+    """A part's own posts by bus word: (word, count), counts only; none for a part without."""
+    pw = line.get("post_words")
+    if not isinstance(pw, dict):
+        return []
+    return [(w, int(v[0])) for w, v in pw.items() if isinstance(v, list) and v and v[0]]
+
+
+def _bucket_starts(now: float, bucket: str, n: int) -> list[float]:
+    """The start (UTC, epoch seconds) of the last `n` buckets, the current one last: days from
+    midnight, weeks from Monday, months from the 1st."""
+    t = datetime.fromtimestamp(now, timezone.utc)
+    day = t.replace(hour=0, minute=0, second=0, microsecond=0)
+    if bucket == "day":
+        first = day - timedelta(days=n - 1)
+        return [(first + timedelta(days=i)).timestamp() for i in range(n)]
+    if bucket == "week":
+        monday = day - timedelta(days=day.weekday())
+        first = monday - timedelta(weeks=n - 1)
+        return [(first + timedelta(weeks=i)).timestamp() for i in range(n)]
+    out = []
+    y, m = t.year, t.month
+    for _ in range(n):
+        out.append(datetime(y, m, 1, tzinfo=timezone.utc).timestamp())
+        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    return out[::-1]
 
 
 def _row(agent: str, rows: list[tuple[float, dict[str, Any]]], day: float) -> dict[str, Any]:

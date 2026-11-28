@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import auth, build, config, httpd, telemetry
+from . import auth, build, config, httpd, stats_view, telemetry
 from .metrics_service import MetricsService
 from .auth import Endpoints
 from .fleet import Fleet
@@ -416,8 +416,11 @@ class Console:
             # operator's anchor; the per-agent rows only of own or trusted agents,
             # the aggregate reports over every agent (ADR-015 point 15)
             view = self._view(self._session_token(headers))
+            span = query.get("range", stats_view.DEFAULT_RANGE)
+            if path == "/v1/stats" and span not in stats_view.RANGES:
+                return httpd.Response.text("range: one of " + ", ".join(stats_view.RANGES), 400)
             payload = (view.asks() if path == "/v1/asks"
-                       else view.stats.reports() if path == "/v1/stats"
+                       else view.stats.reports(span) if path == "/v1/stats"
                        else view.agent_stats())
             return httpd.Response.json(payload, headers=API_HEADERS)
         if path == "/v1/groups":

@@ -73,7 +73,11 @@ image.
     under the operator's name; a storage that refuses is no error): the panel
     open or folded, the grouping, the folded groups and the scope.
   - **Asks** with *for you* / *may answer*, and **Stats** (formerly Reports) —
-    counts and seconds only, a missing field shows as `n/a`, never as 0.
+    one time range at the top right (24 h, 7, 30, 90 days, 12 months) for
+    every card, the first card the activity chart (stacked bars of the agents'
+    own posts in four groups, the exact bus words on hovering a bar; "24 h"
+    says hourly figures need agents that publish hourly); counts and seconds
+    only, a missing field shows as `n/a`, never as 0.
   - **The detail** of an agent or an ask is a drawer from the right, about
     half the width (the whole width below 800 px), not modal: the page behind
     stays usable, a click on another agent swaps the content, the cross, Esc or

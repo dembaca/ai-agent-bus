@@ -621,6 +621,20 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
 
 ### Changed
 
+- **Stats has a time range and an activity chart** (#284, ADR-015 addition of
+  2026-11-28, RT-6.43 step 8). A switch at the top right, 24 h, 7 days, 30 days,
+  90 days or 12 months, sets the range of every card, the per-version cards
+  included, and the line under the heading names it. "Asks to humans" shows the
+  range and the range before it. A new first card, "Activity · what the agents
+  posted", draws stacked bars of the agents' own posts: one bar per day (7 and 30
+  days), per week (90 days) or per month (12 months), in four groups, working on
+  it, finished something, asking a human and organising, with the exact bus words
+  on hovering a bar; people's posts are not in it. The console now reads the
+  whole STATS history: the login service's stats consumer of each login starts
+  365 days back instead of 7. "24 h" shows no bars and says "hourly figures need
+  agents that publish hourly": the STATS lines carry their counts by bus word per
+  part, at most a day, and a session publishes one part a day.
+
 - **The operator console opens on the agents list, with three views** (#283,
   ADR-015 points 3 and 6, RT-6.43 step 11). The console has Agents (the start
   page), Asks and Stats; the Overview page, the "Bus map" panel and the Graph

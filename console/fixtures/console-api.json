@@ -1,5 +1,5 @@
 {
-  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it — console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts; the report is one of /v1/stats as the app takes it; groups is /v1/groups?by=home&scope=mine for the card's own agent (#283).",
+  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it — console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts; the report is one of /v1/stats as the app takes it and activity is its first card (#284, ?range=7d); groups is /v1/groups?by=home&scope=mine for the card's own agent (#283).",
   "card": {
     "name": "oudzj4bhpl62iahctur5s5sf4",
     "displayName": "agent-himalia-nats-pilo-772844",
@@ -154,7 +154,7 @@
     ],
     "stacks": [
       {
-        "label": "fleet",
+        "label": "flock",
         "estimated": true,
         "segments": [
           {
@@ -306,6 +306,113 @@
         ]
       }
     ]
+  },
+  "activity": {
+    "id": "activity",
+    "title": "Activity \u00b7 what the agents posted",
+    "window": "7 d",
+    "fields": [],
+    "activity": {
+      "bucket": "day",
+      "groups": [
+        {
+          "id": "working",
+          "label": "working on it"
+        },
+        {
+          "id": "finished",
+          "label": "finished something"
+        },
+        {
+          "id": "asking",
+          "label": "asking a human"
+        },
+        {
+          "id": "organising",
+          "label": "organising"
+        }
+      ],
+      "bars": [
+        {
+          "start": 1763424000.0,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763510400.0,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763596800.0,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763683200.0,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763769600.0,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763856000.0,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763942400.0,
+          "groups": {
+            "working": 5,
+            "finished": 2,
+            "asking": 1,
+            "organising": 3
+          },
+          "words": {
+            "ACK": 3,
+            "PROGRESS": 2,
+            "RESULT": 1,
+            "DONE": 1,
+            "ask": 1,
+            "TASK": 1,
+            "plain": 2
+          }
+        }
+      ]
+    }
   },
   "agentStats": [
     {

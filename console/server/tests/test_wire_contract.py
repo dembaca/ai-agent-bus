@@ -200,6 +200,25 @@ def test_the_report_the_fixture_states() -> None:
     assert report == FIXTURE["report"]
 
 
+def test_the_activity_card_the_fixture_states() -> None:
+    """#284: the activity card of `/v1/stats?range=7d` (`reports()[0]`) from a protocol line
+    that carries `post_words`: seven daily bars, the four groups, the words of the hover."""
+    from mattermost_ai_agent_bus import stats
+    from console_server.stats_view import StatsBook
+    from test_asks_stats import STATS_CONSUMER
+
+    line = {"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 2, "rt": "claude-code", "kind": "session",
+            "min": 1440, "post_words": {"ACK": [3, 30], "PROGRESS": [2, 40], "RESULT": [1, 90],
+                                        "DONE": [1, 20], "ask": [1, 60], "TASK": [1, 70], "plain": [2, 80]}}
+    book = StatsBook()
+    body = stats.nats_body(line)
+    assert body is not None
+    assert book.on_delivery(f"stats.{FIXTURE['card']['name']}", body,
+                            f"$JS.ACK.STATS.{STATS_CONSUMER}.1.1.1.1763980800000000000.0",
+                            "STATS", STATS_CONSUMER)
+    assert book.reports("7d")[0] == FIXTURE["activity"]
+
+
 def test_the_agent_stats_row_the_fixture_states() -> None:
     """/v1/agent-stats (#201): the row as the server sends it, one per agent, from the
     same protocol line as the report above — the token sums of both windows and the

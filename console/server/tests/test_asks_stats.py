@@ -178,8 +178,11 @@ def test_the_two_reports_are_stats_reports_numbers() -> None:
     older = LINE | {"sid": "aaaaaaaaaaaa", "v": "0.100.0", "asks": 5, "asks_answered": 5,
                     "ask_wait_sec": 50, "ask_wait_max_sec": 20, "tok": LINE["tok"] | SPLIT}
     book = book_with((A, older, NOW - 3 * 86400), (B, LINE, NOW - 600))
-    share, day, week, _traffic, _split = book.reports()
-    assert (share["window"], day["window"], week["window"]) == ("7 d", "24 h", "7 d")
+    _activity, share, week, before, _traffic, _split = book.reports()
+    _activity, _share, day, _before, _t, _s = book.reports("24h")
+    assert (share["window"], day["window"], week["window"], before["window"]) == (
+        "7 d", "24 h", "7 d", "the 7 d before")
+    assert fields(before)["asks"] is None
     lines = [stats.decode_line(stats.nats_body(older) or b""), stats.decode_line(stats.nats_body(LINE) or b"")]
     # The overhead segment of the token split; a version without it n/a, never 0.
     by_version = {row["version"]: (row["split"] or {}).get("eq_pct", {}).get("overhead")
@@ -239,9 +242,9 @@ def test_the_tokens_by_category_are_stats_reports_numbers() -> None:
     rows = {row["version"]: row["split"] for row in stats.report(lines)}
     bars = {s["label"]: s for s in report["stacks"]}
     assert report["window"] == "7 d" and "estimated" in report["note"] and "from 1 of 3 lines (claude-code)" in report["note"]
-    assert set(bars) == {"fleet", "version 0.102.0", "role worker", "harness claude-code"}
+    assert set(bars) == {"flock", "version 0.102.0", "role worker", "harness claude-code"}
     assert all(s["estimated"] is True for s in report["stacks"])
-    for label, split in (("fleet", want), ("version 0.102.0", rows["0.102.0"])):
+    for label, split in (("flock", want), ("version 0.102.0", rows["0.102.0"])):
         eq = {seg["category"]: (seg["value"], seg["percent"]) for seg in bars[label]["segments"]}
         raw = {seg["category"]: (seg["value"], seg["percent"]) for seg in bars[label]["raw"]}
         assert eq == {c: (split["eq"][c], split["eq_pct"][c]) for c in stats.SPLIT_CATEGORIES}
@@ -266,7 +269,7 @@ def test_forged_split_values_stay_within_0_to_100() -> None:
         assert all(0 <= s["percent"] <= 100 and s["value"] >= 0 for s in segs)
     raw = {s["category"]: s["value"] for s in bar["raw"]}
     assert raw == {"task": 0, "overhead": 1000 + 5, "coordination": 95}
-    assert 0 <= fields(reports[0])["version 0.101.0"] <= 100
+    assert 0 <= fields(reports[1])["version 0.101.0"] <= 100
 
 
 def test_an_imported_line_stays_out_of_the_reports(caplog) -> None:
@@ -281,14 +284,14 @@ def test_an_imported_line_stays_out_of_the_reports(caplog) -> None:
         for seq, body in ((2, stats.nats_body(LINE) or b""), (3, old_format)):
             assert not book.on_delivery("stats.import.agent-mac-ai-agent-1", body,
                                         ack("STATS", STATS_CONSUMER, seq, NOW), "STATS", STATS_CONSUMER)
-    assert json.dumps(book.reports()) == before and fields(book.reports()[0])["lines"] == 1
+    assert json.dumps(book.reports()) == before and fields(book.reports()[1])["lines"] == 1
     assert caplog.text == ""
 
 
 def test_a_line_with_text_is_dropped_and_old_lines_leave(caplog) -> None:
     """RT-6.43 step 8: a string outside the four fields drops the whole line, with a warning
-    that carries none of it; a line older than 7 days leaves the book."""
-    book = book_with((A, LINE, NOW - 8 * 86400))
+    that carries none of it; a line older than 365 days leaves the book."""
+    book = book_with((A, LINE, NOW - 366 * 86400))
     bad = json.dumps(LINE | {"turns": "see https://evil.example"}).encode()
     with caplog.at_level(logging.WARNING):
         assert not book.on_delivery(f"stats.{A}", bad, ack("STATS", STATS_CONSUMER, 2, NOW),
@@ -296,7 +299,7 @@ def test_a_line_with_text_is_dropped_and_old_lines_leave(caplog) -> None:
     assert "dropped" in caplog.text and "evil" not in caplog.text
     assert book.on_delivery(f"stats.{A}", stats.nats_body(LINE) or b"",
                             ack("STATS", STATS_CONSUMER, 3, NOW), "STATS", STATS_CONSUMER)
-    assert fields(book.reports()[0])["lines"] == 1  # the 8-day-old line is gone
+    assert fields(book.reports()[1])["lines"] == 1  # the 366-day-old line is gone
     # a subject that is not <stats>.<agent>, or a delivery of another consumer: nothing
     assert not book.on_delivery("stats.x.y", stats.nats_body(LINE) or b"",
                                 ack("STATS", STATS_CONSUMER, 4, NOW), "STATS", STATS_CONSUMER)
@@ -332,7 +335,7 @@ def test_a_replay_after_a_reconnect_counts_each_line_once() -> None:
     body = stats.nats_body(LINE) or b""
     for _replay in range(3):
         book.on_delivery(f"stats.{A}", body, ack("STATS", STATS_CONSUMER, 7, NOW), "STATS", STATS_CONSUMER)
-    assert fields(book.reports()[0])["lines"] == 1 and fields(book.reports()[1])["asks"] == 3
+    assert fields(book.reports()[1])["lines"] == 1 and fields(book.reports()[2])["asks"] == 3
 
 
 def test_a_report_that_cannot_be_computed_says_n_a(monkeypatch) -> None:
@@ -343,7 +346,7 @@ def test_a_report_that_cannot_be_computed_says_n_a(monkeypatch) -> None:
     monkeypatch.setattr(stats, "report", boom)
     monkeypatch.setattr(stats, "asks_summary", boom)
     reports = book.reports()
-    assert fields(reports[1])["asks"] is None and len(reports[0]["fields"]) == 2
+    assert fields(reports[2])["asks"] is None and len(reports[1]["fields"]) == 2
 
 
 def test_a_share_is_held_to_0_to_100(monkeypatch) -> None:
@@ -353,7 +356,7 @@ def test_a_share_is_held_to_0_to_100(monkeypatch) -> None:
                         lambda lines: [{"version": "0.101.0", "split": {"eq_pct": {"overhead": 1.3e11}}}])
     monkeypatch.setattr(stats, "asks_summary", lambda lines: {"answered_pct": -7})
     reports = book.reports()
-    assert fields(reports[0])["version 0.101.0"] == 100 and fields(reports[1])["answered share"] == 0
+    assert fields(reports[1])["version 0.101.0"] == 100 and fields(reports[2])["answered share"] == 0
 
 
 def test_a_line_with_the_plugins_split_counts_in_the_tokens_by_category() -> None:
@@ -374,7 +377,7 @@ def test_a_line_with_the_plugins_split_counts_in_the_tokens_by_category() -> Non
     report = next(r for r in book.reports() if r["id"] == "tokens-by-category")
     bars = {s["label"]: s for s in report["stacks"]}
     assert "harness opencode" in bars and fields(report)["lines with the split"] == 1
-    assert {seg["category"]: seg["value"] for seg in bars["fleet"]["raw"]} == {
+    assert {seg["category"]: seg["value"] for seg in bars["flock"]["raw"]} == {
         "task": 550, "overhead": 330, "coordination": 220}
 
 
@@ -470,7 +473,7 @@ def test_agent_rows_only_of_own_or_trusted_agents() -> None:
     for anchor in (None, "carol", "-"):
         assert book.agent_rows(f.own_or_trusted(anchor)) == []
     # the aggregate reports stay over every agent
-    assert fields(book.reports()[0])["lines"] == 4
+    assert fields(book.reports()[1])["lines"] == 4
 
 
 def test_one_agent_row_that_cannot_be_computed_is_n_a(monkeypatch) -> None:
@@ -617,3 +620,52 @@ def test_the_hourly_buckets_change_no_report_and_old_lines_have_none(monkeypatch
                                      "STATS", STATS_CONSUMER)
     assert [line for _a, _s, line in older_console.within(86400)] == [want]
     assert older_console.reports() == held.reports()
+
+
+def test_the_time_range_applies_to_every_card_and_asks_show_the_range_before() -> None:
+    """RT-6.43 step 8, #284: `reports(range)` computes every card over the range; the asks
+    card shows the range and the range before it; 7 days is the default."""
+    book = book_with((A, LINE, NOW - 40 * 86400), (B, LINE, NOW - 3 * 86400), (C, LINE, NOW - 600))
+    assert [r["window"] for r in book.reports()] == ["7 d"] * 3 + ["the 7 d before"] + ["7 d"] * 2
+    got = {k: book.reports(k) for k in ("24h", "7d", "30d", "90d", "12m")}
+    assert [fields(r[1])["lines"] for r in got.values()] == [1, 2, 2, 3, 3]
+    assert fields(got["30d"][2])["asks"] == 6 and fields(got["30d"][3])["asks"] == 3   # the line of 40 days back
+    assert fields(got["90d"][3])["asks"] is None
+    assert [r["window"] for r in got["12m"]] == ["12 mo"] * 3 + ["the 12 mo before"] + ["12 mo"] * 2
+
+
+WORDS = {"ACK": [4, 10], "PROGRESS": [2, 10], "RESULT": [1, 5], "DONE": [3, 5], "ask": [2, 5],
+         "TASK": [1, 5], "HELLO": [1, 1], "plain": [5, 50], "BLOCKED": [1, 1]}
+
+
+def test_the_activity_bars_bundle_the_bus_words_in_four_groups() -> None:
+    """#284: one bar per day (7, 30 days), week (90 days) or month (12 months), the agents'
+    own posts by bus word in four groups with every word kept for the hover; a part counts
+    in the bucket it was received in; no names; 24 h says why it has no bars."""
+    book = book_with((A, LINE | {"post_words": WORDS}, NOW - 600), (B, LINE | {"post_words": {"ACK": [1, 1]}}, NOW - 3 * 86400),
+                     (C, LINE | {"post_words": {"DONE": [7, 1]}}, NOW - 100 * 86400), (A, LINE, NOW - 50))
+    act = book.reports("7d")[0]
+    assert act["id"] == "activity" and act["activity"]["bucket"] == "day" and len(act["activity"]["bars"]) == 7
+    assert [g["label"] for g in act["activity"]["groups"]] == [
+        "working on it", "finished something", "asking a human", "organising"]
+    last = act["activity"]["bars"][-1]
+    assert last["groups"] == {"working": 6, "finished": 4, "asking": 2, "organising": 8}
+    assert last["words"]["plain"] == 5 and last["words"]["BLOCKED"] == 1
+    assert sum(b["groups"]["working"] for b in act["activity"]["bars"]) == 7   # the day-3 ACK too
+    assert [len(book.reports(k)[0]["activity"]["bars"]) for k in ("30d", "90d", "12m")] == [30, 13, 12]
+    assert book.reports("90d")[0]["activity"]["bucket"] == "week"
+    assert sum(b["groups"]["finished"] for b in book.reports("12m")[0]["activity"]["bars"]) == 4 + 7
+    assert sum(b["groups"]["finished"] for b in book.reports("90d")[0]["activity"]["bars"]) == 4
+    hour = book.reports("24h")[0]["activity"]
+    assert hour["bucket"] == "hour" and hour["bars"] == [] and "hourly" in hour["unavailable"]
+    assert A not in json.dumps(book.reports("12m")) and B not in json.dumps(book.reports("12m"))
+
+
+def test_buckets_start_at_midnight_monday_and_the_first_of_the_month_utc() -> None:
+    from datetime import datetime, timezone
+    from console_server.stats_view import _bucket_starts
+    now = datetime(2026, 3, 4, 15, 0, tzinfo=timezone.utc).timestamp()   # a Wednesday
+    iso = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%d")  # noqa: E731
+    assert iso(_bucket_starts(now, "day", 7)[-1]) == "2026-03-04"
+    assert iso(_bucket_starts(now, "week", 13)[-1]) == "2026-03-02"
+    assert [iso(t) for t in _bucket_starts(now, "month", 3)] == ["2026-01-01", "2026-02-01", "2026-03-01"]

@@ -107,7 +107,7 @@ async def test_asks_and_stats_answer_empty_until_nats_carries_them(
     assert status == 200 and json.loads(body) == []
     status, _headers, body = await get(console, "/v1/stats")
     reports = json.loads(body)
-    assert status == 200 and [r["id"] for r in reports] == ["share-per-version", "asks-24h", "asks-7d",
+    assert status == 200 and [r["id"] for r in reports] == ["activity", "share-per-version", "asks", "asks-before",
                                                                  "traffic-by-category", "tokens-by-category"]
     assert all(f["value"] is None for r in reports for f in r["fields"])
     # the per-agent rows: none without the operator's anchor (ADR-015 point 15)
