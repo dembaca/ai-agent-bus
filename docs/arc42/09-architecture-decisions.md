@@ -4436,8 +4436,8 @@ which each piece reads for itself.
        back. Lab: a person posts while the session is stopped; after its
        start the post and its thread are there, and an ask answered
        meanwhile counts.
-     - Built in part (Unreleased, #244 piece 5a, the bridge's side). The
-       payload is `{"channel": "<channel token>", "since": <epoch ms>,
+     - Built in part (Unreleased, #244 pieces 5a and 5b, the bridge's side
+       and the session's). The payload is `{"channel": "<channel token>", "since": <epoch ms>,
        "limit": <posts>}` or, instead of since, `"thread": "<Mattermost
        post id>"`; `limit` is 1 to 200, 200 without it, and an unknown key
        is refused. The channel is the token the membership subject and
@@ -4481,8 +4481,14 @@ which each piece reads for itself.
        names `next`, the create_at to ask on from (a thread read names
        none: `more` alone says it goes on). While the bridge's
        account records are not read yet, the read is refused (`ask
-       again`). Not built: the MCP server's side (piece 5b), so a session
-       still reads people on Mattermost; and the read of a post's files,
+       again`). The session's side (piece 5b) is built too: with the switch
+       on, its reads of that channel's people (`channel_posts`,
+       `list_recent`, `posts_after`, a person's `thread`, `reactions`) come
+       from this answer and make no Mattermost call for the channel; a
+       person's post is `hu:<anchor>` with the record judged as a live
+       event's (a stale one names the person and approves nothing), a bot's
+       post stays Mattermost's (an ask), `more`/`next` pages forward and a
+       failed answer reads nothing. Not built: the read of a post's files,
        which piece 8 owns (a post's `file_count` is in the answer, its
        `mm` id lets `get_file` fetch them).
   6. **Asks to humans and the answer** (RT-6.11), the reply and the
