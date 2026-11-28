@@ -57,13 +57,43 @@ func (h *Handler) Poll(ctx context.Context) {
 		list = append(list, due{k, p})
 	}
 	h.mu.Unlock()
+	// One read per (poster, DM): prompts that share a DM and a bot take the posts
+	// since the oldest of them, and each filters what is its own.
+	type group struct {
+		poster Poster
+		dm     string
+	}
+	var order []group
+	groups := map[group][]due{}
 	for _, d := range list {
+		g := group{d.p.poster, d.p.dm}
+		if _, ok := groups[g]; !ok {
+			order = append(order, g)
+		}
+		groups[g] = append(groups[g], d)
+	}
+	for _, g := range order {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := h.pollOne(ctx, d.k, d.p); err != nil && ctx.Err() == nil {
-			h.warn("poll "+d.k.agent+"/"+d.k.id, "permission: a prompt's DM was not carried; retrying",
-				"agent", d.k.agent, "error", err)
+		ds := groups[g]
+		since := ds[0].p.createAt
+		for _, d := range ds[1:] {
+			since = min(since, d.p.createAt)
+		}
+		posts, readErr := g.poster.PostsSince(ctx, g.dm, since)
+		for _, d := range ds {
+			if ctx.Err() != nil {
+				return
+			}
+			err := readErr
+			if err == nil {
+				err = h.pollOne(ctx, d.k, d.p, posts)
+			}
+			if err != nil && ctx.Err() == nil {
+				h.warn("poll "+d.k.agent+"/"+d.k.id, "permission: a prompt's DM was not carried; retrying",
+					"agent", d.k.agent, "error", err)
+			}
 		}
 	}
 }
@@ -92,11 +122,9 @@ func answerRE(id string) *regexp.Regexp {
 	return regexp.MustCompile(`(?i)^\s*(y|yes|n|no)\s+` + regexp.QuoteMeta(id) + `\s*$`)
 }
 
-func (h *Handler) pollOne(ctx context.Context, k key, p *prompt) error {
-	posts, err := p.poster.PostsSince(ctx, p.dm, p.createAt)
-	if err != nil {
-		return err
-	}
+// pollOne carries what is the prompt's answer among posts, the DM's posts
+// since this prompt (or an older one sharing the DM).
+func (h *Handler) pollOne(ctx context.Context, k key, p *prompt, posts []mm.Post) error {
 	re := answerRE(k.id)
 	subject := h.BusPrefix + ".hu.dm." + k.agent + "." + inbound.SenderToken(p.anchor)
 	var firstErr error

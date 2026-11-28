@@ -3359,6 +3359,11 @@ async def _permission_request(params: dict[str, Any]) -> None:
         if port is not None and port.piece10():
             await _permission_over_nats(port, params, rid, tool)
             return
+        if port is not None and port.permission_undecided():
+            # RT-6.13 step 7: a switch that cannot be told off keeps the terminal, never Mattermost.
+            log.info("permission prompt %s stays in the terminal: plan B's switch is not read", rid)
+            permission.note("not relayed", rid, tool, "plan B switch not read")
+            return
         responsible, _ = await _responsible_and_trusted(client)
         trusted = await client.trusted_humans()
         to = next((i for i, n in trusted.items()
@@ -3449,6 +3454,13 @@ async def _permission_answer(anchor: str, message: natsbus.PersonMessage) -> Non
         return
     if anchor != pending.to:
         permission.note("verdict refused", rid, pending.tool, "not the responsible human")
+        return
+    if (message.kind == "post" and message.mm_root is not None and message.mm_root != pending.post_id) \
+            or (message.kind == "reaction" and message.mm != pending.post_id):
+        # A reply counts in the prompt's own thread only. A top-level `yes <id>` names the id
+        # alone: one bridge serves the home, and it carries such a post only from the DM of
+        # that very prompt (RT-6.13 step 7).
+        permission.note("verdict refused", rid, pending.tool, "not under the prompt")
         return
     if not port.permission_approves(anchor):
         permission.note("verdict refused", rid, pending.tool, "not a trusted approver")

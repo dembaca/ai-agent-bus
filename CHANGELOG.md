@@ -37,12 +37,17 @@ before 0.5.0 are described in the git history.
   (`internal/permission`) DMs the one account the login service binds to that person
   (piece 4's proof when on), under the agent's own bot or the bridge bot, polls the DM
   and carries only that person's reaction on the prompt, reply in its thread or
-  `yes`/`no` naming its id onto the lane. A verdict counts only from the very person the
+  `yes`/`no` naming its id onto the lane. It takes a prompt only from an agent whose
+  fresh attestation (its new consumer `bridge_attest`) states that home, with a fresh
+  membership there, for its attested owner or a trusted human, within 16 open prompts
+  per agent, 32 per owner and 6 a minute, refused beyond. A switch the session cannot
+  tell off keeps the terminal. A verdict counts only from the very person the
   prompt went to, an attested trusted human who approves, within 24 h; a `yes <id>` read
   on Mattermost never answers such a prompt. The lines under the prompt go to the bridge
   (op `note`). With the switch off nothing changes. Rollout: the bridge and every host
   of the home on this release before the switch goes on; piece 4 with it and the
-  bridge's admin token, else the bridge refuses every prompt; the bridge keeps open
+  bridge's admin token, and the bridge's right to create `bridge_attest`, else the bridge
+  refuses every prompt; the bridge keeps open
   prompts in memory, so a restart drops their answers (the terminal still answers).
 
 ### Breaking

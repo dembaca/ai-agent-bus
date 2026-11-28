@@ -359,6 +359,9 @@ envelope (kind `permission`), in one of two payloads, strict JSON:
 | `close` | note | `true`: the bridge forgets the prompt once the line is posted |
 
 The answers are `{"v": 1, "post": "<Mattermost post id>"}` and `{"v": 1, "posted": true}`.
+The bridge takes either only from an agent whose fresh attestation states `channel` as
+its home, with a fresh membership there, and a prompt only for `to` its attested owner
+or one of its trusted humans, within its limits (§6.13 step 7).
 The person's answer comes back on `<bus>.hu.dm.<agent>.<anchor>` in the format of a
 person's event above, with `mm` the person's post, or the prompt post for a reaction,
 and `mm_root` the prompt post for a reply in its thread; only the bridge may publish

@@ -14,6 +14,7 @@ import (
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/requests"
 )
 
@@ -126,7 +127,35 @@ func (p *fakePub) Publish(subject string, data []byte) error {
 	return nil
 }
 
+// fakeAttest is the attestations by agent; an agent not in by gets att, unless
+// none is set.
+type fakeAttest struct {
+	att  *presence.Attestation
+	by   map[string]presence.Attestation
+	gone map[string]bool
+}
+
+func (f *fakeAttest) Get(agent string) (presence.Attestation, bool) {
+	if f.gone[agent] {
+		return presence.Attestation{}, false
+	}
+	if a, ok := f.by[agent]; ok {
+		return a, true
+	}
+	if f.att != nil {
+		return *f.att, true
+	}
+	return presence.Attestation{}, false
+}
+
+// fakePresence says which (channel, agent) are fresh members; none set: all.
+type fakePresence struct{ not map[string]bool }
+
+func (f fakePresence) MemberFresh(channel, name string) bool { return !f.not[channel+"/"+name] }
+
 type rig struct {
+	att    *fakeAttest
+	pres   fakePresence
 	h      *Handler
 	bridge *fakePoster
 	own    *fakePoster
@@ -150,7 +179,9 @@ func newRig(t *testing.T) *rig {
 		sw:    switches{Piece: true},
 		now:   time.Unix(1_700_000_000, 0),
 	}
-	r.h = &Handler{Log: quiet, Homes: []string{"home"}, Switches: r.sw, Accounts: r.acc, Users: r.users,
+	r.att = &fakeAttest{att: &presence.Attestation{Owner: "alice", Trusted: []string{"bob"}, Home: "home", HasHome: true}}
+	r.pres = fakePresence{not: map[string]bool{}}
+	r.h = &Handler{Log: quiet, Attest: r.att, Presence: r.pres, Homes: []string{"home"}, Switches: r.sw, Accounts: r.acc, Users: r.users,
 		Bridge: r.bridge, Publisher: r.pub, BusPrefix: "bus", Now: func() time.Time { return r.now }}
 	return r
 }
@@ -277,12 +308,17 @@ func TestRT613PlanBPiece10DuplicateAndLimits(t *testing.T) {
 	if _, err := r.do("b", prompt10(rid, "alice", "alice", "x")); err != nil {
 		t.Fatal(err)
 	}
-	// a 17th of one agent drops its oldest
+	// a 17th open prompt of one agent is refused, none is evicted (the rate
+	// limit is kept clear by the clock running on)
 	ids := []string{"bbbba", "bbbbb", "bbbbc", "bbbbd", "bbbbe", "bbbbf", "bbbbg", "bbbbh", "bbbbi", "bbbbj", "bbbbk", "bbbbm", "bbbbn", "bbbbo", "bbbbp", "bbbbq", "bbbbr"}
-	for _, id := range ids {
-		r.now = r.now.Add(time.Second)
-		if _, err := r.do("c", prompt10(id, "alice", "alice", "x")); err != nil {
+	for i, id := range ids {
+		r.now = r.now.Add(20 * time.Second)
+		_, err := r.do("c", prompt10(id, "alice", "alice", "x"))
+		if i < PerAgent && err != nil {
 			t.Fatal(err)
+		}
+		if i == PerAgent && (err == nil || !strings.Contains(err.Error(), "too many open prompts of this agent")) {
+			t.Fatalf("17th: %v", err)
 		}
 	}
 	n := 0
@@ -294,13 +330,19 @@ func TestRT613PlanBPiece10DuplicateAndLimits(t *testing.T) {
 	if n != PerAgent {
 		t.Fatalf("agent c has %d open, want %d", n, PerAgent)
 	}
-	if _, ok := r.h.open[key{"c", "bbbba"}]; ok {
-		t.Fatal("the oldest stayed")
+	if _, ok := r.h.open[key{"c", "bbbba"}]; !ok {
+		t.Fatal("the oldest was evicted")
+	}
+	for k := range r.h.open {
+		if k.agent == "c" {
+			delete(r.h.open, k)
+		}
 	}
 	// 256 in all, then a refusal
 	for i := 0; len(r.h.open) < Total; i++ {
-		r.h.open[key{fmt.Sprintf("x%d", i/PerAgent), fmt.Sprintf("id%d", i)}] = &prompt{opened: r.now, home: "home"}
+		r.h.open[key{fmt.Sprintf("x%d", i/PerAgent), fmt.Sprintf("id%d", i)}] = &prompt{opened: r.now, home: "home", owner: fmt.Sprint("o", i/PerOwner)}
 	}
+	r.now = r.now.Add(time.Hour / 2)
 	if _, err := r.do("zz", prompt10("cccca", "alice", "alice", "x")); err == nil || !strings.Contains(err.Error(), "too many open prompts") {
 		t.Fatalf("full: %v", err)
 	}

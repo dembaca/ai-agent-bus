@@ -384,3 +384,42 @@ def test_a_bridge_answer_without_a_post_id_is_refused(world: World, monkeypatch:
     monkeypatch.setattr(requests, "request", request)
     with pytest.raises(NatsPortError, match="names no Mattermost post"):
         asyncio.run(world.port.permission_prompt("abcde", "dembaca", "dembaca", "text"))
+
+
+# --- the review's fixes ---------------------------------------------------------------------
+
+async def test_on_a_switch_not_read_yet_keeps_the_terminal(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.13 step 7: before plan B's records are read, piece 10 reads off but is not known off:
+    the prompt stays in the terminal, no Mattermost DM."""
+    monkeypatch.delenv(planb.TEST_ENV, raising=False)
+    monkeypatch.setattr(planb, "known", lambda: False)
+    await server._permission_request(REQUEST)
+    assert world.requests == [] and world.inner.mm_calls == [] and server._relay.get("abcde") is None
+    assert ("not relayed", "abcde", "plan B switch not read") in world.notes
+
+
+async def test_on_a_switch_seen_on_and_then_off_keeps_the_terminal(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.13 step 7: piece 10 read on once in this session, then off (a stale record): terminal."""
+    assert world.port.piece10() is True
+    monkeypatch.delenv(planb.TEST_ENV, raising=False)
+    monkeypatch.setattr(planb, "known", lambda: True)
+    await server._permission_request(REQUEST)
+    assert world.requests == [] and world.inner.mm_calls == []
+    assert ("not relayed", "abcde", "plan B switch not read") in world.notes
+
+
+async def test_off_and_known_off_the_port_takes_the_old_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    port, _inner, _fake = _world(monkeypatch, on="")
+    monkeypatch.setattr(planb, "known", lambda: True)
+    assert port.piece10() is False and port.permission_undecided() is False
+
+
+async def test_on_a_reply_outside_the_prompts_thread_approves_nothing(world: World) -> None:
+    """RT-6.13 step 7: a reply counts only in the prompt's own thread."""
+    await _prompted(world)
+    await server._permission_answer("dembaca", PersonMessage("post", ANSWER, "dembaca", text="yes abcde",
+                                                             mm_root="z" * 26))
+    assert _verdicts(world) == [] and ("verdict refused", "abcde", "not under the prompt") in world.notes
+    await server._permission_answer("dembaca", PersonMessage("post", ANSWER, "dembaca", text="yes abcde",
+                                                             mm_root=PROMPT))
+    assert _verdicts(world) == [{"request_id": "abcde", "behavior": "allow"}]

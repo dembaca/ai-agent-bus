@@ -118,8 +118,20 @@ func run(log *slog.Logger) error {
 		// bridge bot; the human's reply or reaction there goes back over NATS on
 		// <bus>.hu.dm.<agent>.<anchor token>. A proof of the binding in a home with
 		// piece 4 on needs the admin token (without it, no prompt is sent there).
+		// Whose request it is and whom it may reach come from the login service's
+		// attestations of the agents, read through the bridge's own consumer.
+		attests := &presence.Attestations{Now: snapshot.ServerNow}
+		ar := &presence.AttestReader{Log: log, Deliver: cfg.Deliver + ".attest", Stream: "PRESENCE", Into: attests}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := ar.Run(ctx, nc); err != nil && ctx.Err() == nil {
+				log.Error("bridge: the attestations stopped", "error", err)
+			}
+		}()
 		perm := &permission.Handler{Log: log, Homes: cfg.Homes, Switches: planb, Accounts: accounts,
-			Bridge: client, Publisher: inbound.Confirmed{NC: nc}, BusPrefix: cfg.BusPrefix}
+			Bridge: client, Publisher: inbound.Confirmed{NC: nc}, BusPrefix: cfg.BusPrefix,
+			Presence: snapshot, Attest: attests}
 		if cfg.AdminToken != "" {
 			perm.Users = mm.New(cfg.MMURL, cfg.AdminToken)
 		}

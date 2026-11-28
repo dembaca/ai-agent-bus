@@ -4722,8 +4722,12 @@ which each piece reads for itself.
         attestation), only while the bridge's fresh signal names piece 10
         in `pieces`, else it stays in the terminal and `bus_info` says so;
         no Mattermost call either way. The bridge (`internal/permission`)
-        DMs the one account the login service binds to the anchor (piece
-        4's proof when on), under the agent's own bot or the bridge bot,
+        takes it only from an agent whose fresh attestation (read through
+        its own consumer `bridge_attest`) states that home, with a fresh
+        membership there, for its attested owner or a trusted human, within
+        16 open prompts per agent, 32 per owner and 6 a minute, and DMs the
+        one account the login service binds to the anchor (piece 4's proof
+        when on), under the agent's own bot or the bridge bot,
         polls that DM and carries only that account's reaction on the
         prompt, reply in its thread or `yes`/`no` naming its id as a
         person's event on `<bus>.hu.dm.<agent>.<anchor>`; the session
@@ -4742,6 +4746,10 @@ which each piece reads for itself.
         piece 10, so no session sends it a prompt); piece 4 on there first
         or with it, and then the bridge's admin token
         (`CB_BRIDGE_MM_ADMIN_TOKEN_FILE`), else every prompt is refused;
+        the bridge's right to create `bridge_attest`
+        (`$JS.API.CONSUMER.CREATE.PRESENCE.bridge_attest.presence.attest.*.v1`,
+        `services/auth/nats-server.example.conf`) in the lab, else it reads
+        no attestation and refuses every prompt;
         the agents' own bots (RT-6.44), or the owner's word that prompts
         under the bridge bot are fine; the lab check, a prompt answered by
         DM, by reaction and from the terminal, and one after a bridge

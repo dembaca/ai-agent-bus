@@ -603,6 +603,7 @@ class NatsPort:
         # Plan B piece 10 (RT-6.13 step 7): a person's direct message carried by the bridge,
         # (anchor, message), for the permission relay's verdict; nothing else reads the lane.
         self.on_permission: Callable[[str, natsbus.PersonMessage], Awaitable[None]] | None = None
+        self._piece10_seen = False  # piece 10 read on once in this session (permission_undecided)
         # The adapter's guest list leaves the lobby out by this port's id of it (piece 12).
         if hasattr(inner, "lobby_lookup"):
             inner.lobby_lookup = self.lobby_channel_id
@@ -2977,10 +2978,23 @@ class NatsPort:
         RT-6.13 step 7): `planb.on(10, home)`. A switch that cannot be read counts as off: the
         old path, the Mattermost DM."""
         try:
-            return bool(self._s.home) and bool(planb.on(PERMISSION_PIECE, self._s.home))
-        except Exception as exc:  # noqa: BLE001 — in doubt off: the old path
-            log.info("nats: the permission switch was not read (%s): the old path", type(exc).__name__)
+            on = bool(self._s.home) and bool(planb.on(PERMISSION_PIECE, self._s.home))
+        except Exception as exc:  # noqa: BLE001 — in doubt off; permission_undecided says so
+            log.info("nats: the permission switch was not read (%s)", type(exc).__name__)
             return False
+        if on:
+            self._piece10_seen = True
+        return on
+
+    def permission_undecided(self) -> bool:
+        """Piece 10 reads off, but the session cannot tell it is off (RT-6.13 step 7): the plan B
+        records are not read yet (planb.known), or the switch read on earlier in this session
+        (a record that went stale, or was switched off since). Then a prompt stays in the
+        terminal: never the Mattermost DM for want of a reading."""
+        try:
+            return self._piece10_seen or not planb.known()
+        except Exception:  # noqa: BLE001 — in doubt undecided: the terminal
+            return True
 
     def permission_bridge(self) -> bool:
         """Whether a fresh signal of the bridge says it DMs permission prompts in this home and

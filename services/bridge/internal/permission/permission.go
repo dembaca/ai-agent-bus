@@ -18,6 +18,19 @@
 // The anchor's single Mattermost account is read from the login service's
 // records; in a home with plan B piece 4 on, its binding must also be proven
 // as inbound does (inbound.ProvenAnchor).
+//
+// Whose request it is, and whom it may reach (the agent names both, so neither
+// is taken on its word): a prompt or a note is refused unless the login
+// service's fresh attestation of the agent (presence.attest.<agent>.v1) states
+// a home equal to the request's channel and the agent announced a fresh
+// membership of that channel (presence.Snapshot.MemberFresh); both failures
+// say the same "not the agent's home". A prompt's target anchor must be the
+// attested owner or one of the attested trusted humans.
+//
+// The limits: at most PerAgent (16) open prompts per agent, PerOwner (32)
+// across the agents attested to one owner and Total (256), each refused with no
+// eviction of an older prompt; at most PerMinute (6) prompts a minute per agent
+// and per (agent, target anchor).
 package permission
 
 import (
@@ -37,6 +50,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/requests"
 )
 
@@ -48,8 +62,12 @@ const (
 	MaxPromptText = 16000
 	MaxNoteText   = 2000
 	PerAgent      = 16
+	PerOwner      = 32
 	Total         = 256
-	Lifetime      = 24 * time.Hour
+	// PerMinute is how many prompts one agent, and one agent to one person, may
+	// open in a sliding minute.
+	PerMinute = 6
+	Lifetime  = 24 * time.Hour
 	// the poll: every FastEvery during a prompt's first FastFor, then SlowEvery
 	FastEvery = 2 * time.Second
 	FastFor   = 10 * time.Minute
@@ -59,6 +77,7 @@ const (
 	// prompt's own time could not be read.
 	clockSlack = time.Minute
 	logEvery   = time.Minute
+	rateWindow = time.Minute
 )
 
 // idRE is a Claude Code permission request id: five letters a-z without l.
@@ -98,6 +117,17 @@ type Switches interface {
 	On(piece int, channel string) bool
 }
 
+// Presence is the memberships the agents announced (presence.Snapshot).
+type Presence interface {
+	MemberFresh(channel, name string) bool
+}
+
+// Attest is the login service's attestations of the agents
+// (presence.Attestations): false when there is no fresh one.
+type Attest interface {
+	Get(agent string) (presence.Attestation, bool)
+}
+
 // Publisher publishes and returns once the server took the message
 // (inbound.Confirmed).
 type Publisher interface {
@@ -113,6 +143,8 @@ type Handler struct {
 	Users     Users // nil: no proof can be checked, so no home with piece 4 on
 	Bots      Bots  // nil: the bridge bot posts
 	Bridge    Poster
+	Presence  Presence // nil: every request is refused
+	Attest    Attest   // nil: every request is refused
 	Publisher Publisher
 	BusPrefix string           // "bus"
 	Now       func() time.Time // time.Now when nil
@@ -122,6 +154,7 @@ type Handler struct {
 	open    map[key]*prompt
 	anchors map[string]cachedAnchor
 	logged  map[string]time.Time
+	rates   map[string][]time.Time
 }
 
 type key struct{ agent, id string }
@@ -133,6 +166,7 @@ type cachedAnchor struct {
 
 type prompt struct {
 	home, post, dm, account, anchor, name string
+	owner                                 string // the owner's anchor by the agent's attestation
 	poster                                Poster
 	createAt                              int64 // ms, the prompt post's
 	opened, next                          time.Time
@@ -192,19 +226,40 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 	if !idRE.MatchString(p.ID) {
 		return nil, errors.New("id is no permission request id (five letters a-z without l)")
 	}
-	switch p.Op {
-	case "prompt":
+	if p.Op != "prompt" && p.Op != "note" {
+		return nil, fmt.Errorf("op %q is not prompt or note", p.Op)
+	}
+	att, err := h.attested(agent, p.Channel)
+	if err != nil {
+		return nil, err
+	}
+	if p.Op == "prompt" {
 		if p.Close != nil {
 			return nil, errors.New("a prompt has no close")
 		}
-		return h.prompt(ctx, agent, p)
-	case "note":
-		if p.To != nil || p.Name != nil {
-			return nil, errors.New("a note has no to or name")
-		}
-		return h.note(ctx, agent, p)
+		return h.prompt(ctx, agent, p, att)
 	}
-	return nil, fmt.Errorf("op %q is not prompt or note", p.Op)
+	if p.To != nil || p.Name != nil {
+		return nil, errors.New("a note has no to or name")
+	}
+	return h.note(ctx, agent, p)
+}
+
+// attested is the agent's fresh attestation, once it states channel as the
+// agent's home and the agent announced a fresh membership there. Whichever of
+// the two fails, the error is the same: it tells nothing about other agents.
+func (h *Handler) attested(agent, channel string) (presence.Attestation, error) {
+	if h.Attest == nil {
+		return presence.Attestation{}, errors.New("no fresh attestation of the agent")
+	}
+	att, ok := h.Attest.Get(agent)
+	if !ok {
+		return presence.Attestation{}, errors.New("no fresh attestation of the agent")
+	}
+	if !att.HasHome || att.Home != channel || h.Presence == nil || !h.Presence.MemberFresh(channel, agent) {
+		return presence.Attestation{}, errors.New("not the agent's home")
+	}
+	return att, nil
 }
 
 // text checks and defuses one text.
@@ -229,7 +284,7 @@ func result(v any) ([]requests.Reply, error) {
 	return []requests.Reply{{Result: out}}, nil
 }
 
-func (h *Handler) prompt(ctx context.Context, agent string, p payload) ([]requests.Reply, error) {
+func (h *Handler) prompt(ctx context.Context, agent string, p payload, att presence.Attestation) ([]requests.Reply, error) {
 	body, err := text(p.Text, MaxPromptText)
 	if err != nil {
 		return nil, err
@@ -238,6 +293,9 @@ func (h *Handler) prompt(ctx context.Context, agent string, p payload) ([]reques
 		return nil, errors.New("to is no anchor")
 	}
 	to := *p.To
+	if !att.Names(to) {
+		return nil, errors.New("not the agent's owner or one of its trusted humans")
+	}
 	if p.Name == nil || *p.Name == "" {
 		return nil, errors.New("name is empty")
 	}
@@ -257,7 +315,7 @@ func (h *Handler) prompt(ctx context.Context, agent string, p payload) ([]reques
 		return nil, errors.New("the person's binding is not proven")
 	}
 	k := key{agent, p.ID}
-	pr, err := h.reserve(k, p.Channel)
+	pr, err := h.reserve(k, p.Channel, to, att.Owner)
 	if err != nil {
 		return nil, err
 	}
@@ -278,23 +336,6 @@ func (h *Handler) prompt(ctx context.Context, agent string, p payload) ([]reques
 	pr.home, pr.post, pr.dm, pr.account, pr.anchor, pr.name = p.Channel, post, dm, account, to, rec.Name
 	pr.poster, pr.createAt, pr.pending = poster, createAt, false
 	pr.next = h.now()
-	// the oldest of an agent over the limit goes
-	for {
-		n, oldest := 0, (*prompt)(nil)
-		var oldKey key
-		for ok, o := range h.open {
-			if ok.agent == agent && !o.pending {
-				n++
-				if oldest == nil || o.opened.Before(oldest.opened) {
-					oldest, oldKey = o, ok
-				}
-			}
-		}
-		if n <= PerAgent {
-			break
-		}
-		delete(h.open, oldKey)
-	}
 	h.mu.Unlock()
 	return result(struct {
 		V    int    `json:"v"`
@@ -337,8 +378,10 @@ func (h *Handler) send(ctx context.Context, poster Poster, account, body string)
 	return post, p.CreateAt, dm, nil
 }
 
-// reserve takes the (agent, id) slot before anything is posted.
-func (h *Handler) reserve(k key, home string) (*prompt, error) {
+// reserve takes the (agent, id) slot before anything is posted, within the
+// limits: open prompts of the agent, of its owner and in all, then the rates
+// of the agent and of the agent to this person. Nothing is evicted.
+func (h *Handler) reserve(k key, home, to, owner string) (*prompt, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.open == nil {
@@ -348,19 +391,51 @@ func (h *Handler) reserve(k key, home string) (*prompt, error) {
 	if _, dup := h.open[k]; dup {
 		return nil, errors.New("already open")
 	}
-	n := 0
-	for ok := range h.open {
+	perAgent, perOwner := 0, 0
+	for ok, o := range h.open {
 		if ok.agent == k.agent {
-			n++
+			perAgent++
+		}
+		if o.owner == owner {
+			perOwner++
 		}
 	}
-	if len(h.open) >= Total && n < PerAgent {
+	switch {
+	case perAgent >= PerAgent:
+		return nil, errors.New("too many open prompts of this agent")
+	case perOwner >= PerOwner:
+		return nil, errors.New("too many open prompts of this agent's owner")
+	case len(h.open) >= Total:
 		return nil, errors.New("too many open prompts")
 	}
-	pr := &prompt{home: home, pending: true, opened: h.now(),
+	now := h.now()
+	ka, kt := "a\x00"+k.agent, "t\x00"+k.agent+"\x00"+to
+	ra, rt := h.recent(ka, now), h.recent(kt, now)
+	if len(ra) >= PerMinute || len(rt) >= PerMinute {
+		return nil, errors.New("too many prompts; try again in a minute")
+	}
+	if len(h.rates) > 1024 {
+		h.rates = map[string][]time.Time{}
+	}
+	h.rates[ka], h.rates[kt] = append(ra, now), append(rt, now)
+	pr := &prompt{home: home, owner: owner, pending: true, opened: now,
 		seenPosts: map[string]bool{}, seenReactions: map[string]bool{}}
 	h.open[k] = pr
 	return pr, nil
+}
+
+// recent is the times under key within the last rateWindow; h.mu is held.
+func (h *Handler) recent(key string, now time.Time) []time.Time {
+	if h.rates == nil {
+		h.rates = map[string][]time.Time{}
+	}
+	var out []time.Time
+	for _, t := range h.rates[key] {
+		if now.Sub(t) < rateWindow {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (h *Handler) forget(k key, pr *prompt) {
