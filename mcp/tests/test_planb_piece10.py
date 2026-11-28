@@ -408,6 +408,30 @@ async def test_on_a_switch_seen_on_and_then_off_keeps_the_terminal(world: World,
     assert ("not relayed", "abcde", "plan B switch not read") in world.notes
 
 
+async def test_on_a_stale_record_never_read_on_keeps_the_terminal(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.13 step 7: the bus holds the home's plan B record naming piece 10, but it went stale
+    (2 h) before this session ever read it on: not known off, so the terminal, no Mattermost DM."""
+    monkeypatch.delenv(planb.TEST_ENV, raising=False)
+    monkeypatch.setattr(planb, "known", lambda: True)
+    bus = world.port._bus
+    assert bus is not None and world.port._piece10_seen is False
+    monkeypatch.setattr(bus, "planb_held", lambda ch: frozenset({10}), raising=False)
+    assert world.port.piece10() is False and world.port.permission_undecided() is True
+    await server._permission_request(REQUEST)
+    assert world.requests == [] and world.inner.mm_calls == []
+    assert ("not relayed", "abcde", "plan B switch not read") in world.notes
+    monkeypatch.setattr(bus, "planb_held", lambda ch: frozenset({4}), raising=False)
+    assert world.port.permission_undecided() is False  # a stale record without piece 10: known off
+
+
+def test_the_bus_holds_a_stale_plan_b_record() -> None:
+    """natsbus.planb_held reads the stored record, stale or not; planb_pieces reads it off."""
+    bus = natsbus.NatsBus.__new__(natsbus.NatsBus)
+    bus._planb = {"home": (3, 0.0, frozenset({10}))}
+    bus._planb_prev = {}
+    assert bus.planb_held("home") == frozenset({10}) and bus.planb_held("other") == frozenset()
+
+
 async def test_off_and_known_off_the_port_takes_the_old_path(monkeypatch: pytest.MonkeyPatch) -> None:
     port, _inner, _fake = _world(monkeypatch, on="")
     monkeypatch.setattr(planb, "known", lambda: True)

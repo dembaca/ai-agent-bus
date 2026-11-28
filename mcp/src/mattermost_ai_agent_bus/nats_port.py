@@ -2989,10 +2989,15 @@ class NatsPort:
     def permission_undecided(self) -> bool:
         """Piece 10 reads off, but the session cannot tell it is off (RT-6.13 step 7): the plan B
         records are not read yet (planb.known), or the switch read on earlier in this session
-        (a record that went stale, or was switched off since). Then a prompt stays in the
-        terminal: never the Mattermost DM for want of a reading."""
+        (a record that went stale, or was switched off since), or the bus holds a record for the
+        home naming piece 10 that went stale (2 h) before this session read it on. Then a prompt
+        stays in the terminal: never the Mattermost DM for want of a reading."""
         try:
-            return self._piece10_seen or not planb.known()
+            if self._piece10_seen or not planb.known():
+                return True
+            bus = self._bus
+            held = getattr(bus, "planb_held", None) if bus is not None else None
+            return bool(self._s.home) and held is not None and PERMISSION_PIECE in held(self._s.home)
         except Exception:  # noqa: BLE001 — in doubt undecided: the terminal
             return True
 

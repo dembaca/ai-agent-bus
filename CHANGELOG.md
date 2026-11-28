@@ -49,6 +49,9 @@ before 0.5.0 are described in the git history.
   bridge's admin token, and the bridge's right to create `bridge_attest`, else the bridge
   refuses every prompt; the bridge keeps open
   prompts in memory, so a restart drops their answers (the terminal still answers).
+  Rollback is fail-closed: a session that read piece 10 on (or holds a record naming
+  it that went stale) keeps its prompts in the terminal after the switch goes off,
+  until that session restarts; it never falls back to the Mattermost DM meanwhile.
 
 ### Fixed
 

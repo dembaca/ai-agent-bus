@@ -4753,7 +4753,10 @@ which each piece reads for itself.
         the agents' own bots (RT-6.44), or the owner's word that prompts
         under the bridge bot are fine; the lab check, a prompt answered by
         DM, by reaction and from the terminal, and one after a bridge
-        restart.
+        restart. The way back is fail-closed: a session that read piece 10
+        on, or holds a record naming it that went stale, keeps its prompts
+        in the terminal once the switch is off, until it restarts; it never
+        falls back to the Mattermost DM meanwhile.
   11. **People's events where no bridge signal is fresh** (RT-6.42).
       - Moves: onto NATS alone. Without a fresh signal the session no
         longer reads people on Mattermost but says that people are not

@@ -2771,6 +2771,12 @@ class NatsBus:
             return frozenset()  # off is fail-safe: a record no credential renewed is no longer read
         return got[2]
 
+    def planb_held(self, channel: str) -> frozenset[int]:
+        """The pieces of the plan B record this bus holds for `channel`, stale or not (plan B
+        piece 10, RT-6.13 step 7): a piece in a record that went stale is not known off."""
+        got = self._planb.get(channel) or self._planb_prev.get(channel)
+        return got[2] if got is not None else frozenset()
+
     async def _on_presence_msg(self, msg: Any) -> None:
         ack = parse_ack(msg.reply, PRESENCE_STREAM, f"{self.name}_presence")
         if ack is None:
