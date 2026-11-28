@@ -206,9 +206,13 @@ async def bye(client: ChatPort, uid: str) -> str:
         return "no announcement"
     if a2a.word(last.get("MSG", "")) in SIGN_OFFS:
         return "signed off"
+    from . import stats
+
+    text = a2a.styled(with_guest_threads(BYE, uid))
     try:
+        stats.record("post", chars=len(text), w="BYE" if "BYE" in stats.POST_WORDS else "other")  # RT-6.9
         post = await asyncio.wait_for(client.post(
-            a2a.styled(with_guest_threads(BYE, uid)), channel_id=last["CHANNEL"],
+            text, channel_id=last["CHANNEL"],
             root_id=last["HELLO"], props=a2a.props(BYE)), BYE_TIMEOUT_SEC)
         record(uid, last["CHANNEL"], post)
     except Exception as exc:  # noqa: BLE001 — the shutdown: fail open
