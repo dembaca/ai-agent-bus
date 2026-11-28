@@ -4888,11 +4888,15 @@ which each piece reads for itself.
       - Moves: the plugin no longer registers a session whose every
         channel, the home, the guest channels, the lobby and the stats
         channel, runs over NATS with every piece on. A session with any
-        channel on Mattermost registers as before. The session decides
-        at its start (the owner's answer of 2026-11-28 to the plan's first
-        question: under corral the host process after its own NATS read,
-        since the start hook cannot see the switches; without corral the
-        MCP server in `session_start`): until switching at a renewal
+        channel on Mattermost registers as before. The host process,
+        not corral's start hook, registers a bot, and only once its own
+        NATS read shows a channel or a piece off; the hook starts the
+        host process without a bot, and the decision is taken there
+        after the login. Decided by the owner on 2026-11-28 08:41 (ask
+        `qbsb7zr1sbnmx8sm8ca9xto48a`); the former wording, that the
+        start hook decides per session, at its start, is superseded,
+        since the hook registers before any NATS login and cannot see
+        the switches. Until switching at a renewal
         is built (guest channels and the lobby, piece 12), a flag
         changed for a channel reaches a running session only at its next
         start, since `compose.py` picks the transport there. Once every home runs every piece, no
