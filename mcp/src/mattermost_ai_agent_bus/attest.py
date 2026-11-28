@@ -74,7 +74,10 @@ RELEASE_SIGNERS_MAX = 16
 # One release key line, as mm_release_parse_keys in bin/mm-agent-lib.sh reads
 # it: an Ed25519 type, its base64, an optional comment.
 RELEASE_KEY = re.compile(r"(ssh-ed25519|sk-ssh-ed25519@openssh\.com)[ \t]+([A-Za-z0-9+/]+={0,2})([ \t].*)?")
-_RELEASE_VERSION = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+# A record's version, x.y.z, each number at most six digits: the notice
+# compares versions as ints (release._key), and a signed record must not name a
+# number int() refuses instead of giving no notice (RT-6.30).
+_RELEASE_VERSION = re.compile(r"v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})")
 ENV = "MM_BOT_ATTESTATION"
 KEYS_ENV = "MM_REGISTRAR_KEYS"
 ENROLLMENT, SECRET = "enrollment", "secret"
