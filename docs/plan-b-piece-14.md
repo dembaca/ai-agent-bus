@@ -9,10 +9,11 @@ there and what the owner decided (section 5). Written 2026-11-28 against `origin
 
 ## Starting point
 
-- Twelve of the thirteen earlier pieces are merged behind switches that are off
-  everywhere (CHANGELOG `## Unreleased`). Not merged: the session's side of
-  people's history (piece 5b, PR #295, open) and permission prompts by DM
-  (piece 10, PR #300, open).
+- All thirteen earlier pieces are merged behind switches that are off
+  everywhere (CHANGELOG `## Unreleased`), among them the session's side of
+  people's history (piece 5b, PR #295, merged as 1ca76c91), its switch-on
+  follow-ups (PR #305, merged as 5fa89883) and permission prompts by DM
+  (piece 10, PR #300, merged as 81ba3075).
 - Today every session registers a Mattermost bot at the registrar, also in a home
   over NATS. Under corral the host's start hook registers it and starts the host
   process that holds its token (the keyless session, RT-6.18); the relay in the
@@ -88,8 +89,8 @@ off; "lab" needs the switch on in the test home; "before the removal release" ne
 
 | # | Gate | Source | When |
 |---|---|---|---|
-| 1 | piece 5b merged; its follow-ups fixed: unknown post ids asked at the bridge first, `_history_thread` checks each reply's root, own copies recognised after a restart, attachments through the file request | #295, #244 comment on #295 | before the decision release |
-| 2 | piece 10 merged (permission prompts by DM) | #300 | before the decision release |
+| 1 | piece 5b merged (done: #295, 1ca76c91); its follow-ups fixed (done in #305, 5fa89883: unknown post ids asked at the bridge first, each reply's root checked, own copies recognised after a restart); still open: attachments through the file request | #295, #305, #244 comment on #295 | before the decision release |
+| 2 | piece 10 merged (permission prompts by DM; done: #300, 81ba3075) | #300 | before the decision release |
 | 3 | piece 8: no Mattermost fallback while the bus is down (raise, or document in RT-6.33); a file id no seen post named and files of a DM still take Mattermost: solved or accepted | #286 comment | before the decision release |
 | 4 | piece 7: the synchronous posts (`post_sync`, `post_by_name_sync`, the BYE) moved off Mattermost; a refused reaction told to the agent | ADR-014 item 7 "Built", #294 comment | before the decision release |
 | 5 | piece 11: the inbox's backfill at a Mattermost WebSocket connect, and the WebSocket itself, gone for a fully switched session; an outage longer than the bridge's 10-minute catch-up recovered (history replay or longer catch-up) or accepted | ADR-014 item 11, #293 comment | before the decision release |
@@ -169,7 +170,7 @@ Decided by the owner on 2026-11-28 08:41, ask qbsb7zr1sbnmx8sm8ca9xto48a: all ei
    right later.
 3. **Which known gaps does the owner accept rather than have fixed before the removal release?**
    Recommendation, decided: fix the two that lose a person's words (the outage beyond the
-   bridge's 10-minute catch-up, piece 11; unknown post ids, piece 5b); accept the
+   bridge's 10-minute catch-up, piece 11; unknown post ids, piece 5b, fixed in #305); accept the
    foreign crown (piece 9), the 7 h of a revoked membership (piece 5) and a flag
    taking effect at the next start (piece 12).
 4. **The pinned keys of the release record**, `MM_REGISTRAR_KEYS` today: its new
