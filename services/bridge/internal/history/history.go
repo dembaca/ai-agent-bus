@@ -126,12 +126,12 @@ const (
 	userCacheMax = 4096
 )
 
-// errNotChannel is the answer for a channel the agent did not announce a
-// membership of. It names neither the channel's switch nor its posts.
 // errRunTooLarge is the answer for a window whose one create_at holds more
 // posts than the client takes in one answer.
 var errRunTooLarge = errors.New("too large: the posts of one millisecond are more than an answer may carry")
 
+// errNotChannel is the answer for a channel the agent did not announce a
+// membership of. It names neither the channel's switch nor its posts.
 var errNotChannel = errors.New("not a channel of that agent")
 
 // errBusy is the answer to a second read from an agent whose first one still

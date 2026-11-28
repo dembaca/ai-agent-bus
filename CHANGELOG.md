@@ -32,7 +32,9 @@ before 0.5.0 are described in the git history.
   failed and was tried again used a second unit; the same message now counts once.
   A 200 answer of Mattermost's username lookup whose body does not decode was taken as
   a failure to retry, which stopped the home's mirror; it now counts as no person and
-  the mention is plain.
+  the mention is plain. Only an answer that cannot be decoded is no person (the same
+  holds for the lookup of a post and its author before an agent's reply or reaction);
+  a body cut short or a read that fails mid-answer is retried, as no answer is.
 - **The bridge refuses a history window the client could never read** (#278, RT-6.43).
   With piece 5 (history) on, a channel read whose one `create_at` holds posts adding up
   to more than the 4 MiB the MCP client takes of one answer was answered over that cap,
