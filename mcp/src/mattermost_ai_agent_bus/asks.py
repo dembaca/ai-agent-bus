@@ -436,14 +436,18 @@ def answered(uid: str, post_id: str, at: float = 0, *, thread: bool = False,
     chosen: the answer a reaction picked, kept for the record on NATS."""
     asks, seen, whom = _read_all(uid)
     done = _read_answered(uid)
-    hits = sorted((t, pid) for pid, t in asks.items()
-                  if pid in whom and pid not in done
-                  and (pid == post_id or (thread and whom[pid].split(" ")[1:] == [post_id])))
+    word = {} if not chosen.strip() else {"": " ".join(chosen.split())}
+    every = sorted((t, pid) for pid, t in asks.items()
+                   if pid in whom
+                   and (pid == post_id or (thread and whom[pid].split(" ")[1:] == [post_id])))
+    hits = [h for h in every if h[1] not in done]
     if not hits:
+        # an ask answered before: a later reaction changes the chosen word (the last wins)
+        if word and every:
+            _write(uid, asks, seen, whom, done, chosen={every[0][1]: word[""]})
         return None
     t, pid = hits[0]
-    _write(uid, asks, seen, whom, done | {pid},
-           chosen={pid: " ".join(chosen.split())} if chosen.strip() else None)
+    _write(uid, asks, seen, whom, done | {pid}, chosen={pid: word[""]} if word else None)
     return pid, max(0, round((at or time.time()) - t))
 
 

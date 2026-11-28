@@ -3093,7 +3093,7 @@ async def _event_items(events: list[Any], raw: bool = False) -> list[dict[str, A
                 e.kind != "reaction" or item.get("answer") or item.get("choice")):
             # RT-6.42 step 9: a not_approver answer leaves the ask waiting (reminded, queue held).
             _note_answer(uid, root, e.post.create_at, thread=e.kind != "reaction", questions=questions,
-                         chosen=str(item.get("chosen") or ""))
+                         chosen="" if item.get("expired") else str(item.get("chosen") or ""))
         if raw:
             item |= {"post": e.post.json(), "channel": e.channel.json() if e.channel else None}
         else:

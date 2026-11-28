@@ -915,7 +915,8 @@ def decode_ask_record(data: bytes) -> AskRecord:
         where = _card_field(a, "where", ASK_WHERE_MAX, lines=False)
         answers = a.get("answers", [])
         if "answers" in a and (not isinstance(answers, list) or not 2 <= len(answers) <= 4
-                               or not all(_card_line(x, ASK_ANSWER_MAX) for x in answers)):
+                               or not all(_card_line(x, ASK_ANSWER_MAX) and x == card_text(x, ASK_ANSWER_MAX)
+                                      for x in answers)):
             raise MessageError("ask answers")
         chosen = a.get("chosen", "")
         if "chosen" in a and (not isinstance(chosen, str) or chosen not in answers):
@@ -934,11 +935,13 @@ def _card_line(v: object, limit: int) -> bool:
 def _card_field(a: dict[str, Any], key: str, limit: int, *, lines: bool) -> str:
     """An optional card text of an ask: absent is "", present must be a non-empty string
     within `limit` characters with no control or direction character (`lines`: but the line
-    break); anything else drops the record."""
+    break) and as the encoder's normalising leaves it; anything else drops the record."""
     if key not in a:
         return ""
     v = a[key]
     if not _card_line(v.replace("\n", " ") if lines and isinstance(v, str) else v, limit):
+        raise MessageError(f"ask {key}")
+    if v != (card_block if lines else card_text)(v, limit):
         raise MessageError(f"ask {key}")
     return str(v)
 

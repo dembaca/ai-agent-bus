@@ -617,6 +617,11 @@ def test_a_record_that_does_not_fit_sheds_the_newest_cards_before_any_ask() -> N
     {"context": ""}, {"context": 5}, {"context": "c" * 901}, {"context": "a\u202eb"},
     {"recommendation": "r" * 901}, {"decision": "d" * 401}, {"decision": None},
     {"where": "a\nb"}, {"where": "w" * 201}, {"where": "a\x07b"}, {"body": "x"},
+    # un-normalised or whitespace-only text is no record the encoder emits
+    {"context": "   "}, {"context": " a"}, {"context": "a "}, {"context": "a\n\n\nb"},
+    {"context": "a  b"}, {"decision": "\n"}, {"where": " "}, {"where": "a  b"},
+    {"answers": ["a", " b"]}, {"answers": ["a", "b "]}, {"answers": ["a", "  "]},
+    {"answers": ["a b", "c\nd"]},
 ])
 def test_the_decoder_refuses_a_bad_card(extra: dict[str, Any]) -> None:
     """Strict: a card part off its type or bound, a control or direction character, a chosen
@@ -625,6 +630,14 @@ def test_the_decoder_refuses_a_bad_card(extra: dict[str, Any]) -> None:
     obj["asks"][0].update(extra)
     with pytest.raises(MessageError):
         decode_ask_record(json.dumps(obj).encode())
+
+
+def test_a_later_reaction_changes_the_chosen_word() -> None:
+    """The last reaction wins: an answered ask keeps the newest chosen word."""
+    asks.add(UID, _id(8), "dembaca", _id(8), title="Which?", kind="question", answers=["A", "B"])
+    assert asks.answered(UID, _id(8), time.time(), chosen="A")
+    assert asks.answered(UID, _id(8), time.time(), chosen="B") is None
+    assert next(r for r in asks.records(UID) if r[0] == _id(8))[6]["chosen"] == "B"
 
 
 def test_a_reactions_choice_and_the_card_are_kept_for_the_record() -> None:

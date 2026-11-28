@@ -465,7 +465,9 @@ left out), so the record of an ask without a card keeps the shape a reader
 before them takes; a reader before them refuses the record of an ask with
 one (unknown key), which is why the console server is updated before the
 agents. The card parts carry no control or direction character (the line
-break only in `context`, `recommendation` and `decision`). One ask with every
+break only in `context`, `recommendation` and `decision`) and are normalised as the encoder
+leaves them (spaces collapsed, ends trimmed, no whitespace-only text); a reader refuses
+the record of an ask with a text that is not. One ask with every
 part at its bound fits the record in ASCII; when the record would not fit,
 the encoder drops the newest asks' texts first, then their answers, and only
 then the newest asks, counted in `more`. The console server hands the card
