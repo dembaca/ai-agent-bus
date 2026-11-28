@@ -68,8 +68,10 @@ before 0.5.0 are described in the git history.
 - **A stranded counter claim keeps the takeover open: plan B piece 14c-1c** (#244, RT-6.2
   step 9), behind piece 2's switch. A claim the counter move leaves behind (its pid runs
   again, or an append whose journal line failed) no longer lets the takeover be marked
-  done: the intent (`CB_TAKING`, `CB_APPENDING`) stays, the source gets no `CB_TAKEN_BY`,
-  and a later start finishes it. A start re-reads under a predecessor's lock whether another
+  done: the source gets no `CB_TAKEN_BY`, the intent narrows to the counters (`CB_MOVING`,
+  the `CB_APPENDING` lines kept), and a later start moves only the counters, so a file the
+  name deleted while it ran does not come back. An append cut short by a full disk is cut
+  back to its journaled size. A start re-reads under a predecessor's lock whether another
   start began to take it, and an unfinished takeover whose source another name took
   meanwhile drops its intent instead of taking it again. RT-6.1 step 7 says why the
   workspace tie's lock is never swept. Switch off: nothing differs.
