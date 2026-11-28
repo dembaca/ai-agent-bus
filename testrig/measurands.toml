@@ -80,6 +80,18 @@ status = "measured"
 why = "Measured by coord-run only (hard stops of the crown holder); a delivery run stages no hard stop."
 what = "95th percentile time from a hard stop (SIGKILL) of the coordinator to a survivor's crown log saying it holds the crown."
 
+# Plan B piece 2 (ADR-014 phase 5, amendment 2026-11-26): with the roster from NATS
+# a cut makes the roster empty and tells nobody as gone (RT-6.21). Its test row asks
+# the rig for this number; it must be 0 (#252).
+[[measurand]]
+id = "told_gone"
+name = "Live agents told as gone"
+source = "Plan B piece 2, ADR-014 phase 5 (test row: testrig, nobody told as gone during a cut)"
+unit = "notices"
+status = "measured"
+why = "Measured by bus-run --transport nats with CB_PLANB_TEST=2 (the roster from NATS) only; any other run reports null."
+what = "Times a live agent of the run was told as gone: a post_message answer naming it gone (not_reachable), or an event marked departed or answering in its thread that it is gone."
+
 [[measurand]]
 id = "handled_twice_or_missing"
 name = "Events handled twice or not at all"

@@ -1142,8 +1142,8 @@ class NatsPort:
         return channel in self._homes and self._switch_known() and planb.on(5, channel)
 
     def _note_mm(self, post_id: str, channel: str) -> None:
-        """Keep a Mattermost post id's channel, so its thread and reactions can ask the bridge
-        for it (a Mattermost id names no channel itself). Bounded like the NATS memory."""
+        """Keep a Mattermost post id's channel (a name, or a DM's id no home has), so its
+        thread and reactions can ask the bridge for it (a Mattermost id names no channel)."""
         if not post_id:
             return
         self._mm_post_channel[post_id] = channel
@@ -1404,12 +1404,29 @@ class NatsPort:
     async def _bridge_author(self, home: str, seq: int, user_id: str) -> bool:
         """Whether `user_id` is the author the bridge copies a NATS post of `home` under: the
         bridge bot, or the bot `<bot prefix><sender>` of that post's own NATS sender (one the
-        session has). The one author check the live path uses (`_copy_of`), shared by history."""
+        session has). The one author check the live path uses (`_copy_of`), shared by history.
+
+        After a restart the memory may have fallen out, so the sender of a copy is unknown.
+        The session's own bot is still the copy's author for a sequence that is an open ask of
+        this session (`_asks`, RT-6.11 step 7), and only for one: any other unknown sequence
+        names no sender and is no copy.
+        """
         bridge = await self._bridge()
         if bridge and user_id == bridge:
             return True
         sender = self._sender_of(home, seq) if self._bot_prefix(home) else None
-        return sender is not None and await self._agent_bot(user_id, home, {sender})
+        if sender is not None:
+            return await self._agent_bot(user_id, home, {sender})
+        bus = self._live()
+        name = bus.name if bus is not None else ""
+        if not name or seq in self._posts.get(home, {}):
+            return False
+        try:
+            ask = next((a for a in self._asks() if a.mm == post_id(home, seq)), None)
+        except Exception as exc:  # noqa: BLE001 — unknown: not taken as the ask's
+            log.info("nats: the open asks were not read (%s)", type(exc).__name__)
+            return False
+        return ask is not None and await self._agent_bot(user_id, home, {name})
 
     async def mirrored(self, post: Post) -> bool:
         """The bridge's copy of a NATS post of this session's NATS home (_copy_of): the
@@ -1510,10 +1527,33 @@ class NatsPort:
         if await self._person_on_mattermost(event):
             return True
         self._judge_on_mattermost(event)  # plan B piece 4
+        self._note_mattermost(event)
         if isinstance(event, PostEvent) and self._ids is not None:
             # plan B piece 7: a reaction on a post of a channel not over NATS stays on Mattermost
             self._saw_mm(event.post.id, self._name_now(event.post.channel_id) or "")
         return False
+
+    def _note_mattermost(self, event: ChatEvent) -> None:
+        """A post or reaction that stays on Mattermost: keep its channel, so its thread and
+        reactions skip the bridge (piece 5 reads only a home's people). A DM channel has no
+        home name; its id is kept, which is equally no piece-5 home."""
+        if isinstance(event, PostEvent):
+            post_id, channel_id = event.post.id, event.post.channel_id
+        elif isinstance(event, ReactionEvent):
+            post_id, channel_id = event.reaction.post_id, event.channel_id
+        else:
+            return
+        if not channel_id or self._ids is None:
+            # Nothing to judge yet (a reaction without a channel, the ids not resolved):
+            # noting the raw id could mark a home's post as no home and route it away
+            # from the bridge (review of #305).
+            return
+        try:
+            name = self._name_now(channel_id)
+        except Exception:  # noqa: BLE001 — unresolved: an id is no home either, but do not guess
+            return
+        if name is None or not self._piece5(name):
+            self._note_mm(post_id, name or channel_id)
 
     async def _copy_event(self, event: ChatEvent) -> bool:
         if not self._bridge_bot and not any(self._bot_prefix(h) for h in self._channels()):
@@ -2848,22 +2888,76 @@ class NatsPort:
         order. A failed or malformed answer (a root that is no Mattermost id of its posts) is
         an empty thread, never Mattermost's."""
         try:
-            last, got = await self._history(channel, thread=post_id, limit=HISTORY_LIMIT)
-            raws = [raw for raw in got if isinstance(raw, Mapping)]
-            copies = await self._history_copies(channel, raws)
-            posts = [post for post in (self._history_post(channel, raw, copies) for raw in raws)
-                     if post is not None]
+            return await self._history_thread_at(channel, post_id)
         except Exception as exc:  # noqa: BLE001 — nothing read, never Mattermost
             log.warning("nats: the history read of thread %s in ~%s failed (%s): nothing read",
                         post_id, channel, str(exc)[:200])
             return Thread(post_id)
+
+    async def _history_thread_at(self, channel: str, post_id: str) -> Thread:
+        """`_history_thread` that raises: a request failure, a malformed answer, or a root
+        that is no Mattermost id of its posts. The root must be a top-level post; a reply
+        whose Mattermost root is not this thread is dropped, as a live event's root check."""
+        last, got = await self._history(channel, thread=post_id, limit=HISTORY_LIMIT)
+        raws = [raw for raw in got if isinstance(raw, Mapping)]
         root = _text(last, "thread") if last is not None else ""
-        if not _ID.fullmatch(root) or not any(p.id == root for p in posts):
-            log.warning("nats: the history thread of %s in ~%s names no root of its posts: "
-                        "nothing read", post_id, channel)
-            return Thread(post_id)
+        if not _ID.fullmatch(root):
+            raise _HistoryError("the bridge's history thread names no root")
+        kept: list[Mapping[str, Any]] = []
+        for raw in raws:
+            pid = _text(raw, "id")
+            if not pid:
+                continue
+            if pid == root:
+                if _text(raw, "root_id"):
+                    continue  # the root is a top-level post
+            elif _text(raw, "root_id") != root:
+                continue  # a reply of another thread (or a top-level post): not this one
+            kept.append(raw)
+        copies = await self._history_copies(channel, kept)
+        posts = [post for post in (self._history_post(channel, raw, copies) for raw in kept)
+                 if post is not None]
+        if not any(p.id == root for p in posts):
+            raise _HistoryError("the bridge's history thread has no root among its posts")
         self._note_mm(root, channel)
         return Thread(root, order=tuple(p.id for p in posts), posts=tuple(posts))
+
+    def _piece5_homes(self) -> list[str]:
+        """The homes whose people read through the bridge now (piece 5 on, switch known)."""
+        return [home for home in self._homes if self._piece5(home)]
+
+    @staticmethod
+    def _thread_not_in(exc: BaseException, home: str) -> bool:
+        """The bridge's one answer for a post of another channel: fall back to Mattermost."""
+        return f"the thread is not in ~{home}" in str(exc)
+
+    async def _history_thread_any(self, post_id: str) -> Thread | None:
+        """The thread of a post id the session never read, from the piece-5 home it belongs to:
+        each such home is asked (the bridge's request needs a channel). Only the bridge's
+        "the thread is not in ~<channel>" means "not this one"; any other failure raises, never
+        Mattermost's read. None means no piece-5 home has the post."""
+        for home in self._piece5_homes():
+            try:
+                return await self._history_thread_at(home, post_id)
+            except bridge_requests.RequestError as exc:
+                if self._thread_not_in(exc, home):
+                    continue
+                raise
+        return None
+
+    async def _history_reactions_any(self, post_id: str) -> list[Reaction] | None:
+        """`_history_reactions` for a post id the session never read, from the piece-5 home it
+        belongs to; None when no piece-5 home has it, a failure raises as in `_history_thread_any`."""
+        for home in self._piece5_homes():
+            try:
+                thread = await self._history_thread_at(home, post_id)
+            except bridge_requests.RequestError as exc:
+                if self._thread_not_in(exc, home):
+                    continue
+                raise
+            return [reaction for post in thread.posts if post.id == post_id
+                    for reaction in post.reactions]
+        return None
 
     async def _history_reactions(self, channel: str, post_id: str) -> list[Reaction]:
         """A post's reactions from the bridge's thread answer. A failed answer or a post it
@@ -2881,11 +2975,17 @@ class NatsPort:
         got = parse_post_id(post_id)
         if got is None:
             channel = self._mm_post_channel.get(post_id)
-            if channel is not None and self._piece5(channel):
-                return await self._history_thread(channel, post_id)
-            # The id names no channel (the bridge's request needs one) or its people are not
-            # on the bridge: Mattermost's read, as before. Only a switched channel's post the
-            # session never read can still be read here.
+            if channel is not None:
+                if self._piece5(channel):
+                    return await self._history_thread(channel, post_id)
+            else:
+                # The id names no channel: ask each piece-5 home first (the bridge's request
+                # needs one). None means no such home has it; any other failure raised above.
+                found = await self._history_thread_any(post_id)
+                if found is not None:
+                    return found
+            # A known channel without the switch, or no piece-5 home with the post: only the
+            # bridge's explicit "the thread is not in ~<channel>" reaches Mattermost here.
             found = await self.inner.thread(post_id)
             if self._closed12 and any([await self._closed_channel(p.channel_id) for p in found.posts]):
                 return Thread(post_id)  # a closed channel's thread reads empty (piece 12)
@@ -2988,12 +3088,18 @@ class NatsPort:
         got = parse_post_id(post_id)
         if got is None:
             channel = self._mm_post_channel.get(post_id)
-            if channel is not None and self._piece5(channel):
-                return await self._history_reactions(channel, post_id)
+            if channel is not None:
+                if self._piece5(channel):
+                    return await self._history_reactions(channel, post_id)
+            else:
+                # The id names no channel: ask each piece-5 home first, as `thread` does.
+                found = await self._history_reactions_any(post_id)
+                if found is not None:
+                    return found
             if self._closed12 and await self._closed_channel(await self.inner.post_channel_id(post_id)):
                 return []  # a post of a closed channel has no reactions to read (piece 12)
-            # No cached channel, or no switch there: the bridge's request needs a channel, so
-            # an id the session never read (a switched channel's included) stays Mattermost's.
+            # A known channel without the switch, or no piece-5 home with the post: only the
+            # bridge's explicit "the thread is not in ~<channel>" reaches Mattermost here.
             return await self.inner.reactions(post_id)
         ch, seq = got
         self._home(ch)
