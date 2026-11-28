@@ -4899,32 +4899,28 @@ which each piece reads for itself.
       - **Amended 2026-11-28: a cutover.** Decided by the owner on
         2026-11-28 16:46 (ask `7htqausiwbbxmjiqmte97f7oic`): the piece is
         no migration over several releases. The flip of 14c (14c-2c: the
-        crown without a bot, `nobot.CROWN_NEEDS_BOT` and
-        `CB_CROWN_NEEDS_BOT`) and the removal of the host side (14d) ship
-        in one release. Before it, in the lab, the login service's
-        directory admin API goes on (RT-6.40), every piece is switched on
-        in every home, and a smoke test runs; then the owner switches every
-        agent to that release, the registrar keeps running one day as the
-        way back (an older release still registers), and then it is shut
-        down (phase 6). The reason: there are no external users, and the
-        owner switches every agent within an hour, so no host skips a
-        release. The plan's gates 16 to 21 are dropped (14c's measured
-        acceptance, the bridge's signed records, the console's signature
-        check, the offline token's lifetime, the homes switched one by one,
-        the owner's approval of the last piece), and with them the
-        acceptance below; the plan's cutover checklist
+        crown without a bot) and the removal of the host side (14d) ship in
+        one release. Before it, in the lab, the login service's directory
+        admin API goes on (RT-6.40), every piece is switched on in every
+        home, and a smoke test runs; then the owner switches every agent to
+        that release, the registrar keeps running one day as the way back
+        (an older release still registers), and then it is shut down
+        (phase 6). The reason: there are no external users, and the owner
+        switches every agent within an hour, so no host skips a release.
+        The decision ships the flip, so it is the owner's yes for it; the
+        deferred path's four differences (named in the plan) then hold for
+        every session, and with 14d the deferred path itself goes. The
+        plan's gates 16 to 21 are dropped (14c's measured acceptance, the
+        bridge's signed records, the console's signature check, the offline
+        token's lifetime, the homes switched one by one, the owner's
+        approval of the last piece), and with them the acceptance below;
+        the issues behind them (the console's signature check #192, the
+        offline token's lifetime RISK-26) stay open; they no longer hold
+        back the cutover. The plan's cutover checklist
         ([plan-b-piece-14.md](../plan-b-piece-14.md), section 3) takes their
-        place. The four differences of the deferred path (no kept bot on a
-        resume, up to 60 s without Mattermost routes, an empty bot name in
-        the sandbox, no unread baseline or idle status from the hook) then
-        hold for every session; the owner accepted them with this
-        decision, and with 14d the deferred path itself goes. Until the
-        shutdown the registration code, the sweep, the unregistration
-        client and the block on self-registration in the sandbox stay; 14d
-        deletes nothing on the hosts. Superseded, kept below as the record:
-        the host side kept until every home runs every piece, the homes
-        switched one by one, and the way back through the two weeks of the
-        shutdown.
+        place. Superseded, kept below as the record: the host side kept
+        until every home runs every piece, the homes switched one by one,
+        and the way back through the two weeks of the shutdown.
       - Moves: the plugin no longer registers a session whose every
         channel, the home, the guest channels, the lobby and the stats
         channel, runs over NATS with every piece on. A session with any
@@ -4994,7 +4990,7 @@ which each piece reads for itself.
         back, then it is shut down.
       - Test: hook tests: no registration and no Mattermost token for such
         a session, registration for a mixed one. Lab: the acceptance
-        below.
+        below (superseded: the lab's smoke test, the amendment above).
       - Built (14a, after 0.104.0; RT-6.18 step 13, RT-6.10 step 8): the
         decision, in `nobot.py` with the predicate `NatsPort.bot_needed`.
         Inert until 14c: the crown still needs the bot's identity (the
@@ -6821,7 +6817,10 @@ Mattermost. Two points for the changeover follow from it:
   the displayed name in their metadata. After the import a brake by name
   hits an identity only as long as name and `sub` are resolved together; a
   rename in Keycloak takes the person out of its reach. To be settled before
-  the first import, not in this step.
+  the first import, not in this step. Decided for the lab by the owner on
+  2026-11-28 (ask `6fybr8iemffcibp53j7oh7rfqy`): the lab's import may run
+  with the brake by name; the rename procedure is in the lab runbook, and the
+  brake by anchor (#336) comes before the bus leaves the lab.
 
 Built as well, after 0.97.0: the upkeep through the login service's admin
 API and the one-time import from Mattermost (decisions 1, 2, 3 and 8;

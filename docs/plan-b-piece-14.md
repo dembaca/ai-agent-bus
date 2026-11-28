@@ -46,14 +46,14 @@ a registration. Where the sections below keep the earlier wording, it is marked.
 
 **The owner's yes for the flip.** The merge of the decision (14a, #313) left a
 condition on #244: the owner's yes is needed when the flip (14c-2c) turns
-`nobot.CROWN_NEEDS_BOT` and `CB_CROWN_NEEDS_BOT`, since the deferred path's
-differences then reach real sessions. This decision covers it. The cutover makes the
-four differences named there true for every session, and the owner accepted them
-with this decision: no kept bot on a resume, up to 60 s without Mattermost routes,
-an empty bot name in the sandbox, and no unread baseline or idle status from the
-hook. With 14d, in the same release, the deferred path itself goes (the host process
-that registers after its own NATS read, answer 1 of section 5): a session then
-decides only in its MCP server, as without corral today.
+`nobot.CROWN_NEEDS_BOT` and `CB_CROWN_NEEDS_BOT`, since four differences of the
+deferred path then reach real sessions: no kept bot on a resume, up to 60 s without
+Mattermost routes, an empty bot name in the sandbox, and no unread baseline or idle
+status from the hook. The decision ships the flip (14c-2c), so it is the owner's yes
+for it; the four differences then hold for every session, and with 14d the deferred
+path itself goes (the host process that registers after its own NATS read, answer 1
+of section 5): a session then decides only in its MCP server, as without corral
+today.
 
 **The removal of the host side (14d) in steps**, from 05e6aa's plan for it and the
 coordinator's answers (bus post `n1:ai-agent-bus-dev:1363` and the reply after it):
@@ -83,17 +83,17 @@ nothing on the hosts: the host copy (`releases/`), the pinned signers and
 
 The wave table of #244 already splits the piece; each step is one pull request or
 more, each reviewed as usual (answer 8 of section 5). Everything before the flip
-ships inert, with every switch off, in the releases before the cutover. The cutover
+ships inert, with every switch off, in the releases before the cutover, 0.105.0 first. The cutover
 release carries the flip (14c-2c) and the removal of the host side (14d) together;
 the shutdown follows a day after it.
 
 | Step | What it does | Pull request | Release |
 |---|---|---|---|
-| 14a, the decision | A session whose home, guest channels, lobby and stats channel all run over NATS with every piece on registers no bot and holds no Mattermost token; any channel off: registers as today. Inert until the flip (14c-2c): until then its predicate always names a reason, the crown needs the bot's identity (RT-6.6 step 13), so every session still registers | #313, merged; its follow-up #330, merged (`nobot.decide` answers at once until the flip) | before the cutover, inert |
-| 14b, the release notice | The MCP server reads the release record the bridge signs (`GET …/register/v1/release`, already routed in `services/bridge/cmd/bridged/main.go`) and tells its human; no host release check | #312, merged | before the cutover, behind `CB_RECORDS_URL` |
+| 14a, the decision | A session whose home, guest channels, lobby and stats channel all run over NATS with every piece on registers no bot and holds no Mattermost token; any channel off: registers as today. Inert until the flip (14c-2c): until then its predicate always names a reason, the crown needs the bot's identity (RT-6.6 step 13), so every session still registers | #313, merged; its follow-up #330, merged (`nobot.decide` answers at once until the flip) | 0.105.0, inert |
+| 14b, the release notice | The MCP server reads the release record the bridge signs (`GET …/register/v1/release`, already routed in `services/bridge/cmd/bridged/main.go`) and tells its human; no host release check | #312, merged | 0.105.0, behind `CB_RECORDS_URL` |
 | 14c, identity and state | The session's own identity is its NATS name, not the bot's Mattermost id (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`); the state files still keyed by the bot id move to the name; in the six steps below | | |
-| 14c-1, the state keys | Built behind piece 2's switch, RT-6.2 step 9: every per-bot file of the MCP server and the scripts, copied once at the latch, one process per name by `key-<name>.lock`, a restart takes over its predecessor's state by the session's tie (`CB_TIE`) | #328, merged | before the cutover, behind piece 2's switch |
-| 14c-1b, its follow-up | The conditions #244 lists before piece 2 or 14c goes on (step a of the cutover checklist) | not yet | before the cutover |
+| 14c-1, the state keys | Built behind piece 2's switch, RT-6.2 step 9: every per-bot file of the MCP server and the scripts, copied once at the latch, one process per name by `key-<name>.lock`, a restart takes over its predecessor's state by the session's tie (`CB_TIE`) | #328, merged | 0.105.0, behind piece 2's switch |
+| 14c-1b, its follow-up | The conditions #244 lists before piece 2 or 14c goes on (step a of the cutover checklist) | #337, open | 0.105.0 |
 | 14c-2a, the identity | Every site that decides "is this me, my state, may I act" asks `identity.py`: with a bot the bot's id and username, unchanged, else the NATS name | #333, open | before the cutover, inert |
 | 14c-2b, the rest without a token | The hook API, the status and the heartbeat without a token (still behind `client.token` after 14c-2a), with what needs them: `bus_info` (also naming the refused latch beyond its warning), `unread.after`'s `account_created()` and the NATS port's hand-over cursor at its start | not yet | before the cutover, inert |
 | 14c-2c, the flip | `nobot.CROWN_NEEDS_BOT` and `CB_CROWN_NEEDS_BOT` (`bin/mm-agent-lib.sh`) turned in one commit; `nobot.decide`'s early return goes with its docstring sentence and test, and the sentences about it in RT-6.10 step 8 and RT-6.18 step 13 | not yet, on `cutover/plan-b` | **the cutover release** |
@@ -146,7 +146,7 @@ steered agent reaches the sessions that share its plugin tree (RISK-37).
 
 What #244's switch-on lists and the ADR's acceptance ask for, ordered so that
 each item only needs what is above it. "Before the cutover release" can land with every switch
-off; "lab" needs the lab, at the latest with the switch-on of the cutover checklist (step b).
+off; "lab" needs the lab, at the latest with the switch-on of the cutover checklist (step c).
 Gates 16 to 21 are dropped (the cutover above); the checklist below the table takes their place.
 
 | # | Gate | Source | When |
@@ -166,57 +166,59 @@ Gates 16 to 21 are dropped (the cutover above); the checklist below the table ta
 | 13 | piece 5: the tombstone at a revocation, or the owner accepts the 7 h | #270 comment | lab |
 | 14 | piece 12: switching transport at a renewal, or the owner accepts that a flag takes effect at the next start | ADR-014 item 12 | lab |
 | 15 | the old bridge copies of #297: open asks with a reacted copy asked again after the bridge update | #298 comment | lab |
+| 16 | 14c merged (until then 14a's predicate always names a reason, the crown needs the bot's identity, and every session registers; the corral start hook defers none, `CB_CROWN_NEEDS_BOT` in `bin/mm-agent-lib.sh`, which 14c flips in the same commit as `nobot.CROWN_NEEDS_BOT`; 14c also deletes `nobot.decide`'s early return with its docstring sentence and test, and the sentences about it in RT-6.10 step 8 and RT-6.18 step 13); the acceptance: the phase 4 rows again with `testrig`; phase 5's criterion (ask, approval by reaction, mention, file, change of coordinator) with no agent holding a Mattermost token; the identity rows over the bridge (forged verdict, replayed approval and ask, an approval read from history with and without a fresh record) | ADR-014 "Acceptance" | dropped by the cutover (2026-11-28) |
+| 17 | the signed records and release record from the bridge, keyed by the bound channel's Mattermost id from the directory | ADR-014 acceptance, #151 steps 3 and 4 | dropped by the cutover (2026-11-28) |
+| 18 | the console's check of the release signature (#192, open) | ADR-014 acceptance | dropped by the cutover (2026-11-28) |
+| 19 | the offline token's maximum lifetime and DPoP built, or the owner's word to go without (RISK-26) | ADR-014 acceptance | dropped by the cutover (2026-11-28) |
+| 20 | every home switched, test channel first, this project's channels last (ADR-014 point 14); every host in each home on the decision release | ADR-014 point 14 | dropped by the cutover (2026-11-28) |
+| 21 | the owner's approval of the last piece | ADR-014 acceptance | dropped by the cutover (2026-11-28) |
 
-**Dropped by the cutover:** gates 16 to 21, that is 14c merged with the measured
-acceptance (`testrig` on the phase 4 rows, phase 5's criterion with no agent holding a
-Mattermost token, the identity rows over the bridge), the signed records and the
-release record from the bridge, the console's check of the release signature (#192),
-the offline token's maximum lifetime and DPoP (RISK-26), every home switched one by
-one with this project's channels last, and the owner's approval of the last piece.
-The issues behind them stay open; none of them holds the cutover back.
+The issues behind the dropped gates stay open; none of them holds the cutover back.
 
 ### The cutover checklist, in order
 
-- **(a) The conditions from #244 fixed** (14c-1b), before piece 2 or 14c goes on
-  anywhere. The two not to switch on without: the sweep's lock probe takes the
-  exclusive lock, so a server starting in that instant stays unlatched; a kill between
-  the counter move and the marker strands the counters. The rest listed there: a
-  SIGKILL between append and unlink doubles a counter claim; a stale endpoint file's
-  `CB_STATE_KEY` sends the scripts' files to a dead key; two servers without a bot in
-  one workspace (a lock on the workspace tie, the coordinator's decision); the way
-  back (the switch off again) leaves counters kept under the name unpublished; a
-  non-UTF-8 counters file blocks the latch; the first start after the upgrade skips a
-  lockless predecessor; with piece 2 on, a session still running under an `agent-`
-  name from before #276 no longer latches (the lab only). The strict state key
-  (exactly 26 `[a-z0-9]` or 25 `[a-z2-7]`) refuses a NATS name made with a configured
-  `CB_AUTH_NAME_PREFIX`: such a session keeps the bot-id key and never latches, which
-  fails safe; a deployment that sets a name prefix widens the key rule and the
-  sweep's name pattern first (the lab sets none, #274). Also raised on #244 for this
-  point: how the theft notice reaches the human without a bot (`nats_port._on_notice`
-  stays a DM while a bot exists, its replacement is open), and the release record's
-  address and pinned keys from the host's settings, where the agent cannot write them,
-  under their new name (answer 4 of section 5).
-- **(b) The lab switched on.** The login service's directory admin API on
+- **(a) The conditions from #244 fixed** (14c-1b, #337, in 0.105.0, so they hold
+  before piece 2 is on). The two not to switch on without: the sweep's lock probe
+  takes the exclusive lock, so a server starting in that instant stays unlatched; a
+  kill between the counter move and the marker strands the counters. The strict
+  state key (exactly 26 `[a-z0-9]` or 25 `[a-z2-7]`) refuses a NATS name made with a
+  configured `CB_AUTH_NAME_PREFIX`: such a session keeps the bot-id key and never
+  latches, which fails safe; a deployment that sets a name prefix widens the key rule
+  and the sweep's name pattern first (the lab sets none, #274). The rest:
+  [the list on #244](https://github.com/dembaca/ai-agent-bus/issues/244#issuecomment-7241115154).
+  Also open there: [how the theft notice reaches a human without a bot](https://github.com/dembaca/ai-agent-bus/issues/244#issuecomment-7239188497).
+- **(b) Release 0.105.0** (pieces 1 to 13, 14a, 14b, 14c-1 and its follow-up 14c-1b,
+  every switch off) signed; the lab's bridge and login service on images built from
+  its main commit, with the NATS rights the newer images' `Needs:` lines name.
+- **(c) The lab switched on.** The login service's directory admin API on
   (`CB_AUTH_ADMIN_LISTEN_ADDR` with its certificate, `CB_AUTH_ADMIN_TLS_CERT_FILE` and
-  `CB_AUTH_ADMIN_TLS_KEY_FILE`; through `~bgl-infra`, dembaca/bgl-infra#463), and
-  whether the one-time import (`CB_AUTH_DIRECTORY_IMPORTED`, #86) must run first
-  checked there; every plan B piece, 1 to 13, switched on in every home's directory
-  record (`authd dir planb`, RT-6.40 step 5), with gate 10's rights and config; the
-  bridge and the login service on the release's images; the registrar's release
-  record frozen at the current version before the cutover tag, so no old host copy's
-  self-update (`--auto`, RT-6.32) installs the cutover release.
-- **(c) A smoke test in the lab**, with sessions on the cutover release for Claude
-  Code, OpenCode and pi, under corral too (network to NATS and the login service, a
+  `CB_AUTH_ADMIN_TLS_KEY_FILE`; through `~bgl-infra`, dembaca/bgl-infra#463),
+  reachable from the VPN as well as the management networks (the owner's answer of
+  2026-11-28 17:02, ask `w6f64z5qc38p5ehdkmhzsmgitw`). Then the one-time import
+  (`POST /v1/directory/import`, RT-6.40 step 6), run once on the new login-service
+  image, and `CB_AUTH_DIRECTORY_IMPORTED=true` set, before `authd dir planb`. The
+  owner decided on 2026-11-28 (ask `6fybr8iemffcibp53j7oh7rfqy`) that the lab's
+  import may run with the emergency brake by name: the rename procedure is in the lab
+  runbook, and the brake by anchor (#336) comes before the bus leaves the lab. Then
+  every plan B piece, 1 to 13, switched on in every home's directory record
+  (`authd dir planb`, RT-6.40 step 5), with gate 10's rights and config.
+- **(d) A smoke test in the lab** on the head of `cutover/plan-b`, for Claude Code,
+  OpenCode and pi, under corral too (network to NATS and the login service, a
   writable keystore in the sandbox's home): the login, the crown's election and
   hand-over without a bot, an ask with its answer, a person's history, a file, the
   bridge's copies, the console's views, and a restart that takes over its state.
-- **(d) The owner switches all agents** to the cutover release within an hour, and
-  removes corral's exec entries (`preStart`, `postEnd`) on each host (section 4).
-- **(e) The registrar keeps running one day as the way back:** an older release
+- **(e) The release cut.** First the registrar's release record frozen at the current
+  version, so no old host copy's self-update (`--auto`, RT-6.32) installs the cutover
+  release; then the integration branch merged into main; the owner signs and pushes
+  the tag.
+- **(f) The owner switches all agents** to the cutover release within an hour, with
+  `CB_*` setting names only, since the old `MM_*` names go with that release
+  (section 4), and removes corral's exec entries (`preStart`, `postEnd`) on each host.
+- **(g) The registrar keeps running one day as the way back:** an older release
   still registers. 14d deletes nothing on the hosts (`releases/`, the pinned signers
   and `MM_REG_SECRET` stay), so a host goes back with the plugin version before and,
   under corral, the signed host copy with corral's hooks.
-- **(f) Then the shutdown (phase 6):** the registrar off, and the registration code
+- **(h) Then the shutdown (phase 6):** the registrar off, and the registration code
   removed from the MCP server in the shutdown release (what stays until the shutdown,
   the cutover above); the registration secret goes two weeks after it (sections 1
   and 2).
@@ -226,21 +228,23 @@ decision (14a) skips registration only when every switch is on, and until the fl
 (14c-2c) not even then; the release notice (14b) changes its source only with
 `CB_RECORDS_URL` set; identity and state (14c-1 to 14c-3) are inert or copy state.
 The cutover release removes what a session needs while any piece is off (14d), so the
-lab switches every piece on first (step b) and every agent moves to it at once (step d).
+lab switches every piece on first (step c) and every agent moves to it at once (step f).
 
 ## 4. Releases, `Needs:` lines and migration
 
 The `Needs:` lines below pass `NEEDS_PATTERN` (`release.py`, checked). The
-version numbers assume the next release is 0.105.0 (the Unreleased NATS-name
-change, a breaking minor) and are placeholders. They name no `CB_*` name: a host
+next release is 0.105.0 (the Unreleased NATS-name change, a breaking minor), the
+cutover release 0.106.0 (the owner's decision in its row); the shutdown release's
+number is a placeholder. They name no `CB_*` name: a host
 before 0.103.0 drops such a line ([env-names.md, the needs rule](env-names.md#the-needs-rule));
 the `CB_` names go into the entry's text.
 
 | Release | Content | SemVer | `Needs:` line |
 |---|---|---|---|
-| Releases before the cutover, e.g. 0.105.0 | 14a, 14b, 14c-1, 14c-1b, 14c-2a, 14c-2b and 14c-3, inert or behind switches that are off; gates 1 to 9; the first step of the host side's removal (the MCP entry point) | as their other content asks; with the switches off nothing changes | none for piece 14 |
-| Cutover release, e.g. 0.106.0 | the flip (14c-2c) and the removal of the host side (14d), merged from `cutover/plan-b` | minor, `### Breaking`: no bot in a fully switched home, corral's hooks and the host copy are gone | `Needs: every channel on nats with every piece on, bridge and login service at 0.106.0 or newer.` |
-| Shutdown release, after the registrar's day | registration code and registrar names out of the MCP server and the harness plugins | minor, `### Breaking` | `Needs: registrar off, secret kept two weeks, then deleted.` |
+| 0.105.0 | pieces 1 to 13, 14a, 14b, 14c-1 and its follow-up 14c-1b, every switch off | as its other content asks; with the switches off nothing changes | none for piece 14 |
+| After 0.105.0, in 0.106.0 at the latest | 14c-2a, 14c-2b and 14c-3, inert; the first step of the host side's removal (the MCP entry point); the rest of gates 1 to 9 | as their content asks; with the switches off nothing changes | none for piece 14 |
+| Cutover release, 0.106.0 | the flip (14c-2c) and the removal of the host side (14d), merged from `cutover/plan-b`; the old `MM_*` setting names (the fallbacks to `CB_*`, #169) go with it, the owner's decision of 2026-11-28 17:03 (ask `6srsrf7unjf6ixk4i8616w9fzo`) | minor, `### Breaking`: no bot in a fully switched home, corral's hooks and the host copy are gone, an old name alone refuses the start | `Needs: every channel on nats with every piece on, bridge and login service at 0.105.0 or newer, new names set.` |
+| Shutdown release, e.g. 0.107.0, after the registrar's day | registration code and registrar names out of the MCP server and the harness plugins | minor, `### Breaking` | `Needs: registrar off, secret kept two weeks, then deleted.` |
 
 **What the hosts do.**
 
@@ -353,8 +357,8 @@ n1:ai-agent-bus-dev:890 in `~ai-agent-bus-dev`):
 - **Mixed versions:** an older host in a switched home misreads replies and drops
   reactions (piece 7) and new-named agents (#274); ADR-014 point 14 gives no grace
   period. The cutover keeps that window short: the lab's switches go on just before
-  the smoke test (checklist step b), and the owner then moves every agent within an
-  hour (step d).
+  the smoke test (checklist step c), and the owner then moves every agent within an
+  hour (step f).
 - **State moved by key:** a missed file in 14c loses a thread the agent is in, or a
   watermark, so messages come again; the copy leaves the source for the way back.
 - **The way back after the cutover release** lasts the registrar's one day: the plugin
@@ -394,7 +398,7 @@ n1:ai-agent-bus-dev:890 in `~ai-agent-bus-dev`):
    the older host copy installed again registers while the registrar still runs.
 
 The registrar retires one day after the owner switched every agent (the cutover,
-checklist steps e and f), not after #151's two weeks without a registration, which
+checklist steps g and h), not after #151's two weeks without a registration, which
 the cutover supersedes. #151's other conditions stand: every home over NATS, the
 bridge serving each of its routes, and the owner's approval of the list of old bots
 and tokens; then the steps #151 lists, through `~bgl-infra`.
