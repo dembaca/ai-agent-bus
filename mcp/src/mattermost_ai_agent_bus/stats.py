@@ -403,9 +403,15 @@ def _traffic(counted: list[dict[str, Any]], posts: list[dict[str, Any]],
     is one). Each a pair [n, characters] under a key of a fixed list; an unknown word or kind
     counts as `other`. Which category each belongs to is the reader's (CATEGORY_OF)."""
     words: dict[str, list[int]] = {}
+    hours: dict[str, dict[str, int]] = {}
     for p in posts:
         w = p.get("w")
-        _add(words, w if w in POST_WORDS else "other", p.get("chars"))
+        word = w if w in POST_WORDS else "other"
+        _add(words, word, p.get("chars"))
+        # #290: the same posts by the UTC hour they were made in, counts only.
+        if _t(p) > 0:
+            hour = hours.setdefault(str(_t(p) // 3600), {})
+            hour[word] = hour.get(word, 0) + 1
     inbound: dict[str, list[int]] = {}
     for e in counted:
         if e.get("k") == "in" and e.get("c") in INBOUND_CLASSES:
@@ -419,7 +425,7 @@ def _traffic(counted: list[dict[str, Any]], posts: list[dict[str, Any]],
             _add(inject, name if name in INJECT_KINDS else "other", e.get("chars"))
     for c in compacts:
         _add(inject, "compact", c.get("chars"))
-    return {"post_words": words, "inbound": inbound,
+    return {"post_words": words, "post_hours": hours, "inbound": inbound,
             "polls": [len(polls), sum(1 for e in polls if e.get("empty"))], "inject": inject}
 
 
@@ -565,6 +571,7 @@ def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed
         **_settled(counted, events),
         **({"tok": tok} if tok else {}),
     }
+    _fit(data)
     if not final:
         cut = int(now)
         carry = [{"k": "part", "t": cut, "sid": sid, "n": part["n"] + 1, **({"hooks": 1} if hooked else {})},
@@ -573,6 +580,15 @@ def _summarize(events: list[dict[str, Any]], version: str, fixed: overhead.Fixed
                  *([{"k": "saving", "t": at, "at": at} for at in pending] if hooked else []),
                  *([paths[-1]] if paths else [])]
     return data, carry
+
+
+def _fit(data: dict[str, Any]) -> None:
+    """Keep the line within NATS_BODY_MAX (#290): `post_hours` gives up its oldest hours
+    first, so a part that fit before the hourly buckets still fits, on NATS, in the chat and
+    in the STATS import (which takes 8000 bytes). `post_words` keeps the part's total."""
+    hours = data.get("post_hours")
+    while hours and len(json.dumps(data, separators=(",", ":"))) > NATS_BODY_MAX:
+        del hours[min(hours, key=int)]
 
 
 def summary(version: str, fixed: overhead.Fixed | None = None) -> dict[str, Any] | None:
@@ -745,6 +761,7 @@ LINE_KEYS: dict[str, str] = {
     "human_posts_trusted": "posts by trusted humans", "human_posts_other": "posts by other humans",
     "human_answers": "answers by humans", "tok": "tokens", "post_words": "own posts by word",
     "inbound": "messages handed in", "polls": "polls", "inject": "hook texts",
+    "post_hours": "own posts by hour",
 }
 # The bus's own MCP tools (the names server._out counts), and "?" for none.
 TOOL_NAMES = frozenset({
@@ -766,6 +783,8 @@ TOK_TYPES = frozenset(overhead.KEYS)  # in, read, w5m, w1h, out
 # messages handed to the agent by the server-verified author class (`event`: the server's
 # own) and the envelope around them; the texts put into the context by kind.
 POST_WORDS = frozenset({*a2a.WORDS, "ask", "plain", "other"})
+# #290: `post_hours` keys an hour by its UTC hour since the epoch (seconds // 3600), as text.
+HOUR_RE = re.compile(r"[0-9]{1,9}")
 INBOUND_CLASSES = frozenset({"agent", "human", "event"})
 INBOUND_KEYS = INBOUND_CLASSES | {"envelope"}
 INJECT_KINDS = frozenset({"start", "check", "digest", "drain", "signoff", "listen", "idle", "compact",
@@ -858,7 +877,7 @@ def _typed(key: str, v: object) -> bool:
     """The type the allow list gives `key` (protocol.md): the four strings by their pattern,
     `final` a boolean, `part` an integer, `posts`, `compact` and `polls` a pair of numbers,
     `wakes` and `blocks` objects of numbers, `tools`, `post_words`, `inbound` and `inject`
-    objects of pairs, `tok` its fixed shape, every other listed key one number; each number
+    objects of pairs, `post_hours` an object of objects of numbers, `tok` its fixed shape, every other listed key one number; each number
     0 to NUM_MAX."""
     check = STRING_FIELDS.get(key)
     if check is not None:
@@ -873,6 +892,8 @@ def _typed(key: str, v: object) -> bool:
         return _nums(v)
     if key in ("tools", "post_words", "inbound", "inject"):
         return isinstance(v, dict) and all(_pair(x) for x in v.values())
+    if key == "post_hours":
+        return isinstance(v, dict) and all(_nums(x) for x in v.values())
     if key == "tok":
         return _tok(v)
     return _num(v)
@@ -891,8 +912,12 @@ def _value(v: object, depth: int = 0) -> bool:
 
 def _allowed(key: str, value: Any) -> Any:
     """The value with every key outside the allow list left out (one level of keys below
-    `wakes`, `blocks`, `tools`, `tok`, `post_words`, `inbound` and `inject`, and the token
-    types below `tok.all`, `tok.bus`, `tok.ovh` and `tok.coord`)."""
+    `wakes`, `blocks`, `tools`, `tok`, `post_words`, `inbound` and `inject`, two below
+    `post_hours` (hours by HOUR_RE, then the bus words), and the token types below `tok.all`, `tok.bus`, `tok.ovh` and `tok.coord`)."""
+    if key == "post_hours" and isinstance(value, dict):
+        # An hour off its pattern is left out like an unknown key; below it the bus words.
+        return {h: {w: n for w, n in x.items() if w in POST_WORDS}
+                for h, x in value.items() if HOUR_RE.fullmatch(h)}
     sub = _SUB_KEYS.get(key)
     if sub is None or not isinstance(value, dict):
         return value
@@ -1448,6 +1473,25 @@ def brief(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                      "roles": [r | {"split": _no_types(r.get("split"))} for r in row.get("roles") or []]}
         out.append(row)
     return out
+
+
+def hours_of(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The own posts by hour and bus word over `lines` (#290, the console's hourly bars):
+    `hours` maps an hour's start (UTC, epoch seconds) to {word: n}, summed over the lines,
+    by the hour a post was made in, not the hour its part arrived; `lines` of `of` say how
+    many lines carried `post_hours`. None when none did (publishers before it): no hourly
+    data, never zero. A part that left out its oldest hours to fit (_fit) keeps them only in
+    `post_words`."""
+    carried = [line["post_hours"] for line in lines if isinstance(line.get("post_hours"), dict)]
+    if not carried:
+        return None
+    hours: dict[int, dict[str, int]] = {}
+    for part in carried:
+        for h, words in part.items():
+            into = hours.setdefault(int(h) * 3600, {})
+            for w, n in words.items():
+                into[w] = into.get(w, 0) + int(n)
+    return {"hours": dict(sorted(hours.items())), "lines": len(carried), "of": len(lines)}
 
 
 def split_summary(lines: list[dict[str, Any]]) -> dict[str, Any] | None:
