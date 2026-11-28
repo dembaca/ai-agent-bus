@@ -482,7 +482,8 @@ at most 8 KiB, for example:
 No other value is a string. Each listed key has one type: `part` an
 integer, `final` a boolean, `posts`, `compact` and `polls` a pair of numbers,
 `wakes` and `blocks` objects of numbers, `tools`, `post_words`, `inbound`
-and `inject` objects of pairs, `tok`
+and `inject` objects of pairs, `post_hours` an object of objects of numbers
+(hour, then bus word, then a count; #290), `tok`
 its numbers and the objects `all`, `bus`, `ovh` and `coord` of numbers, every other listed
 key one number; each number an integer from 0 to 10^12, and a share is shown within 0 to 100. A key outside the list may
 hold a number, a boolean, a list of numbers or an object of such values,
@@ -504,7 +505,12 @@ share by cause count only lines with `tok.bus`; the event's uncovered input
 `h_in`, `h_read`, `h_w` stays in the server, only where the bus's fixed head
 went shows, in `tok.ovh`); in `tok.all`, `tok.bus`,
 `tok.ovh` and `tok.coord` `in`, `read`, `w5m`, `w1h` and `out`;
-in `post_words` the bus words and `ask`, `plain`, `other`; in `inbound`
+in `post_words` the bus words and `ask`, `plain`, `other`; in `post_hours`
+an hour since the epoch in UTC (seconds // 3600, 1 to 9 digits, `HOUR_RE`),
+below it the words of `post_words` with a count of own posts made in that
+hour, only hours and words with posts (an older reader ignores the key as
+any unknown one; a part whose line would pass 8000 bytes leaves out its
+oldest hours, [arc42 §6.9](arc42/06-runtime-view.md#69-measuring-the-coordination-overhead)); in `inbound`
 `agent`, `human`, `event` and `envelope`; in `inject` `start`, `check`,
 `digest`, `drain`, `signoff`, `listen`, `idle`, `compact`, `wake` and `other`.
 The publisher leaves out any key outside the list, the reader ignores one,
