@@ -159,9 +159,13 @@ update_note() {
     rel_notified="$newest"
     # A host copy that updates itself between sessions says so (RT-6.32); a
     # newest older than the session's server is never one to install (RT-6.30
-    # step 6): `older` comes from the server, which decided the line.
+    # step 6): `older` comes from the server, which decided the line. With the
+    # bridge's record as the source, a human installs it through the harness's
+    # marketplace, never the host's installer (RT-6.30 step 8).
     if [[ "$rline" == *"updates itself to v"* || "$RELEASE_OLDER" == true ]]; then
       notes="${notes:+$notes$'\n'}$CB_UPDATE $rline"
+    elif [[ "$RELEASE_SOURCE" == record ]]; then
+      notes="${notes:+$notes$'\n'}$CB_UPDATE $rline — a human installs it through the harness's marketplace"
     else
       notes="${notes:+$notes$'\n'}$CB_UPDATE $rline — a human installs it on the host: mm-agent-host-install.sh --release v$newest"
     fi
@@ -200,7 +204,7 @@ go_idle() {
 # one `~channel post <root> by <author>` each, `; ` between, those not reminded
 # of yet (?unanswered=1). Reading marks nothing: the hook marks the posts it
 # blocks for (POST /v1/reminded, UNANSWERED_IDS), so each blocks once.
-LAST_MSG="" LAST_HEAD="" LAST_AT=0 SIGNED_OFF=0 RELEASE_NEWEST="" RELEASE_LINE="" RELEASE_OLDER=""
+LAST_MSG="" LAST_HEAD="" LAST_AT=0 SIGNED_OFF=0 RELEASE_NEWEST="" RELEASE_LINE="" RELEASE_OLDER="" RELEASE_SOURCE=""
 UNANSWERED="" UNANSWERED_N=0 UNANSWERED_IDS="[]"
 my_last_post() {
   mm_bus GET '/v1/last-post?unanswered=1' || return 1
@@ -214,6 +218,7 @@ my_last_post() {
   RELEASE_NEWEST="$(jq -r '.release.newest // ""' <<<"$CB_BUS_BODY" 2>/dev/null)" || RELEASE_NEWEST=""
   RELEASE_LINE="$(jq -r '.release.line // ""' <<<"$CB_BUS_BODY" 2>/dev/null | head -n1 | cut -c1-400)" || RELEASE_LINE=""
   RELEASE_OLDER="$(jq -r '.release.older // false' <<<"$CB_BUS_BODY" 2>/dev/null)" || RELEASE_OLDER=""
+  RELEASE_SOURCE="$(jq -r '.release.source // ""' <<<"$CB_BUS_BODY" 2>/dev/null)" || RELEASE_SOURCE=""
   LAST_AT="$(jq -r '.at // 0' <<<"$CB_BUS_BODY" 2>/dev/null)" || return 1
   LAST_MSG="$(jq -r '.message // ""' <<<"$CB_BUS_BODY" 2>/dev/null)" || return 1
   LAST_HEAD="${LAST_MSG#"$CB_CROWN"}"

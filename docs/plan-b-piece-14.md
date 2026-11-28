@@ -187,6 +187,19 @@ Decided by the owner on 2026-11-28 08:41, ask qbsb7zr1sbnmx8sm8ca9xto48a: all ei
    usual? Recommendation, decided: yes; 14a and 14c touch `server.py`, so they are
    serialised.
 
+Later decisions of 2026-11-28 (ask `ky9wn44pwtgftqu5jht99bktxc`, 09:51), on 14b's record:
+
+- **14b is version-only.** The bridge's record as built carries `signers`, `version`,
+  `set_at_ms`, `iat` and `exp`, not the `Needs:`/`Withdrawn:` lines; the notice
+  therefore names the version and the record, and 14d extends the bridge's record
+  with `needs` and `withdrawn` when the host check goes (the verifier already
+  accepts them, tested).
+- **An exact version.** The record must carry `v<x.y.z>`; `latest` cannot be
+  resolved without the host check and gives no notice, so the decision release's
+  record names the version.
+- **Plain HTTP only to loopback.** No host allow-http setting: a bridge off the
+  loopback is reached over `https` (TLS in front of it), as the read implements.
+
 ## 6. Risks and the test plan
 
 **Risks.**
