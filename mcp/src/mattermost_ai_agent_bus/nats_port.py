@@ -1075,7 +1075,10 @@ class NatsPort:
         return await self.inner.join_channel(channel_name)
 
     async def get_channel(self, channel_id: str) -> Channel:
-        for ch, cid in self._extra_ids().items():
+        # Without a Mattermost bot (plan B piece 14c-2b) the homes too come from the directory;
+        # any other channel is Mattermost's and fails with the no-bot text.
+        known = await self.resolve() if identity.bot_less(self) else self._extra_ids()
+        for ch, cid in known.items():
             if cid == channel_id:
                 return Channel(id=cid, name=ch, type="O")
         return await self.inner.get_channel(channel_id)
@@ -1090,12 +1093,14 @@ class NatsPort:
     async def guest_channel_ids(self) -> set[str]:
         """The adapter's (the bot's Mattermost memberships, RT-6.22 step 1), plus the guests
         over NATS (piece 12) by the directory's ids; the lobby and a channel switched on but
-        not reachable are none of them. Without piece 12 the adapter's, unchanged."""
+        not reachable are none of them. Without piece 12 the adapter's, unchanged. Without a
+        Mattermost bot (plan B piece 14c-2b) no Mattermost memberships: the NATS guests alone."""
         extra = self._extra_ids()
-        if not extra and not self._closed12:
+        bot_less = identity.bot_less(self)
+        if not extra and not self._closed12 and not bot_less:
             return set(await self.inner.guest_channel_ids())
         try:
-            got = set(await self.inner.guest_channel_ids())
+            got = set() if bot_less else set(await self.inner.guest_channel_ids())
         except Exception as exc:  # noqa: BLE001 — the Mattermost guests are left out, not ours
             log.warning("could not read the guest channels on Mattermost: %s", exc)
             got = set()
