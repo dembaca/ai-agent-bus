@@ -123,7 +123,8 @@ _IDS = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID")
 
 # What preStart may hand the host process on stdin besides the key: the bus
 # settings (CB_*, MM_*, MATTERMOST_*), the corral session's names and the network
-# settings that may carry credentials (proxies). Never the registration secret.
+# settings that may carry credentials (proxies). Never the registration secret: that comes
+# only in the start line's "defer", for a session started without a bot (RT-6.18 step 13).
 _HOST_ENV = re.compile(r"(CB|MM|MATTERMOST)_[A-Z0-9_]{1,64}")
 _HOST_ENV_EXTRA = frozenset({
     "CORRAL_WORKDIR", "CORRAL_SESSION_ID", "CORRAL_AGENT", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -146,6 +147,12 @@ CLAUDE_SID_FILE = "claude-sid.env"
 # The Claude session a taken-over bot was kept for, from preStart (step 10).
 KEPT_SID_ENV = "CB_BUS_KEPT_SID"
 KEEP_PREFIX = "keep: "
+# Plan B piece 14a (RT-6.18 step 13): preStart started this process without a bot, for a session
+# that may be fully switched (nobot.py). The start line's "defer" then names the bot to register
+# when a channel or piece is off, and the registration secret to do it with: (name, display,
+# secret), taken once by services(). None: preStart registered the bot, as before.
+_defer: tuple[str, str, str] | None = None
+_DEFER_NAME = re.compile(r"[a-z0-9][a-z0-9-]{1,30}[a-z0-9]")
 
 Serve = Callable[[Any, Any], Awaitable[None]]
 
@@ -833,9 +840,18 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     logging_in = login.start_relayed()
     # A home that runs over NATS (CB_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
     nats = asyncio.create_task(compose.start_nats(client))
+    # Plan B piece 14a (RT-6.18 step 13): started without a bot, this process registers one only
+    # when its own NATS read shows a channel or piece off, or cannot be taken (nobot.py).
+    global _defer
+    defer, _defer = _defer, None
+    deciding = asyncio.create_task(_decide(client, defer)) if defer is not None else None
+    defer = None  # the secret stays only with the decision, until it is taken
     try:
         yield api.endpoint
     finally:
+        if deciding is not None:
+            deciding.cancel()
+            await asyncio.gather(deciding, return_exceptions=True)
         nats.cancel()
         await asyncio.gather(nats, return_exceptions=True)  # a start under way ends here, not later
         from . import server
@@ -848,6 +864,14 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
         attested.cancel()
         checking.cancel()
         await api.close()
+
+
+async def _decide(client: BusClient, defer: tuple[str, str, str]) -> None:
+    """RT-6.18 step 13: the decision of a session preStart started without a bot; logged."""
+    from . import nobot
+
+    name, display, secret = defer
+    log.info("registration: %s", await nobot.host_decide(client, name, display, secret))
 
 
 async def run_host(host: Host, *, ready_file: Path, key: str = "", with_services: bool = True,
@@ -959,7 +983,9 @@ def read_start(stream: Any) -> tuple[str, dict[str, str]]:
 
     The key must be MIN_KEY characters at least. Of ``env`` only bus settings
     (CB_*, MM_*, MATTERMOST_*), the corral names and network settings are taken,
-    never the registration secret; values are strings on one line.
+    never the registration secret; values are strings on one line. The secret
+    comes only in ``defer``, for a session started without a bot (plan B piece
+    14a, RT-6.18 step 13), and is held only until the registration is decided.
     """
     line = stream.readline(HANDSHAKE_MAX + 1)
     if not line.endswith(b"\n") or len(line) > HANDSHAKE_MAX:
@@ -973,6 +999,8 @@ def read_start(stream: Any) -> tuple[str, dict[str, str]]:
     env = data.get("env", {})
     if not isinstance(env, dict):
         raise ValueError("start line: env must be an object")
+    global _defer
+    _defer = _read_defer(data.get("defer"))
     out: dict[str, str] = {}
     for name, value in env.items():
         if not (_HOST_ENV.fullmatch(name) or name in _HOST_ENV_EXTRA) or name in _HOST_ENV_DENY:
@@ -980,6 +1008,25 @@ def read_start(stream: Any) -> tuple[str, dict[str, str]]:
         if isinstance(value, str) and len(value) <= MAX_VALUE and not any(c in value for c in "\0\r\n"):
             out[name] = value
     return key, out
+
+
+def _read_defer(value: Any) -> tuple[str, str, str] | None:
+    """The start line's "defer" (plan B piece 14a, RT-6.18 step 13): the bot's name without the
+    registrar's prefix, its display name, and the registration secret, for a session preStart
+    started without a bot. Absent: None, as before. Refused when malformed."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("start line: defer must be an object")
+    name, display, secret = value.get("name"), value.get("display", ""), value.get("secret")
+    if not isinstance(name, str) or not _DEFER_NAME.fullmatch(name):
+        raise ValueError("start line: defer.name must be a bot name (3-32 lowercase alnum/hyphen)")
+    if not isinstance(display, str) or len(display) > 256 or any(c in display for c in "\0\r\n"):
+        raise ValueError("start line: defer.display must be one line of at most 256 characters")
+    if (not isinstance(secret, str) or not secret or len(secret) > MAX_VALUE
+            or any(c in secret for c in "\0\r\n")):
+        raise ValueError("start line: defer.secret must be the registration secret, one line")
+    return name, display, secret
 
 
 def _detach(log_file: Path | None) -> None:

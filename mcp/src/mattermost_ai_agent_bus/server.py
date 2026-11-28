@@ -29,7 +29,7 @@ from . import (
     __version__, a2a, askroute, asks, attach, attest, channel, compose, debug, departed, files, gate, hookapi, hosted,
     lease, life, login, mandate, overhead,
     owners, ownpost, permission,
-    natsbus, profile, receipt, release, remind, session_file, slim, stall, stats, tasks, unanswered, unread, usage,
+    natsbus, nobot, profile, receipt, release, remind, session_file, slim, stall, stats, tasks, unanswered, unread, usage,
 )
 from .a2a import attachment_props, props_view, with_debug
 from .compose import BusClient
@@ -1083,7 +1083,17 @@ async def session_start(
             break
         await asyncio.sleep(0.1)
     client = _get_client()
+    # Plan B piece 14a (RT-6.10 step 8): a session that may be fully switched decides after its
+    # own NATS read; every channel and piece on: no bot, now or later in this session.
+    if not nobot.held() and nobot.deferrable(client):
+        why = await nobot.decide(client)
+        if why:
+            log.info("registration: a bot is needed (%s)", why)
+    if nobot.held():
+        return _out("session_start", {"registered": False, "no_bot": nobot.reason()})
     info = await client.session_start(name, display_name or None, unique=unique)
+    if (port := compose.nats_port_of(client)) is not None and port.bot_deferred:
+        port.link_bot(info.user_id, info.username)  # the bus started without one (piece 14a)
     if client.reused:
         # This session's bot already (taken over after `claude --continue`):
         # same identity, same inbox — nothing to set up again (RT-6.10).
@@ -1142,10 +1152,21 @@ async def bus_info() -> str:
     list is empty, approvals over the bus are off. Off the bus (no chat URL, no
     bot yet, stale copy) it says so in on_bus/reason instead of failing.
     """
+    client: BusClient | None = None
     try:
         client = _get_client()
         me = await client.get_me()
     except RuntimeError as exc:
+        # Plan B piece 14a: on the bus over NATS alone (RT-6.18 step 13), decided so, the host
+        # process's decision still open, or its registration failed (nobot.status).
+        if client is not None and (no_bot := nobot.status()):
+            return _out("bus_info", {
+                "version": VERSION, "on_bus": True, "bot": None, "no_bot": no_bot,
+                "home": client.work_channel_name, "guests": list(getattr(client, "guest_channel_names", ())),
+                "lobby": client.channel_name,
+                **({"over_nats": over} if (over := lease.nats_visibility()) else {}),
+                "release": release.notice(VERSION),
+            })
         return _out("bus_info", {
             "version": VERSION,
             "on_bus": False,

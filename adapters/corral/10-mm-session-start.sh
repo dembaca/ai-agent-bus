@@ -442,8 +442,31 @@ take_over() {
 # (arc42 §7.3); the token comes back as a plain assignment, not exported.
 # Only this registration's attestation reaches the host process (RT-6.24):
 # the export lines carry one when the registrar sent it.
+# Plan B piece 14a (RT-6.18 step 13): a session whose every channel CB_NATS_HOMES lists may run
+# with no bot at all. This hook cannot see the plan B switches, so it registers nothing: the
+# host process decides on the login service's records after its NATS read and registers the
+# bot only when a channel or piece is off, or when it cannot decide (mm_bot_deferrable). It
+# gets the registration secret on stdin for that, and drops it once it decided. Until piece 14c
+# mm_bot_deferrable says no to every session (CB_CROWN_NEEDS_BOT, the crown still needs the bot):
+# each registers here, as before.
+DEFER=0
 if take_over; then
   REGISTERED=1
+elif mm_bot_deferrable; then
+  DEFER=1
+  KEPT_SID=""
+  unset MM_BOT_ATTESTATION
+  CB_MM_BOT_TOKEN="" MM_BOT_TOKEN="" MATTERMOST_TOKEN=""
+  export -n CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN
+  MM_REG_BOT_NAME="$NAME"
+  mm_env_set CB_MM_BOT_USERNAME MM_BOT_USERNAME ""
+  mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID ""
+  # The session file without a token, marked DEFERRED=1: a bot the host process registers goes
+  # into it (nobot.record_token), so postEnd, or mm-agent-sweep.sh after it, can unregister it
+  # when the host's exit work did not; without one postEnd removes the file.
+  { mm_write_session_file && printf 'DEFERRED=1\n' >>"$CB_AGENT_SESSION_FILE"; } ||
+    no_bus "could not write the session file"
+  log "no bot registered here: every channel of this session is in CB_NATS_HOMES, so its host process registers ${NAME} only if a channel or plan B piece is off (plan B piece 14, RT-6.18 step 13)"
 else
   KEPT_SID=""
   unset MM_BOT_ATTESTATION
@@ -475,10 +498,13 @@ cleanup_and_fail() {
 
 # The script joins the bot as before also with plan B piece 1 on (RT-6.39 step 6): the MCP
 # server then takes the channel ids from the channel directory with the NATS credential.
-if ! chan_exports="$(mm_with_token "$BIN/mm-agent-channels.sh" resolve)"; then
-  cleanup_and_fail "channel resolution failed"
+# Without a bot (piece 14a) there is no token to resolve with: the MCP server resolves them.
+if [[ "$DEFER" -eq 0 ]]; then
+  if ! chan_exports="$(mm_with_token "$BIN/mm-agent-channels.sh" resolve)"; then
+    cleanup_and_fail "channel resolution failed"
+  fi
+  eval "$chan_exports"
 fi
-eval "$chan_exports"
 
 # Record the supervising corral process. mm-agent-sweep.sh uses it to tell a
 # live session from an abandoned one: a session file exists for the whole run,
@@ -490,12 +516,12 @@ printf 'CB_SESSION_PID=%s\nMM_SESSION_PID=%s\n' "$PPID" "$PPID" >>"$CB_AGENT_SES
 # bot's own post counts as unread for the bot. The bus never counts it (its
 # read watermark leaves own posts out, RT-6.2); this clears the display. A
 # taken-over bot keeps what arrived while it was kept: it is not fresh.
-[[ -n "$TAKEN" ]] || mm_with_token "$BIN/mm-agent-unread.sh" baseline || true
+[[ -n "$TAKEN" || "$DEFER" -eq 1 ]] || mm_with_token "$BIN/mm-agent-unread.sh" baseline || true
 
 # Show up as present from the first moment. Without this a fresh bot sits at
 # whatever Mattermost infers from (non-existent) activity, which reads as
 # offline to anyone looking at the member list.
-mm_with_token "$BIN/mm-agent-status.sh" idle "$PROJECT_RAW" || true
+[[ "$DEFER" -eq 1 ]] || mm_with_token "$BIN/mm-agent-status.sh" idle "$PROJECT_RAW" || true
 
 # --- trusted humans ----------------------------------------------------------
 # The humans this session answers to on the bus (RT-6.8): their posts may carry
@@ -505,7 +531,10 @@ mm_with_token "$BIN/mm-agent-status.sh" idle "$PROJECT_RAW" || true
 TRUSTED="" TRUSTED_IDS=""
 while read -r n; do
   [[ -n "$n" ]] || continue
-  if mm_api GET "/api/v4/users/username/${n}" && [[ "$CB_MM_API_STATUS" == "200" ]] &&
+  if [[ "$DEFER" -eq 1 ]]; then
+    # No token to look them up with (piece 14a): as configured; the MCP server resolves them.
+    TRUSTED+="${TRUSTED:+,}${n}"
+  elif mm_api GET "/api/v4/users/username/${n}" && [[ "$CB_MM_API_STATUS" == "200" ]] &&
     [[ "$(jq -r '.is_bot // false' <<<"$CB_MM_API_BODY")" == false ]]; then
     TRUSTED+="${TRUSTED:+,}${n}"
     TRUSTED_IDS+="${TRUSTED_IDS:+,}$(jq -r '.id' <<<"$CB_MM_API_BODY")"
@@ -535,6 +564,7 @@ trusted_shown="none (set CB_TRUSTED_HUMANS)"
 # host owns. The prefix
 # goes along instead (MM_AGENT_PREFIX, arc42 §7.1): the sandbox cannot derive it.
 note="You are @${CB_MM_BOT_USERNAME} on the AI agent bus."
+[[ "$DEFER" -eq 0 ]] || note="You are on the AI agent bus, over NATS. No Mattermost bot is registered for you yet: the host registers one only if a channel or plan B piece of this session is off; bus_info says which (RT-6.18 step 13)."
 [[ -z "$TAKEN" ]] || note+=" The host kept this bot from the session you resumed: same name, threads and DMs."
 # Home, guests, lobby (ADR-002, RT-6.22): the first CB_MM_PROJECT_CHANNEL entry is
 # the home, the others are guest channels.
@@ -638,7 +668,10 @@ done
 HOST_PID="" HOST_PORT="" HOST_HOOK="" HOST_STARTED=1
 # A taken-over bot's host process also learns the Claude session it was kept
 # for (CB_BUS_KEPT_SID, a key), to log a resume of another one (step 10).
-if jq -nc --rawfile key /dev/fd/4 --rawfile tok /dev/fd/5 --argjson base "$ENV_JSON" --arg kept "$KEPT_SID" '
+# Without a bot (piece 14a) no token goes, and "defer" names the bot to register if one is
+# needed, with the registration secret on fd 6 (hosted.read_start); else none.
+if jq -nc --rawfile key /dev/fd/4 --rawfile tok /dev/fd/5 --argjson base "$ENV_JSON" --arg kept "$KEPT_SID" \
+     --arg defer "$DEFER" --arg name "$NAME" --arg display "$DISPLAY" --rawfile sec /dev/fd/6 '
      {key: $key,
       env: ((env | with_entries(select(.key | test(
               "^(CB|MM|MATTERMOST)_[A-Z0-9_]+$|^(CORRAL_WORKDIR|CORRAL_SESSION_ID|CORRAL_AGENT|TZ|SSL_CERT_FILE|SSL_CERT_DIR)$|^(HTTPS?|NO|ALL)_PROXY$|^(https?|no|all)_proxy$")))
@@ -647,9 +680,11 @@ if jq -nc --rawfile key /dev/fd/4 --rawfile tok /dev/fd/5 --argjson base "$ENV_J
                    .CB_MM_BOT_TOKEN, .MM_BOT_TOKEN, .MATTERMOST_TOKEN, .CB_BUS_KEPT_SID, .MM_BUS_KEPT_SID,
                    .CB_BUS_MCP_ENDPOINT, .MM_BUS_MCP_ENDPOINT, .CB_BUS_ENDPOINT, .MM_BUS_ENDPOINT,
                    .CB_BUS_UNAVAILABLE, .MM_BUS_UNAVAILABLE))
-            + $base + {CB_MM_BOT_TOKEN: $tok, MM_BOT_TOKEN: $tok}
-            + (if $kept != "" then {CB_BUS_KEPT_SID: $kept, MM_BUS_KEPT_SID: $kept} else {} end))}' \
-       4< <(printf '%s' "$BUS_KEY") 5< <(printf '%s' "$CB_MM_BOT_TOKEN") |
+            + $base + (if $defer == "1" then {} else {CB_MM_BOT_TOKEN: $tok, MM_BOT_TOKEN: $tok} end)
+            + (if $kept != "" then {CB_BUS_KEPT_SID: $kept, MM_BUS_KEPT_SID: $kept} else {} end))}
+     + (if $defer == "1" then {defer: {name: $name, display: $display, secret: $sec}} else {} end)' \
+       4< <(printf '%s' "$BUS_KEY") 5< <(printf '%s' "$CB_MM_BOT_TOKEN") \
+       6< <(if [[ "$DEFER" -eq 1 ]]; then printf '%s' "${MM_REG_SECRET:-}"; fi) |
     (cd "$ROOT/mcp" && exec env -i "${host_env[@]}" "$HOST_PY" -I -m mattermost_ai_agent_bus --host \
       --ready-file "$HOST_READY" --state-dir "$HOSTED_DIR" --log-file "$HOST_LOG" --watch-pid "$PPID") \
     >>"$HOST_LOG" 2>&1 &&
@@ -671,7 +706,7 @@ jq -nc \
   --arg mcp "tcp://127.0.0.1:${HOST_PORT}" \
   --arg hook "$HOST_HOOK" \
   --arg note "$note" \
-  --arg status "${TAKEN:+took over }${TAKEN:-registered ${CB_MM_BOT_USERNAME}}, home #${HOME_CH}${GUESTS_SHOWN:+, guests ${GUESTS_SHOWN}}${CB_MM_PROJECT_CHANNEL:+, lobby #${CB_MM_CHANNEL:-}}, ${RESPONSIBLE:+for @${RESPONSIBLE}, }trusted ${trusted_shown}; token stays on the host" \
+  --arg status "${TAKEN:+took over }${TAKEN:-$(if [[ "$DEFER" -eq 1 ]]; then printf 'no bot yet (the host decides after the NATS login)'; else printf 'registered %s' "$CB_MM_BOT_USERNAME"; fi)}, home #${HOME_CH}${GUESTS_SHOWN:+, guests ${GUESTS_SHOWN}}${CB_MM_PROJECT_CHANNEL:+, lobby #${CB_MM_CHANNEL:-}}, ${RESPONSIBLE:+for @${RESPONSIBLE}, }trusted ${trusted_shown}; token stays on the host" \
   '{
      corralContributionVersion: 1,
      env: ($env + {CB_BUS_ENDPOINT: $hook, CB_BUS_MCP_ENDPOINT: $mcp, CB_BUS_KEY: $key,
@@ -680,4 +715,6 @@ jq -nc \
      status: [$status]
    }' 4< <(printf '%s' "$BUS_KEY")
 
-log "session bot ${CB_MM_BOT_USERNAME} ready, its MCP server on the host (pid ${HOST_PID}); host copy $(mm_tree_version "$ROOT"), $(mm_release_kind "$ROOT")"
+who="bot ${CB_MM_BOT_USERNAME}"
+[[ "$DEFER" -eq 0 ]] || who="without a bot yet"
+log "session ${who} ready, its MCP server on the host (pid ${HOST_PID}); host copy $(mm_tree_version "$ROOT"), $(mm_release_kind "$ROOT")"

@@ -9,10 +9,11 @@ there and what the owner decided (section 5). Written 2026-11-28 against `origin
 
 ## Starting point
 
-- Twelve of the thirteen earlier pieces are merged behind switches that are off
-  everywhere (CHANGELOG `## Unreleased`). Not merged: the session's side of
-  people's history (piece 5b, PR #295, open) and permission prompts by DM
-  (piece 10, PR #300, open).
+- All thirteen earlier pieces are merged behind switches that are off
+  everywhere (CHANGELOG `## Unreleased`), among them the session's side of
+  people's history (piece 5b, PR #295, merged as 1ca76c91), its switch-on
+  follow-ups (PR #305, merged as 5fa89883) and permission prompts by DM
+  (piece 10, PR #300, merged as 81ba3075).
 - Today every session registers a Mattermost bot at the registrar, also in a home
   over NATS. Under corral the host's start hook registers it and starts the host
   process that holds its token (the keyless session, RT-6.18); the relay in the
@@ -33,7 +34,7 @@ removal release and the shutdown release.
 
 | Step | What it does | Release |
 |---|---|---|
-| 14a, the decision | A session whose home, guest channels, lobby and stats channel all run over NATS with every piece on registers no bot and holds no Mattermost token; any channel off: registers as today | the decision release |
+| 14a, the decision | A session whose home, guest channels, lobby and stats channel all run over NATS with every piece on registers no bot and holds no Mattermost token; any channel off: registers as today. Inert until 14c: until then its predicate always names a reason, the crown needs the bot's identity (RT-6.6 step 13), so every session still registers | the decision release |
 | 14b, the release notice | The MCP server reads the release record the bridge signs (`GET …/register/v1/release`, already routed in `services/bridge/cmd/bridged/main.go`) and tells its human; no host release check | the decision release |
 | 14c, identity and state | The session's own identity is its NATS name, not the bot's Mattermost id (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`); the state files still keyed by the bot id move to the name; the login approval loses its DM and its ask (`login_notice.py`) | the decision release |
 | 14d, the host side goes | Once every home runs every piece: corral's hooks, the host process, the relay, the signed host copy and its updater are removed | the removal release |
@@ -88,8 +89,8 @@ off; "lab" needs the switch on in the test home; "before the removal release" ne
 
 | # | Gate | Source | When |
 |---|---|---|---|
-| 1 | piece 5b merged; its follow-ups fixed: unknown post ids asked at the bridge first, `_history_thread` checks each reply's root, own copies recognised after a restart, attachments through the file request | #295, #244 comment on #295 | before the decision release |
-| 2 | piece 10 merged (permission prompts by DM) | #300 | before the decision release |
+| 1 | piece 5b merged (done: #295, 1ca76c91); its follow-ups fixed (done in #305, 5fa89883: unknown post ids asked at the bridge first, each reply's root checked, own copies recognised after a restart); still open: attachments through the file request | #295, #305, #244 comment on #295 | before the decision release |
+| 2 | piece 10 merged (permission prompts by DM; done: #300, 81ba3075) | #300 | before the decision release |
 | 3 | piece 8: no Mattermost fallback while the bus is down (raise, or document in RT-6.33); a file id no seen post named and files of a DM still take Mattermost: solved or accepted | #286 comment | before the decision release |
 | 4 | piece 7: the synchronous posts (`post_sync`, `post_by_name_sync`, the BYE) moved off Mattermost; a refused reaction told to the agent | ADR-014 item 7 "Built", #294 comment | before the decision release |
 | 5 | piece 11: the inbox's backfill at a Mattermost WebSocket connect, and the WebSocket itself, gone for a fully switched session; an outage longer than the bridge's 10-minute catch-up recovered (history replay or longer catch-up) or accepted | ADR-014 item 11, #293 comment | before the decision release |
@@ -103,7 +104,7 @@ off; "lab" needs the switch on in the test home; "before the removal release" ne
 | 13 | piece 5: the tombstone at a revocation, or the owner accepts the 7 h | #270 comment | lab |
 | 14 | piece 12: switching transport at a renewal, or the owner accepts that a flag takes effect at the next start | ADR-014 item 12 | lab |
 | 15 | the old bridge copies of #297: open asks with a reacted copy asked again after the bridge update | #298 comment | lab |
-| 16 | the acceptance: the phase 4 rows again with `testrig`; phase 5's criterion (ask, approval by reaction, mention, file, change of coordinator) with no agent holding a Mattermost token; the identity rows over the bridge (forged verdict, replayed approval and ask, an approval read from history with and without a fresh record) | ADR-014 "Acceptance" | lab, before the removal release |
+| 16 | 14c merged (until then 14a's predicate always names a reason, the crown needs the bot's identity, and every session registers; the corral start hook defers none, `CB_CROWN_NEEDS_BOT` in `bin/mm-agent-lib.sh`, which 14c flips in the same commit as `nobot.CROWN_NEEDS_BOT`); the acceptance: the phase 4 rows again with `testrig`; phase 5's criterion (ask, approval by reaction, mention, file, change of coordinator) with no agent holding a Mattermost token; the identity rows over the bridge (forged verdict, replayed approval and ask, an approval read from history with and without a fresh record) | ADR-014 "Acceptance" | lab, before the removal release |
 | 17 | the signed records and release record from the bridge, keyed by the bound channel's Mattermost id from the directory | ADR-014 acceptance, #151 steps 3 and 4 | before the decision release |
 | 18 | the console's check of the release signature (#192, open) | ADR-014 acceptance | before the removal release |
 | 19 | the offline token's maximum lifetime and DPoP built, or the owner's word to go without (RISK-26) | ADR-014 acceptance | before the removal release |
@@ -169,7 +170,7 @@ Decided by the owner on 2026-11-28 08:41, ask qbsb7zr1sbnmx8sm8ca9xto48a: all ei
    right later.
 3. **Which known gaps does the owner accept rather than have fixed before the removal release?**
    Recommendation, decided: fix the two that lose a person's words (the outage beyond the
-   bridge's 10-minute catch-up, piece 11; unknown post ids, piece 5b); accept the
+   bridge's 10-minute catch-up, piece 11; unknown post ids, piece 5b, fixed in #305); accept the
    foreign crown (piece 9), the 7 h of a revoked membership (piece 5) and a flag
    taking effect at the next start (piece 12).
 4. **The pinned keys of the release record**, `MM_REGISTRAR_KEYS` today: its new
@@ -199,6 +200,24 @@ Later decisions of 2026-11-28 (ask `ky9wn44pwtgftqu5jht99bktxc`, 09:51), on 14b'
   record names the version.
 - **Plain HTTP only to loopback.** No host allow-http setting: a bridge off the
   loopback is reached over `https` (TLS in front of it), as the read implements.
+
+## 5a. Decisions on 14a's own questions (PR #313)
+
+Six questions came with PR #313, the decision (14a). Question 5 was decided by the
+owner, the others by the coordinator after Fable's security review (post
+n1:ai-agent-bus-dev:890 in `~ai-agent-bus-dev`):
+
+- **Question 5, no late registration: decided by the owner on 2026-11-28 10:00, ask
+  x65nr69n7iftbrfxsc7h41eype: until restart.** A session started without a bot never
+  registers one later; a session that lost a switch keeps running over NATS and
+  needs a restart to register.
+- **Questions 1 to 4 and 6: decided by the coordinator.** (1) The deferred path
+  (host process registers, not byte-identical to today) is accepted; (2) the
+  registration secret goes to the host process on stdin until the decision, for up to
+  60 s plus the registration, unreachable from the sandbox (follows from the owner's
+  decision on question 1 of section 5); (3) the wait stays 60 s; (4) the strict
+  reading stays: every piece in every channel's record; (6) one extra deprecation
+  line for a host on the old `MM_NATS_HOMES` is accepted.
 
 ## 6. Risks and the test plan
 
