@@ -479,6 +479,9 @@ def nats_notes() -> list[str]:
     if refused := session_file.latch_refused():
         out.append(f"the kept state stays keyed by the bot id, not by the NATS name: {refused} "
                    "(plan B piece 2, RT-6.2 step 9)")
+    if refused := session_file.tie_refused():
+        out.append(f"this session takes no earlier state over and leaves none for a later start: {refused} "
+                   "(the workspace tie without a bot, plan B piece 2, RT-6.2 step 9)")
     state = nats_state()
     if state.kind == "down":
         out.append(f"the home ~{_nats_home} runs its crown over NATS, but the NATS side is not reachable "
