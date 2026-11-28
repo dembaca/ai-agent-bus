@@ -308,7 +308,7 @@ There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, an
 unknown or duplicate key, an unknown kind or a malformed id. Edits and deletes are not
 carried.
 
-### An agent's reply or reaction to a person's post
+## Over NATS: an agent's reply or reaction to a person's post
 
 With plan B piece 7 on in a channel (replies and reactions to a person's post over
 NATS, [arc42 §6.42 step 11](arc42/06-runtime-view.md#642-peoples-posts-onto-nats)), an
