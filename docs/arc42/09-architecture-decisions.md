@@ -4958,9 +4958,9 @@ which each piece reads for itself.
       - Built (14a, after 0.104.0; RT-6.18 step 13, RT-6.10 step 8): the
         decision, in `nobot.py` with the predicate `NatsPort.bot_needed`.
         Inert until 14c: the crown still needs the bot's identity (the
-        lease heartbeat and its NATS beat run only with a token; the claim
-        names no bot, corrected by 14c-2a, which moved the identity to the
-        NATS name, identity.py), so the predicate always names that reason
+        lease heartbeat and its NATS beat ran only with a token until
+        14c-2b; the claim names no bot, corrected by 14c-2a, which moved the
+        identity to the NATS name, identity.py), so the predicate always names that reason
         (`nobot.CROWN_NEEDS_BOT`, which 14c deletes; RT-6.6 step 13) and
         every session registers; the corral start hook defers none either
         (`CB_CROWN_NEEDS_BOT` in `bin/mm-agent-lib.sh`, which 14c flips in
@@ -4998,6 +4998,22 @@ which each piece reads for itself.
         shell client (gate 9 of the plan), not 14a's. Unit tests and a real `nats-server` test in
         `mcp/tests/test_planb_piece14.py`, hook tests in
         `tests/hooks/test_planb_piece14_hooks.py`.
+      - Built (14c-2b, inert until 14c-2c; RT-6.17, RT-6.6 step 13, RT-6.2
+        step 9): the hook API, the status and the heartbeat of a session
+        decided without a bot. The hook API keeps its one per-server key
+        and serves a session with a token, or one decided without a bot
+        that has its NATS name (`hookapi.served`); every route keys by the
+        name (`identity.self_key`, `self_me`), what needs Mattermost (a
+        DM's file, a Mattermost post's thread) is refused with the reason,
+        and a `503` says why there is no bot (`no_bot`). The status, the
+        crown and the heartbeat run without a token where the status is
+        mirrored (piece 9, `lease._beats`), else a warning and `bus_info`'s
+        `heartbeat_off`; the Mattermost election keeps its token guard.
+        The unread rows, the guests and the homes' channels come from the
+        NATS side, the start's hand-over cursor from the name's read mark,
+        and the BYE goes over NATS at the shutdown. Tests in
+        `mcp/tests/test_planb_piece14c2b.py` (a real `nats-server` test
+        too) and `tests/hooks/test_bus_me_nats_name.py`.
 - **Order (proposed).** First the pieces that move no message of
   people: channels from the directory, the roster and the link, DMs
   between agents, and the trusted humans from the attestation (pieces 1

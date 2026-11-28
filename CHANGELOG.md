@@ -7,6 +7,26 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The hook API, status and heartbeat without a Mattermost token: plan B piece 14c-2b**
+  (#244, RT-6.17, RT-6.18 step 13, RT-6.6 step 13, RT-6.2 step 9, ADR-014). A session
+  that decided to run without a bot and has its NATS name is served by the hook API
+  like one with a token, with the same per-server key (never the token); every route
+  keys by the NATS name, `/v1/me` names it as `user_id`, and a `503` says why there is
+  no bot (`no_bot`: the decision open, the bot being registered, its registration
+  failed, or the bus not up). `/v1/files` refuses with the reason what needs Mattermost
+  (a DM, a Mattermost post's thread). The status, the crown, the heartbeat, the usage
+  band and the context line run without a token where the status is mirrored (piece 9),
+  else not at all, logged once and named by `bus_info` (`heartbeat_off`); the
+  Mattermost election keeps its token guard. Without a bot the unread rows, guests and
+  channels come from the NATS side, the start's hand-over cursor from the NATS name's
+  read mark, and the BYE goes over NATS at the shutdown; `bus_info` names `nats_name`
+  and a refused latch. The shell's `mm_bus_me` takes a NATS name and never exports it
+  as `CB_MM_BOT_USER_ID`; its 503 texts print the server's reason. `/v1/reminded` now
+  takes NATS post ids (`n1:<channel>:<seq>`), for every session: the Stop hook's
+  reminders of posts in a NATS home were refused with a `400` before. The text of a
+  failed registration no longer says the session runs over NATS alone: it needs a bot,
+  registering failed, restart. Inert until piece 14c-2c flips the decision: with a bot
+  nothing else changes and every session still registers; part of the cutover release.
 - **The session's identity without a bot: plan B piece 14c-2a** (#244, RT-6.6 step 13,
   RT-6.38 step 10, RT-6.2 step 9, ADR-014). Every place that decides "is this me, my
   state, may I act" (the crown, asks, the read watermark, the gate, receipts, the inbox,
