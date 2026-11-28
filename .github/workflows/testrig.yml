@@ -139,6 +139,8 @@ jobs:
       - name: sync the bus
         run: uv sync --locked --directory ../mcp
       - name: delivery, 100 messages per fault
+        # `always()`: one failing nightly step does not skip the others' numbers
+        if: always()
         # The run's whole output goes to the step summary and the artifact even
         # when it fails (that run's numbers are what one needs), then the step
         # exits with the run's own status.
@@ -152,6 +154,8 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
       - name: told gone, every fault with the roster from NATS
+        # `always()`: one failing nightly step does not skip the others' numbers
+        if: always()
         # Plan B piece 2 (#252): the delivery run again with CB_PLANB_TEST=2, each
         # send a TASK that names the receiver; `told gone` must be 0. Then one cut of
         # 120 s, longer than a presence stays fresh (90 s): the agents' presences are
@@ -170,6 +174,8 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
       - name: 50 hard stops of the coordinator
+        # `always()`: one failing nightly step does not skip the others' numbers
+        if: always()
         run: |
           set -uo pipefail
           mkdir -p results

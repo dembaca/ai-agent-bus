@@ -350,6 +350,16 @@ def test_a_clean_roster_run_passes_and_one_without_a_check_fails(monkeypatch, ca
     assert "no roster check ran" in capsys.readouterr().err
 
 
+def test_a_faulted_run_without_a_check_after_the_window_fails(monkeypatch, capsys):
+    """#252: sends fail during the window, so only a check after it proves the roster was
+    read again; a faulted run with checks before and in the window alone fails."""
+    run = _roster_run()
+    assert run.fault != "none"
+    run.roster_checks = {"before": 4, "window": 1}
+    assert _nats_cli(monkeypatch, run)[0] == 1
+    assert "no roster check after the fault's window" in capsys.readouterr().err
+
+
 def test_kill_client_reports_told_gone_without_failing(monkeypatch):
     """kill-client really stops the receiver for the window: its count is a report."""
     run = _roster_run("kill-client")

@@ -209,6 +209,12 @@ def _told_gone(run: runner.Run) -> bool:
               f"{NOBODY}, so no roster check ran and told_gone measured nothing",
               file=sys.stderr)
         return True
+    if run.fault != "none" and not run.roster_checks.get("after"):
+        # Sends fail during the window, so a check after it is the proof the roster
+        # was read again once the fault was over.
+        print(f"bus-testrig: --fault {run.fault}: no roster check after the fault's window, "
+              "so told_gone measured nothing about the recovery", file=sys.stderr)
+        return True
     if run.told_gone and run.fault != "kill-client":
         first = run.told_gone[0]
         print(f"bus-testrig: --fault {run.fault}: a live agent was told as gone "
