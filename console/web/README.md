@@ -21,9 +21,13 @@ image.
   binding exists before the human security review. The red count of replies by
   others (never the ask's own post or the operator's own) uses the read position
   per person and ask, kept in this browser's
-  `localStorage` (`src/reads.ts`), since the server has no per-person store. The answer box shows go / no-go
-  for an approval and nothing for a question: the ask's own answers are not on the ask
-  record, and carrying them needs a record change the owner decides separately (#285).
+  `localStorage` (`src/reads.ts`), since the server has no per-person store. The unfolded ask shows
+  its card when the server hands it (only to the asked human and to those the asking
+  agent trusts): Context, Recommendation and Where, each with its caption above the
+  plain text, an empty one left out; "This counts as your approval of:" with the
+  decision's wording; the ask's own answers, two side by side and more as rows with
+  the key caps A to D, go / no-go for an approval with none. Everyone else reads the
+  title and the answers as plain text, with no answer box.
 - **The look**: the design the owner agreed on 2026-11-25, in the website's
   Choirbus brand — tokens in `src/app.css` after `site/src/page.css`, the
   logo's navy as the accent, the site's word colors (orange asks, blue tasks,

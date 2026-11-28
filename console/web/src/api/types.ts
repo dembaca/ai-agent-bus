@@ -145,8 +145,11 @@ export type FleetEvent =
   | { type: "drop"; name: string }
 
 /** An open ask, from the record the asking agent publishes on NATS
- * (RT-6.43 step 6): a title, never its body. The wire sends `for_me`/
- * `may_answer`/`agent_gone`; the app speaks `forMe`/`mayAnswer`/`agentGone`. */
+ * (RT-6.43 step 6): its title, and its card only for the asked human and the
+ * people the asking agent trusts (the console server leaves it out for everyone
+ * else, ADR-015, the owner's decision of 2026-11-28). The wire sends `for_me`/
+ * `may_answer`/`agent_gone` and the card as one `card` object; the app speaks
+ * `forMe`/`mayAnswer`/`agentGone` and keeps the card's parts on the ask. */
 export interface Ask {
   /** The ask's Mattermost post id. */
   id: string
@@ -174,11 +177,18 @@ export interface Ask {
   agentGone: boolean
   /** The thread the ask sits in, for the detail (GET /v1/threads/<id>). */
   threadId: string
-  /** The ask's own answers, in the order and words it was posted with. The wire
-   * does not carry them yet (the ask record needs a change decided separately,
-   * #285); absent or empty, an approval reads go / no-go and a question has none. */
+  /** The ask's card, plain text; absent or "" when the ask has none of it or
+   * the reader may not see it. Context, recommendation and decision keep their
+   * line breaks; `where` is one line. */
+  context?: string
+  recommendation?: string
+  where?: string
+  /** The decision's wording: what a yes approves. */
+  decision?: string
+  /** The ask's own answers, in the order and words it was posted with; absent
+   * or empty, an approval reads go / no-go and a question has none. */
   answers?: string[]
-  /** The answer a reaction picked; absent as long as the answers are. */
+  /** The answer a reaction picked; null for none or a reply. */
   chosen?: string | null
 }
 

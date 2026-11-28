@@ -62,11 +62,47 @@ describe("Asks (#285)", () => {
     expect(unfolded(base)).not.toContain("<kbd")
   })
 
-  it("answer 3: no context, recommendation or where caption, as the API carries none; long text wraps by css", () => {
-    const html = unfolded(base)
-    for (const caption of ["Context", "Recommendation", "Where"]) expect(html).not.toContain(caption)
+  const card = {
+    context: "Two PRs touch the same file.\nMine is smaller.", recommendation: "Merge mine first.",
+    where: "PR 118", decision: "Merge PR 118 into main",
+  }
+
+  it("answer 3: the card's Context, Recommendation and Where, each caption above its text; an empty one left out", () => {
+    const html = unfolded({ ...base, ...card })
+    const at = (s: string) => html.indexOf(s)
+    expect(at(">Context<")).toBeLessThan(at("Two PRs touch the same file."))
+    expect(at("Two PRs touch the same file.")).toBeLessThan(at(">Recommendation<"))
+    expect(at(">Recommendation<")).toBeLessThan(at("Merge mine first."))
+    expect(at("Merge mine first.")).toBeLessThan(at(">Where<"))
+    expect(at(">Where<")).toBeLessThan(at("PR 118<"))
+    expect(html).toContain("Two PRs touch the same file.\nMine is smaller.")  // line breaks kept, as text
+    const some = unfolded({ ...base, ...card, recommendation: "", where: "  " })
+    expect(some).toContain(">Context<")
+    for (const caption of [">Recommendation<", ">Where<"]) expect(some).not.toContain(caption)
+    for (const caption of [">Context<", ">Recommendation<", ">Where<"]) expect(unfolded(base)).not.toContain(caption)
+  })
+
+  it("answer 3: long text wraps at about 78 characters, never cut, never scrolled inside", () => {
     expect(css).toMatch(/\.asks__unfolded-main \{[^}]*max-width: 78ch;[^}]*overflow-wrap: anywhere/)
-    expect(css).not.toMatch(/text-overflow|line-clamp/)
+    expect(css).toMatch(/\.asks__text \{ white-space: pre-wrap; \}/)
+    expect(css).not.toMatch(/text-overflow|line-clamp|overflow(-y)?: (auto|scroll|hidden)/)
+    const long = "x ".repeat(600).trim()
+    expect(unfolded({ ...base, context: long })).toContain(long)
+  })
+
+  it("the answer box counts as approval of the decision's wording, never of the title", () => {
+    const html = unfolded({ ...base, ...card })
+    expect(html).toMatch(/This counts as your approval of: <strong[^>]*>Merge PR 118 into main<\/strong>/)
+    expect(html).not.toMatch(/approval of: <strong[^>]*>Ship it\?/)
+    const none = unfolded(base)
+    expect(none).not.toContain("This counts as your approval of:")
+    expect(none).toContain("states no decision of its own")
+  })
+
+  it("the card is plain text, never markup", () => {
+    const html = unfolded({ ...base, context: "<img src=x onerror=alert(1)> **bold**" })
+    expect(html).not.toContain("<img")
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt; **bold**")
   })
 
   it("answer 5: the answered state replaces the state in its column", () => {
@@ -85,6 +121,14 @@ describe("Asks (#285)", () => {
     expect(narrow).toMatch(/\.asks__chip \{ grid-column: 1 \/ -1; \}/)
     expect(narrow).not.toMatch(/\.asks__chip[^{]*\{ display: none/)
     expect(narrow).not.toMatch(/\.asks__chip, \.asks__age/)
+  })
+
+  it("a reader the API gives the title only sees no caption and an approval's go / no-go as plain text", () => {
+    const html = unfolded({ ...base, forMe: false, mayAnswer: false })
+    expect(html).not.toContain("asks__box")
+    for (const caption of [">Context<", ">Recommendation<", ">Where<"]) expect(html).not.toContain(caption)
+    expect(html).toContain("asks__plain")
+    expect(html).toContain("no-go")
   })
 
   it("answer 7: not the operator's to answer, no answer box and the answers as plain text", () => {
