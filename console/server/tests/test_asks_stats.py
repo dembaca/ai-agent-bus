@@ -491,3 +491,29 @@ def test_one_agent_row_that_cannot_be_computed_is_n_a(monkeypatch) -> None:
     assert rows[A]["tok24h"] is not None
     assert rows[B] == {"agent": B, "tok24h": None, "tok7d": None,
                        "posts24h": None, "wakes24h": None, "tools24h": None}
+
+
+def test_the_hourly_buckets_change_no_report_and_old_lines_have_none(monkeypatch) -> None:
+    """#290, RT-6.43 step 8: a line with `post_hours` gives every report the numbers the same
+    line without it gives, in this console and in one whose allow list predates the key
+    (it ignores the key like any unknown one); the hours of a new line reach the reader
+    (`stats.hours_of`), an old line gives none: "no hourly data yet", never 0."""
+    hour = int(NOW) // 3600
+    words = {"post_words": {"ACK": [2, 40], "DONE": [1, 30]}}
+    new = LINE | {"v": "0.104.0", **words, "post_hours": {str(hour - 1): {"ACK": 2}, str(hour): {"DONE": 1}}}
+    without = {k: v for k, v in new.items() if k != "post_hours"}
+    held = book_with((A, new, NOW - 60))
+    got = stats.hours_of([line for _at, _seq, line in held.within(86400)])
+    assert got == {"hours": {(hour - 1) * 3600: {"ACK": 2}, hour * 3600: {"DONE": 1}}, "lines": 1, "of": 1}
+    assert held.reports() == book_with((A, without, NOW - 60)).reports()
+    old = book_with((A, LINE | words, NOW - 60))
+    assert stats.hours_of([line for _at, _seq, line in old.within(86400)]) is None
+    body = stats.nats_body(new) or b""
+    assert b'"post_hours"' in body
+    want = stats.decode_line(stats.nats_body(without) or b"")
+    monkeypatch.setattr(stats, "LINE_KEYS", {k: v for k, v in stats.LINE_KEYS.items() if k != "post_hours"})
+    older_console = StatsBook()
+    assert older_console.on_delivery(f"stats.{A}", body, ack("STATS", STATS_CONSUMER, 1, NOW - 60),
+                                     "STATS", STATS_CONSUMER)
+    assert [line for _a, _s, line in older_console.within(86400)] == [want]
+    assert older_console.reports() == held.reports()
