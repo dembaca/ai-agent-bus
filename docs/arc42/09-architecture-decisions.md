@@ -4173,7 +4173,11 @@ which each piece reads for itself.
     and `CB_BRIDGE_REQ_PREFIX`, both defaulting to `req`. The request body is
     `{"v": 1, "request": "<16 chars of [a-z0-9]>", "kind": ..., "payload": ...}`
     and the answer names the same request and kind, so an answer cannot be
-    paired with another request; the bridge answers per kind from a handler
+    paired with another request; an answer may come in parts, each with `part`
+    and `last`, and the client reads until the last one, one deadline for the
+    whole request and caps on the parts and bytes an answer may add up to (a
+    history read is given 35 s, above the bridge's 30 s, the other kinds 5 s);
+    the bridge answers per kind from a handler
     map (`not built` until pieces 5, 8 and 9 fill them), with a `result`
     field and `part`/`last` for multi-part answers, off its receive loop,
     under a per-kind size limit, a per-agent rate limit and truncated logs;
@@ -4432,6 +4436,55 @@ which each piece reads for itself.
        back. Lab: a person posts while the session is stopped; after its
        start the post and its thread are there, and an ask answered
        meanwhile counts.
+     - Built in part (Unreleased, #244 piece 5a, the bridge's side). The
+       payload is `{"channel": "<channel token>", "since": <epoch ms>,
+       "limit": <posts>}` or, instead of since, `"thread": "<Mattermost
+       post id>"`; `limit` is 1 to 200, 200 without it, and an unknown key
+       is refused. The channel is the token the membership subject and
+       the switch carry (`~home`), not a Mattermost id: the bridge
+       resolves it by name in its team. It checks the membership first, after
+       the payload's shape, so a channel the agent did not announce answers
+       `not a channel of that agent` whether the piece is on there or
+       not; the membership is `presence.member.<channel>.<name>` as the
+       bridge reads it through its own consumer `bridge_members` (last per
+       subject, made at every start, so a restart has every membership the
+       stream holds), and it counts 7 h: just over the 6 h the MCP server
+       renews it, since a revocation is bounded by that keep until the login
+       service writes a tombstone at one (a later piece), and no other
+       agent's channel is read. Then piece 5's switch (piece 1's record),
+       `piece 5 is off in <channel>` without it; a since older than 14 days;
+       and the agent's own bridge bot, never the bridge bot (RT-6.44), which
+       the read never joins: a bot that is not a member already is refused
+       (`the agent's bot is not in <channel>`). One read per agent runs at a
+       time; a second meanwhile answers `busy: a history read for this agent
+       is already running, ask again`. A channel read pages Mattermost's
+       posts with `page`/`per_page` (200 a page) from the newest back to
+       `since`, never with `since`, whose answer is cut at a thousand posts
+       in no set order, and keeps the oldest `limit` posts from `since` on,
+       so `next` walks forward; a window of more than 20,000 posts is
+       refused, not answered in part. A thread read pages the root's thread
+       too, past the posts it drops, and refuses one in another channel. The
+       answer's result is `{"v":1,"channel","channel_id",
+       "thread","posts"}`; each post is Mattermost's fields the reads
+       use (`create_at`, `update_at`, `edit_at`, `delete_at` among them),
+       with its author's anchor and the login service's account
+       record beside it, each reaction with its sender's, a bot's post
+       marked `bot`, and a bot's reaction, a deleted, system or webhook
+       post left out. Freshness is judged on `create_at`: `update_at` moves
+       with a reaction and `edit_at` with an edit, neither of which writes
+       the post again. The bridge answers the record it holds now, not
+       the post's, and judges neither `exp` nor `approver`: the session
+       applies the freshness rule exactly as to a live event. The answer
+       stays within 200 posts, 512 KiB and parts of 128 KiB, which the
+       scaffold numbers 1..n with `last` on the final one, so one request
+       arrives whole; while posts remain the last part says `more` and
+       names `next`, the create_at to ask on from (a thread read names
+       none: `more` alone says it goes on). While the bridge's
+       account records are not read yet, the read is refused (`ask
+       again`). Not built: the MCP server's side (piece 5b), so a session
+       still reads people on Mattermost; and the read of a post's files,
+       which piece 8 owns (a post's `file_count` is in the answer, its
+       `mm` id lets `get_file` fetch them).
   6. **Asks to humans and the answer** (RT-6.11), the reply and the
      approval by reaction. Needs the roster (piece 2), people's history
      (piece 5) and people's events over NATS with a fresh signal
@@ -4620,7 +4673,7 @@ which each piece reads for itself.
         stop under load, what arrives after it. Lab: the bridge stopped and
         started in the test home.
       - Built (after 0.104.0), behind `planb.on(11, channel)` (the channel's
-        switch, RT-6.39 step 5, off by default; RT-6.42 step 11), in the MCP
+        switch, RT-6.39 step 5, off by default; RT-6.42 step 12), in the MCP
         server alone: the bridge already carries people and signals as
         before, so no Go code changed. With it on for a channel (the home,
         or a guest or the lobby over NATS, piece 12) the session takes that
@@ -4628,22 +4681,32 @@ which each piece reads for itself.
         on Mattermost when the signal runs out, none after a gap on the
         person's consumer, Mattermost's own events of people there dropped
         as while the signal is fresh. Bots, webhooks and system posts stay
-        on Mattermost. "People are not heard" is a log line when it begins
-        and when it ends, and a `bus_info` warning while it holds. Where the
-        build settles what the text leaves open: an event whose author
-        cannot be told a bot or a person is dropped (fail closed, kept with
-        the switch off); the way back reads Mattermost again from the last
-        people event before the people stopped being heard (at most an hour
+        on Mattermost, and so do a webhook post and a post with a type. "People
+        are not heard" is a log line when it begins and when it ends, and a
+        `bus_info` warning while it holds. Where the build settles what the
+        text leaves open: an event whose author cannot be told a bot or a
+        person is dropped (fail closed, kept with the switch off), and so is
+        a person's while the NATS side is down for good; an event in a
+        channel whose id is not known yet is kept; the way back reads
+        Mattermost again from the last people event before the people
+        stopped being heard, or from the moment they stopped when no signal
+        was fresh before (never from before the session, at most an hour
         back, the keys' reach), so a switch off during an outage loses
-        nothing the old path would have read; the switch reads as off before
-        the bus has read its records and once the record is older than two
-        hours, as every piece's. Not moved with it: the reads of people's
-        history (piece 5), which still show from Mattermost what was not
-        heard: the unread count and the turn hooks, the inbox's backfill,
-        `list_recent`, `get_thread` and an ask's reminders, which stop once
-        they read an answer the session never heard as an event. What people
-        wrote during an outage longer than the bridge's catch-up (10
-        minutes) comes as no event. Tests in
+        nothing the old path would have read; a catch-up already running
+        when the switch goes on finishes once; the switch reads as off
+        before the bus has read its records and once the record is older
+        than two hours, as every piece's, so a NATS outage of more than two
+        hours reads people on Mattermost again. Not moved with it: the
+        inbox's backfill at each connect of its event source, a reconnect of
+        the Mattermost WebSocket included, which still queues people's posts
+        from Mattermost as events (a post that also comes over NATS once,
+        by its Mattermost id; a reaction can come twice); and the reads of
+        people's history (piece 5), which still show from Mattermost what
+        was not heard: the unread count and the turn hooks, `list_recent`,
+        `get_thread` and an ask's reminders, which stop once they read an
+        answer the session never heard as an event. What people wrote
+        during an outage longer than the bridge's catch-up (10 minutes)
+        comes as no event over NATS. Tests in
         `mcp/tests/test_planb_piece11.py`, one against a real `nats-server`
         for both switch states. The `testrig` run and the lab check follow
         when the switch lands.

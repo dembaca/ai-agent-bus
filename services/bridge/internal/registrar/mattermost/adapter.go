@@ -398,6 +398,31 @@ func (m *Adapter) JoinChannels(ctx context.Context, a core.Agent, channels []str
 	return errors.Join(errs...)
 }
 
+// MemberOf says whether the bot is a member of the channel named: the history
+// read checks it before it reads, and never joins the bot there (ADR-014 phase
+// 5, piece 5). A channel the team does not have is no membership.
+func (m *Adapter) MemberOf(ctx context.Context, a core.Agent, name string) (bool, error) {
+	t, err := m.team(ctx)
+	if err != nil {
+		return false, err
+	}
+	var ch channel
+	if err := m.do(ctx, http.MethodGet, "/api/v4/teams/"+t.ID+"/channels/name/"+url.PathEscape(name), nil, m.Cfg.Token, &ch); err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	err = m.do(ctx, http.MethodGet, "/api/v4/channels/"+ch.ID+"/members/"+url.PathEscape(a.ID), nil, m.Cfg.Token, nil)
+	if err == nil {
+		return true, nil
+	}
+	if isNotFound(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 // RevokeAgent revokes the bot's access tokens and disables it.
 func (m *Adapter) RevokeAgent(ctx context.Context, a core.Agent) error {
 	if m.Cfg.HideBotDM {

@@ -85,7 +85,7 @@ people there (`skip`: a post or reaction by an account that is no bot, not a web
 system post); without one it reads them on Mattermost as before, and NATS's are dropped.
 When the signal runs out, Mattermost is read from the channel's last people event on
 (`check_people`). With plan B piece 11 on for the channel (`planb.on(11, channel)`, RT-6.42
-step 11) nothing of its people is read on Mattermost, whatever the signal: no catch-up, and
+step 12) nothing of its people is read on Mattermost, whatever the signal: no catch-up, and
 Mattermost's events of people there are dropped as while switched; without a fresh signal its
 people are not heard until the bridge carries the channel again, and bus_info says so
 (`people_unheard`). Both sides may deliver one event at a switch: a key held for an hour
@@ -167,7 +167,7 @@ PEOPLE_KEYS_MAX = 100_000  # keys held at most; the oldest go first
 PEOPLE_CHECK_SEC = 10.0  # how often the bridge's signals are looked at (RT-6.42 step 9)
 UNAPPROVED_SEC = 86400.0  # how long the reads remember an event without approver: an ask's 24 h
 PEOPLE_MARGIN_MS = 60_000  # the catch-up on Mattermost reads this much before the last people event
-PEOPLE_PIECE = 11  # plan B's piece of people's events where no bridge signal is fresh (RT-6.42 step 11)
+PEOPLE_PIECE = 11  # plan B's piece of people's events where no bridge signal is fresh (RT-6.42 step 12)
 
 
 class NatsPortError(Exception):
@@ -1806,17 +1806,21 @@ class NatsPort:
         return on
 
     def _hear(self, ch: str, on: bool) -> None:
-        """Plan B piece 11 (RT-6.42 step 11): with the switch on and no fresh signal, the
+        """Plan B piece 11 (RT-6.42 step 12): with the switch on and no fresh signal, the
         channel's people are not heard, said once in the log (and by bus_info while it holds).
         When the signal is back they come over NATS again; when the switch goes off while no
         signal is fresh, the way back reads Mattermost from the channel's last people event
-        before they stopped being heard, as when a signal runs out."""
+        before they stopped being heard, as when a signal runs out; from the moment they
+        stopped when no signal was fresh before (called before `_switched` changes), so
+        nothing from before the session is read."""
         deaf = not on and self._piece11(ch)
         if deaf and ch not in self._unheard:
-            self._unheard[ch] = self._people_at.get(ch, 0)
-            log.warning("nats: the people of ~%s are not heard: the bridge sends no fresh signal for it, and "
-                        "plan B piece 11 reads nothing of them on Mattermost; they come over NATS once the "
-                        "bridge carries ~%s again", ch, ch)
+            bus = self._live()
+            self._unheard[ch] = (self._people_at.get(ch, 0) if ch in self._switched
+                                 else int(max(time.time(), bus.server_now if bus is not None else 0.0) * 1000))
+            log.warning("nats: the people of ~%s are not heard: no fresh signal of the bridge reaches this "
+                        "session for it (the bridge or NATS is down), and plan B piece 11 reads nothing of "
+                        "them on Mattermost; they come over NATS once the bridge carries ~%s again", ch, ch)
         elif not deaf and ch in self._unheard:
             start = self._unheard.pop(ch)
             if on:
@@ -1827,11 +1831,11 @@ class NatsPort:
 
     def _start_catch_up(self, ch: str, start: int | None = None) -> None:
         if self._piece11(ch):
-            # Plan B piece 11 (RT-6.42 step 11): nothing is read on Mattermost. While the people are
+            # Plan B piece 11 (RT-6.42 step 12): nothing is read on Mattermost. While the people are
             # not heard, the earliest start is kept for the way back (the switch off); what a gap on
             # the person's consumer lost while the signal is fresh is not read back.
             begin = self._people_at.get(ch, 0) if start is None else start
-            if ch in self._unheard:
+            if ch in self._unheard and begin > 0:  # 0: no people event known, the moment they stopped stays
                 self._unheard[ch] = min(self._unheard[ch], begin)
             log.info("nats: ~%s is not caught up on Mattermost: plan B piece 11 takes its people from NATS alone", ch)
             return
@@ -1922,8 +1926,10 @@ class NatsPort:
         else:
             return False
         bus = self._live()
-        if bus is None or not uid or not cid or uid == self.inner.bot_id:
+        if not uid or not cid or uid == self.inner.bot_id:
             return False
+        if bus is None and not any(self._piece11(c) for c in self._people_channels()):
+            return False  # the NATS side down: Mattermost's people as before
         ch: str | None = None
         try:
             ch = next((n for n, i in (await self._people_map()).items() if i == cid), None)
@@ -1937,8 +1943,15 @@ class NatsPort:
                 return True
             log.debug("nats: a person's event not told apart (%s): kept", type(exc).__name__)
             return False
-        if self._note_switch(ch) or self._piece11(ch):
-            return True  # piece 11 on: people from NATS alone, whatever the signal (RT-6.42 step 11)
+        if self._piece11(ch):
+            # piece 11 on: people from NATS alone, whatever the signal, also while the NATS side
+            # is down (RT-6.42 step 12)
+            self._note_switch(ch)
+            return True
+        if bus is None:
+            return False
+        if self._note_switch(ch):
+            return True
         if isinstance(event, PostEvent):
             return False if event.edited else not self._keys.take(("post", event.post.id))
         r = event.reaction
@@ -2445,7 +2458,7 @@ class NatsPort:
             return False
 
     def _piece11(self, channel: str) -> bool:
-        """Whether the channel takes its people from NATS alone (plan B piece 11, RT-6.42 step 11):
+        """Whether the channel takes its people from NATS alone (plan B piece 11, RT-6.42 step 12):
         `planb.on(11, channel)`. A switch that cannot be read counts as off: the old path."""
         try:
             return bool(channel) and bool(planb.on(PEOPLE_PIECE, channel))
@@ -2455,7 +2468,7 @@ class NatsPort:
 
     def people_unheard(self) -> list[str]:
         """The bus's channels whose people this session does not hear now (plan B piece 11,
-        RT-6.42 step 11): the switch on and no fresh signal of the bridge; sorted. Read live,
+        RT-6.42 step 12): the switch on and no fresh signal of the bridge; sorted. Read live,
         for bus_info (lease.nats_notes)."""
         bus = self._live()
         return sorted(ch for ch in self._people_channels()
@@ -2768,9 +2781,9 @@ class NatsPort:
         not answer, NatsPortError without a bus."""
         from . import requests  # only piece 9 asks the bridge from here
 
-        answer = await requests.request(self._require(), "header",  # type: ignore[arg-type]
+        result = await requests.request(self._require(), "header",  # type: ignore[arg-type]
                                         {"channel": home, "line": line})
-        result = answer.get("result")
+        # request() returns the answer's result (one part), not the envelope
         return isinstance(result, dict) and result.get("changed") is True
 
     async def whereabouts(self, channel_id: str, name: str) -> str | None:

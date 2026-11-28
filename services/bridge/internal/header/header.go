@@ -114,56 +114,56 @@ type Result struct {
 }
 
 // Piece answers one header request of agent (the subject's last token).
-func (w *Writer) Piece(ctx context.Context, agent string, req requests.Request) (requests.Reply, error) {
+func (w *Writer) Piece(ctx context.Context, agent string, req requests.Request) ([]requests.Reply, error) {
 	var p Payload
 	dec := json.NewDecoder(bytes.NewReader(req.Payload))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&p); err != nil || dec.More() {
-		return requests.Reply{}, errors.New(`a header request's payload is {"channel": <home>, "line": <bus line>}`)
+		return nil, errors.New(`a header request's payload is {"channel": <home>, "line": <bus line>}`)
 	}
 	if !slices.Contains(w.Homes, p.Channel) {
-		return requests.Reply{}, fmt.Errorf("the bridge serves no home %q", p.Channel)
+		return nil, fmt.Errorf("the bridge serves no home %q", p.Channel)
 	}
 	if !w.Switches.On(Piece, p.Channel) {
-		return requests.Reply{}, fmt.Errorf("plan B piece 9 is off in ~%s: the header stays the session's", p.Channel)
+		return nil, fmt.Errorf("plan B piece 9 is off in ~%s: the header stays the session's", p.Channel)
 	}
 	if !CheckLine(p.Line) {
-		return requests.Reply{}, errors.New("not a bus line of the header (RT-6.6 step 7)")
+		return nil, errors.New("not a bus line of the header (RT-6.6 step 7)")
 	}
 	if !w.Claims.Read() {
-		return requests.Reply{}, errors.New("the crown claims are not read yet; try again")
+		return nil, errors.New("the crown claims are not read yet; try again")
 	}
 	window := w.Window
 	if window == 0 {
 		window = 90 * time.Second
 	}
 	if holder := w.Claims.Holder(p.Channel, w.Presence, window, w.Member); holder != agent {
-		return requests.Reply{}, fmt.Errorf("not the crown holder of ~%s by the claims (RT-6.38)", p.Channel)
+		return nil, fmt.Errorf("not the crown holder of ~%s by the claims (RT-6.38)", p.Channel)
 	}
 	cid, err := w.ChannelID(ctx, p.Channel)
 	if err != nil {
-		return requests.Reply{}, fmt.Errorf("the home's channel: %w", err)
+		return nil, fmt.Errorf("the home's channel: %w", err)
 	}
 	bot := w.Bots.Bot(ctx, agent, p.Channel)
 	if bot == nil {
-		return requests.Reply{}, errors.New("the agent has no bot of its own now; try again")
+		return nil, errors.New("the agent has no bot of its own now; try again")
 	}
 	current, err := bot.ChannelHeader(ctx, cid)
 	if err != nil {
-		return requests.Reply{}, fmt.Errorf("the header was not read: %w", err)
+		return nil, fmt.Errorf("the header was not read: %w", err)
 	}
 	next := WithBusHeader(current, p.Line)
 	changed := next != current
 	if changed {
 		if err := bot.SetChannelHeader(ctx, cid, next); err != nil {
-			return requests.Reply{}, fmt.Errorf("the header was not written: %w", err)
+			return nil, fmt.Errorf("the header was not written: %w", err)
 		}
 	}
 	out, err := json.Marshal(Result{V: 1, Changed: changed})
 	if err != nil {
-		return requests.Reply{}, err
+		return nil, err
 	}
-	return requests.Reply{Result: out, Part: 1, Last: true}, nil
+	return []requests.Reply{{Result: out}}, nil
 }
 
 // WithBusHeader is header with its bus part replaced by bus, or bus appended

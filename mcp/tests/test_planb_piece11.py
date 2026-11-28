@@ -1,4 +1,4 @@
-"""RT-6.42 step 11 (ADR-014 phase 5, plan B piece 11): people's events where no bridge signal
+"""RT-6.42 step 12 (ADR-014 phase 5, plan B piece 11): people's events where no bridge signal
 is fresh. With the switch `planb.on(11, channel)` on (RT-6.39 step 5, off by default), a channel's
 people come from NATS alone, whatever the bridge's signal: when the signal runs out nothing is
 read on Mattermost (no catch-up, also not after a gap or a failed read), Mattermost's own
@@ -109,7 +109,7 @@ async def test_off_a_signal_that_runs_out_reads_mattermost_as_before(monkeypatch
 
 async def test_on_no_mattermost_read_when_the_signal_runs_out(monkeypatch: pytest.MonkeyPatch,
                                                             caplog: pytest.LogCaptureFixture) -> None:
-    """RT-6.42 step 11: no catch-up, Mattermost's people dropped without a signal; bots, webhooks
+    """RT-6.42 step 12: no catch-up, Mattermost's people dropped without a signal; bots, webhooks
     and system posts stay on Mattermost; a person's event over NATS still comes."""
     _on(monkeypatch)
     port, inner, fake = make()
@@ -147,7 +147,7 @@ async def test_on_no_mattermost_read_when_the_signal_runs_out(monkeypatch: pytes
 
 
 async def test_on_a_gap_and_an_owed_catch_up_read_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """RT-6.42 step 11: a gap on the person's consumer and a catch-up owed from before the
+    """RT-6.42 step 12: a gap on the person's consumer and a catch-up owed from before the
     switch read nothing on Mattermost either."""
     _on(monkeypatch)
     port, inner, fake = make()
@@ -165,7 +165,7 @@ async def test_on_a_gap_and_an_owed_catch_up_read_nothing(monkeypatch: pytest.Mo
 
 async def test_on_people_are_not_heard_until_the_signal_is_back(monkeypatch: pytest.MonkeyPatch,
                                                               caplog: pytest.LogCaptureFixture) -> None:
-    """RT-6.42 step 11: said from the first look also when no signal was ever fresh (a session
+    """RT-6.42 step 12: said from the first look also when no signal was ever fresh (a session
     started while the bridge was down), and heard again once the signal is back."""
     _on(monkeypatch)
     port, inner, fake = make()
@@ -221,6 +221,48 @@ async def test_the_way_back_reads_mattermost_from_where_people_stopped_being_hea
     assert port._unheard == {} and port.people_unheard() == []
 
 
+async def test_the_way_back_reads_nothing_from_before_people_stopped_being_heard(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fable's review: with no fresh signal since the start, the way back reads from the moment
+    the people stopped being heard (the first look), not the keys' full hour, so no post from
+    before the session comes; a gap with no people event known does not move that start back."""
+    _on(monkeypatch)
+    port, inner, fake = make()
+    assert fake is not None
+    ev = await _events(port)
+    before = time.time()
+    await port.check_people()  # no signal was ever fresh: not heard from now on
+    assert port._unheard["home"] >= int(before * 1000)
+    port._person_gap("home")
+    assert port._unheard["home"] >= int(before * 1000)
+    now = int(time.time() * 1000)
+    inner.posts = [_mm(MM1, HUMAN, "before the session", now - 1_800_000),
+                   _mm(MM2, HUMAN, "while not heard", now + 5000)]
+    _on(monkeypatch, False)
+    await port.check_people()
+    await _settle(port)
+    assert [e.post.id for e in _queued(ev)] == [MM2]
+    assert _reads(inner)[-1][2] >= int(before * 1000) - 60_000  # a minute's margin, not an hour
+
+
+async def test_on_mattermosts_people_are_dropped_while_the_nats_home_is_down(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fable's review: a NATS home that failed for good (`fail`) does not open Mattermost's people
+    with the switch on; off, they are kept as before."""
+    port, inner, fake = make()
+    assert fake is not None
+    port.fail("no login")
+    assert port._live() is None
+    _on(monkeypatch, False)
+    assert not await port.skip(_post(MM1))
+    _on(monkeypatch)
+    assert await port.skip(_post(MM2))
+    assert await port.skip(ReactionEvent(Reaction(HUMAN, ASK, "+1", 1), WORK))
+    assert not await port.skip(_post(MM3, from_webhook=True))
+    assert port.people_unheard() == ["home"]
+    assert _reads(inner) == []
+
+
 # --- bus_info -----------------------------------------------------------------------------------
 
 class _Side:
@@ -245,12 +287,13 @@ class _Side:
 
 
 async def test_bus_info_says_people_are_not_heard(chat: Any) -> None:  # noqa: F811
-    """RT-6.42 step 11: bus_info warns while a channel's people are not heard."""
+    """RT-6.42 step 12: bus_info warns while a channel's people are not heard."""
     lease.use_nats("home", _Side())  # type: ignore[arg-type]
     try:
         info = json.loads(await server.bus_info())
         assert "people in ~home are not heard now" in info["warning"]
-        assert "plan B piece 11" in info["warning"] and "once the bridge carries ~home again" in info["warning"]
+        assert "plan B piece 11" in info["warning"] and "the bridge carries ~home again" in info["warning"]
+        assert "the bridge or NATS is down" in info["warning"]
     finally:
         lease.use_nats("", None)
 

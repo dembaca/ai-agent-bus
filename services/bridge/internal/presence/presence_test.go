@@ -56,3 +56,56 @@ func TestFreshAndTheLinkTag(t *testing.T) {
 		t.Fatal("no mark, a tag")
 	}
 }
+
+// RT-6.37: a membership is read from its own subject and counts while it is
+// younger than MemberKeep by the server's time; an older one never overrides a
+// newer, and a name's own presence is no membership.
+func TestMembershipsAndTheirServerClock(t *testing.T) {
+	now := time.Now()
+	s := New()
+	s.Clock = func() time.Time { return now }
+	s.ObservedMember("home", "agent-a", now.Add(-time.Hour), 2)
+	if !s.MemberFresh("home", "agent-a") {
+		t.Fatal("a membership of an hour ago is not fresh")
+	}
+	if s.MemberFresh("home", "agent-b") || s.MemberFresh("elsewhere", "agent-a") {
+		t.Fatal("a membership of another name or channel")
+	}
+	// an older message never overrides a newer one
+	s.ObservedMember("home", "agent-a", now.Add(-2*time.Hour), 3)
+	if got := s.ServerNow(); !got.Equal(now) && got.Sub(now) > time.Minute {
+		t.Fatalf("the clock moved back: %v", got)
+	}
+	if !s.MemberFresh("home", "agent-a") {
+		t.Fatal("an older observation overrode the newer")
+	}
+	// the server's now runs on: just past one renewal (6 h) it is still there,
+	// beyond MemberKeep it has run out
+	now = now.Add(6 * time.Hour)
+	if !s.MemberFresh("home", "agent-a") {
+		t.Fatal("a membership of seven hours is stale")
+	}
+	now = now.Add(2 * time.Hour)
+	if s.MemberFresh("home", "agent-a") {
+		t.Fatal("a membership older than MemberKeep is fresh")
+	}
+	if o, n, ok := Membership("presence.member.home.agent-a"); !ok || o != "home" || n != "agent-a" {
+		t.Fatalf("%q %q %v", o, n, ok)
+	}
+	if _, _, ok := Membership("presence.member.home.agent-a.extra"); ok {
+		t.Fatal("a five-token subject read as a membership")
+	}
+	if _, _, ok := Membership("presence.alice.agent-a"); ok {
+		t.Fatal("a presence read as a membership")
+	}
+	for _, body := range []string{`{"v":1}`, `{"v":1,"future":"x"}`} {
+		if err := DecodeMember([]byte(body)); err != nil {
+			t.Errorf("refused %q: %v", body, err)
+		}
+	}
+	for _, body := range []string{`{}`, `{"v":2}`, `not json`} {
+		if err := DecodeMember([]byte(body)); err == nil {
+			t.Errorf("accepted %q", body)
+		}
+	}
+}
