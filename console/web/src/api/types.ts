@@ -206,7 +206,8 @@ export type Scope = "mine" | "trusting" | "everyone"
  * the browser never counts over the presence cards. A token sum is null when
  * no agent counted states one (n/a, never 0); `tokensAgents` of `total`
  * agents are the ones the operator may see per-agent numbers of (own or
- * trusted, ADR-015 point 15): the sum covers those and says so. */
+ * trusted, ADR-015 point 15) and that state a count: the sum covers those,
+ * and the list says "6 of 7 agents" only when it leaves agents out. */
 export interface GroupNumbers {
   total: number
   /** Agents by status group: working, listening, idle, offline, other. */
@@ -228,13 +229,18 @@ export interface Group extends GroupNumbers {
   agents: string[]
 }
 
+/** The panel's ask tiles, whoever owns the asking agent: the open asks that
+ * ask the operator, the open asks to another human by agents that trust the
+ * operator, and all open asks in view. */
+export interface GlanceAsks { forYou: number; mayAnswer: number; open: number }
+
 /** `GET /v1/groups`: the groups, and the panel's numbers: the operator's own
- * agents and the whole flock. */
+ * agents, the whole flock and the asks. */
 export interface GroupsAnswer {
   by: GroupBy
   scope: Scope
   groups: Group[]
-  glance: { mine: GroupNumbers; flock: GroupNumbers }
+  glance: { mine: GroupNumbers; flock: GroupNumbers; asks: GlanceAsks }
 }
 
 /** A report field: counts and seconds only, no names, no text

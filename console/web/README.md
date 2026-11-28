@@ -41,14 +41,22 @@ image.
     Status or None, with a header per group (a small bar of its states, "n of m
     reachable", "k working", "n for you", the group's tokens of today with the
     number of agents they cover) that folds it; a scope switch Mine (the
-    default), Trusting me or Everyone (in Everyone the groups start folded
-    except those that need the operator, and groups with nobody reachable and
-    no open ask fold into one row, "22 quiet homes"); a search over home, agent
-    and person. **The server counts** (`GET /v1/groups`, `src/api/types.ts`
+    default: the agents you own), Trusting me (those plus the others' agents that
+    name you as trusted) or Everyone (all you may see; each widens the one
+    before). In Everyone the groups start folded except those that need you,
+    and, grouped by home, repo or owner, groups with nobody reachable and no
+    open ask fold into one row named by the grouping ("22 quiet homes", "22
+    quiet repos", "22 quiet owners"). A search over home, agent and person shows
+    its hits unfolded and leaves the remembered folds alone; clearing it brings
+    them back. A group's tokens say "· 6 of 7 agents" only when the sum leaves
+    agents out. **The server counts** (`GET /v1/groups`, `src/api/types.ts`
     `GroupsAnswer`): the browser draws the rows from the stream's cards and
     counts nothing over them. The panel has four tiles (Reachable, Working
-    now, For you, You may answer: the operator's own number large, the
-    flock's small; only "For you" lights, and only above zero), "Needs you"
+    now, For you, You may answer: Reachable and Working now show your own agents
+    large and the flock small; For you counts the open asks that ask you,
+    whoever owns the asking agent, You may answer the open asks to another human
+    by agents that trust you, both with all open asks in view small; only "For
+    you" lights, and only above zero), "Needs you"
     (a click opens the asking agent) and "Flock by status"; it folds to a rail
     with three numbers (asks for you, reachable, working), and each row then
     gains a fourth column (posts and tool calls of today, the owner); on a

@@ -7,7 +7,7 @@ browser draws the rows from the fleet stream's cards), the state counts, how man
 are reachable and working, the open asks for the operator, and the sum of today's
 tokens. Per-agent numbers stay visible only for own or trusted agents (ADR-015
 point 15): a group's token sum covers those of its agents the operator may see
-and says how many that are (``tokensAgents`` of ``total``). Without the
+that state a count and says how many that are (``tokensAgents`` of ``total``). Without the
 operator's anchor nothing is "mine", no ask is "for you" and no tokens are summed.
 """
 from __future__ import annotations
@@ -48,8 +48,7 @@ def _numbers(cards: list[dict[str, Any]], open_asks: list[dict[str, Any]],
     states = _counts(cards)
     names = {c["name"] for c in cards}
     mine = [a for a in open_asks if a["by"] in names]
-    counted = [n for n in names if n in seen]
-    summed = [tokens[n] for n in counted if tokens.get(n) is not None]
+    summed = [tokens[n] for n in names if n in seen and tokens.get(n) is not None]
     return {
         "total": len(cards),
         "states": states,
@@ -58,10 +57,23 @@ def _numbers(cards: list[dict[str, Any]], open_asks: list[dict[str, Any]],
         "asksOpen": len(mine),
         "asksForYou": sum(1 for a in mine if a.get("for_me") is True),
         "asksMayAnswer": sum(1 for a in mine if a.get("may_answer") is True),
-        # what the operator may see: the agents with a per-agent row; null (n/a) when no
-        # counted agent states a token count, never 0
+        # the sum of the agents the operator may see numbers of and that state a token count;
+        # `tokensAgents` says how many that are (the list says "6 of 7 agents" only when it
+        # is fewer than `total`); null (n/a) when none, never 0
         "tokens": sum(summed) if summed else None,  # type: ignore[arg-type]
-        "tokensAgents": len(counted),
+        "tokensAgents": len(summed),
+    }
+
+
+def _glance_asks(open_asks: list[dict[str, Any]]) -> dict[str, int]:
+    """The panel's ask tiles, whoever owns the asking agent: `forYou` the open asks that ask
+    the operator, `mayAnswer` the open asks to another human by agents that trust the
+    operator (as owner or trusted), `open` all open asks in view (the small number)."""
+    return {
+        "forYou": sum(1 for a in open_asks if a.get("for_me") is True),
+        "mayAnswer": sum(1 for a in open_asks
+                         if a.get("may_answer") is True and a.get("for_me") is not True),
+        "open": len(open_asks),
     }
 
 
@@ -84,7 +96,9 @@ def groups(cards: list[dict[str, Any]], asks: list[dict[str, Any]],
            agent_rows: list[dict[str, Any]], *, by: str, scope: str,
            own: Collection[str], own_or_trusted: Collection[str]) -> dict[str, Any]:
     """The answer of ``/v1/groups``: the groups of `by` over the agents of `scope`, and the
-    panel's numbers (``glance``): the operator's own and the flock's. `own` and
+    panel's numbers (``glance``): the operator's own agents', the flock's and the asks'. Each
+    scope widens the one before: "mine" (own) lies inside "trusting" (own or trusted), which
+    lies inside "everyone". `own` and
     `own_or_trusted` are the agent names of the two scopes (Fleet.own,
     Fleet.own_or_trusted); `agent_rows` the rows of ``/v1/agent-stats``, which exist only
     for `own_or_trusted` agents."""
@@ -115,4 +129,5 @@ def groups(cards: list[dict[str, Any]], asks: list[dict[str, Any]],
     mine_cards = [c for c in cards if c["name"] in set(own)]
     return {"by": by, "scope": scope, "groups": out,
             "glance": {"mine": _numbers(mine_cards, open_asks, tokens, seen),
-                       "flock": _numbers(cards, open_asks, tokens, seen)}}
+                       "flock": _numbers(cards, open_asks, tokens, seen),
+                       "asks": _glance_asks(open_asks)}}

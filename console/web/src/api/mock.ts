@@ -338,7 +338,7 @@ function numbers(members: AgentCard[], open: Ask[], rows: AgentStatsRow[], mine:
     asksOpen: its.length, asksForYou: its.filter((a) => a.forMe === true).length,
     asksMayAnswer: its.filter((a) => a.mayAnswer === true).length,
     tokens: sums.length ? sums.reduce((n, r) => n + (r.tok24h?.all ?? 0), 0) : null,
-    tokensAgents: seen.length,
+    tokensAgents: sums.length,
   }
 }
 
@@ -371,6 +371,11 @@ export function mockGroups(all: AgentCard[], asksNow: Ask[], rows: AgentStatsRow
   return { by, scope, groups, glance: {
     mine: numbers(all.filter(own), open, rows, seeable),
     flock: numbers(all, open, rows, seeable),
+    asks: {
+      forYou: open.filter((a) => a.forMe === true).length,
+      mayAnswer: open.filter((a) => a.mayAnswer === true && a.forMe !== true).length,
+      open: open.length,
+    },
   } }
 }
 

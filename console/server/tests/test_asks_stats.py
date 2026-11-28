@@ -525,6 +525,45 @@ def test_groups_count_per_group_and_scope() -> None:
     assert by_owner[0]["agents"] == [A] and by_owner[0]["asksForYou"] == 1  # carol sorts first by name
 
 
+def test_each_scope_widens_the_one_before() -> None:
+    """#283, the design contact's answer 1: "Mine" is the agents the operator owns, "Trusting
+    me" those plus the others' agents that name the operator as trusted, "Everyone" all."""
+    f = fleet_with()
+    for anchor in ("carol~x", "dembaca"):
+        seen = {s: {a for g in _groups(f, anchor, "none", s)["groups"] for a in g["agents"]}
+                for s in ("mine", "trusting", "everyone")}
+        assert seen["mine"] <= seen["trusting"] <= seen["everyone"]
+        assert seen["mine"] == f.own(anchor) and seen["trusting"] == f.own_or_trusted(anchor)
+    # carol owns B and A's attestation trusts her: A joins in "trusting", never in "mine"
+    assert {a for g in _groups(f, "carol~x", "none", "trusting")["groups"] for a in g["agents"]} \
+        - f.own("carol~x") == {A}
+    # dembaca owns A; B's attestation does not name her: B is in "everyone" only
+    dem = {s: {a for g in _groups(f, "dembaca", "none", s)["groups"] for a in g["agents"]}
+           for s in ("trusting", "everyone")}
+    assert B in dem["everyone"] and B not in dem["trusting"]
+
+
+def test_the_panels_ask_tiles_count_over_the_whole_view() -> None:
+    """#283, answer 2: "For you" is every open ask that asks the operator, "You may answer" the
+    open asks to another human by agents that trust the operator, "open" all open asks in view;
+    only the agent numbers are split into own agents and the flock."""
+    rec_a = encode_ask_record([OpenAsk(mm(1), "approval", "dembaca", "a", int(NOW) - 60),
+                               OpenAsk(mm(2), "question", "carol~x", "b", int(NOW) - 30)], int(NOW))
+    rec_b = encode_ask_record([OpenAsk(mm(3), "question", "dembaca", "c", int(NOW) - 10)], int(NOW))
+    f = fleet_with((A, "dev", rec_a, NOW), (B, "dev", rec_b, NOW))
+    dem = _groups(f, "dembaca", "home", "mine")["glance"]
+    # A's ask to dembaca is for her; its ask to carol is one she may answer (A is hers);
+    # B's attestation does not name her, so its ask counts in "open" only
+    assert dem["asks"] == {"forYou": 1, "mayAnswer": 1, "open": 3}
+    carol = _groups(f, "carol~x", "home", "mine")["glance"]
+    # carol: A is another owner's agent, and its ask to her is for her all the same; its ask
+    # to dembaca she may answer (A trusts her); B is hers too, so its ask to dembaca she may answer
+    assert carol["asks"] == {"forYou": 1, "mayAnswer": 2, "open": 3}
+    # the panel's counts do not depend on the scope that is picked
+    assert _groups(f, "dembaca", "home", "everyone")["glance"]["asks"] == dem["asks"]
+    assert dem["mine"]["total"] == 1 and dem["flock"]["total"] == 2
+
+
 def test_groups_without_an_anchor_count_nothing_as_mine_or_for_you() -> None:
     f = fleet_with()
     doc = _groups(f, None, "owner", "mine")
@@ -546,7 +585,7 @@ def test_groups_sum_tokens_only_of_what_the_operator_may_see() -> None:
     none = groups.groups(cards, [], [{"agent": A, "tok24h": None, "tok7d": None}], by="none",
                          scope="everyone", own=f.own("dembaca"),
                          own_or_trusted=f.own_or_trusted("dembaca"))
-    assert none["groups"][0]["tokens"] is None
+    assert none["groups"][0]["tokens"] is None and none["groups"][0]["tokensAgents"] == 0
 
 
 def test_groups_by_status_use_the_status_groups_and_never_guess_an_unknown_state() -> None:

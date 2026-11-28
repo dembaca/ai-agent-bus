@@ -135,9 +135,11 @@ working agents, the open asks, those for the operator and those it may answer,
 and the sum of today's tokens, and the panel's numbers for the operator's own
 agents and for the whole flock. "Mine" is the agents whose fresh attestation
 names the operator's anchor as owner, "trusting" those that name it as owner or
-trusted, "everyone" all. The token sum covers only the agents the operator may
-see per-agent numbers of (own or trusted) and says how many (`tokensAgents` of
-`total`); null where none states a count; without the anchor nothing is mine and
+trusted (so each scope widens the one before), "everyone" all. The panel's ask
+tiles are `glance.asks`: `forYou`, `mayAnswer` and `open`, counted over all open
+asks in view whoever owns the asking agent. The token sum covers only the
+agents the operator may see per-agent numbers of (own or trusted) that state a
+count and says how many (`tokensAgents` of `total`); null where none states a count; without the anchor nothing is mine and
 no ask is for you. An unknown `by` or `scope` is a 400.
 
 The asks and the reports (the console on the bus as its operator,

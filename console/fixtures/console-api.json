@@ -1,16 +1,18 @@
 {
-  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it \u2014 console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts; the report is one of /v1/stats as the app takes it; groups is /v1/groups?by=home&scope=mine for the card's own agent (#283).",
+  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it — console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts; the report is one of /v1/stats as the app takes it; groups is /v1/groups?by=home&scope=mine for the card's own agent (#283).",
   "card": {
     "name": "oudzj4bhpl62iahctur5s5sf4",
     "displayName": "agent-himalia-nats-pilo-772844",
     "statedName": "agent-himalia-nats-pilo-772844",
     "nameShared": false,
     "home": "dev",
-    "guests": ["bgl-infra"],
+    "guests": [
+      "bgl-infra"
+    ],
     "state": "online",
     "crown": true,
     "harness": "claude-code",
-    "model": "Claude Code \u00b7 Opus 5.5",
+    "model": "Claude Code · Opus 5.5",
     "task": "console: the card's data over presence",
     "role": "member",
     "for": "dembaca",
@@ -45,11 +47,13 @@
         "statedName": "agent-himalia-nats-pilo-772844",
         "nameShared": false,
         "home": "dev",
-        "guests": ["bgl-infra"],
+        "guests": [
+          "bgl-infra"
+        ],
         "state": "online",
         "crown": true,
         "harness": "claude-code",
-        "model": "Claude Code \u00b7 Opus 5.5",
+        "model": "Claude Code · Opus 5.5",
         "task": "console: the card's data over presence",
         "role": "member",
         "for": "dembaca",
@@ -355,7 +359,7 @@
         "asksForYou": 0,
         "asksMayAnswer": 0,
         "tokens": null,
-        "tokensAgents": 1
+        "tokensAgents": 0
       }
     ],
     "glance": {
@@ -374,7 +378,7 @@
         "asksForYou": 0,
         "asksMayAnswer": 0,
         "tokens": null,
-        "tokensAgents": 1
+        "tokensAgents": 0
       },
       "flock": {
         "total": 1,
@@ -391,7 +395,12 @@
         "asksForYou": 0,
         "asksMayAnswer": 0,
         "tokens": null,
-        "tokensAgents": 1
+        "tokensAgents": 0
+      },
+      "asks": {
+        "forYou": 0,
+        "mayAnswer": 0,
+        "open": 0
       }
     }
   }

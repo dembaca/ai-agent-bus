@@ -38,6 +38,14 @@ export function matches(card: AgentCard, query: string): boolean {
   return words.every((w) => text.includes(w))
 }
 
+/** The change a click on a group's header makes to the remembered folds, or null. A search
+ * shows its hits unfolded and leaves the remembered folds alone: while it is active a
+ * click writes nothing, and clearing the search brings the folds back. */
+export function foldPatch(prefs: Prefs, key: string, folded: boolean, searching: boolean):
+    Partial<Prefs> | null {
+  return searching ? null : { folded: { ...prefs.folded, [`${prefs.by}:${key}`]: folded } }
+}
+
 /** What the list shows of one group: its agents' cards in the group's order
  * (those the search holds), or none when the search holds none of them. */
 export interface Shown { group: Group; cards: AgentCard[]; folded: boolean }
@@ -97,8 +105,10 @@ export function AgentList({ answer, cards, asks, stats = null, prefs = DEFAULT_P
   const orderKey = order.join("\n")
   useEffect(() => { onVisible?.(orderKey ? orderKey.split("\n") : []) }, [orderKey, onVisible])
 
-  const fold = (g: Group, folded: boolean) =>
-    onPrefs?.({ folded: { ...prefs.folded, [`${prefs.by}:${g.key}`]: folded } })
+  const fold = (g: Group, folded: boolean) => {
+    const patch = foldPatch(prefs, g.key, folded, searching)
+    if (patch) onPrefs?.(patch)
+  }
 
   return (
     <>
@@ -167,7 +177,7 @@ export function AgentList({ answer, cards, asks, stats = null, prefs = DEFAULT_P
         Live from the agents' presence on the bus; a row changes in place. Task,
         model and branch are what each agent states about itself. {NO_LAST_POST}
         {" "}A group's tokens of today add up the agents you may see numbers of;
-        the group says how many that are. {NO_STATS_ROW} {STATS_ROWS_NOTE}
+        the group says how many that are when some are left out. {NO_STATS_ROW} {STATS_ROWS_NOTE}
       </p>
     </>
   )
@@ -215,7 +225,7 @@ function GroupBlock({ item, by, stats, waiting, selected, panelFolded, onFold, o
           {g.asksForYou > 0 && <span className="chip chip--for-me">{g.asksForYou} for you</span>}
           <span className="group__tokens muted" title={tokenTitle}>
             {g.tokens === null ? EMPTY : `${tokenCount(g.tokens)} tokens today`}
-            {g.tokens !== null && (
+            {g.tokens !== null && g.tokensAgents < g.total && (
               <span className="group__covers"> · {g.tokensAgents} of {g.total} agents</span>
             )}
           </span>

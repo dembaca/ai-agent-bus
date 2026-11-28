@@ -5046,11 +5046,16 @@ The console is the operators' view of the bus itself.
    the tokens of today) that folds and unfolds it; groups with an ask for
    the operator come first. A scope switch picks Mine (the agents whose
    fresh attestation names the operator as owner, the default), Trusting me
-   (those that name the operator as owner or trusted) or Everyone; in
+   (those plus the others' agents that name the operator as trusted) or
+   Everyone (all the operator may see); each widens the one before. In
    Everyone the groups start folded except those that need the operator,
-   and groups with nobody reachable and no open ask fold into one row ("22
-   quiet homes"). A search narrows the rows by any word of home, agent,
-   person, repo, branch, task, harness, model or PR. The status groups are
+   and, only in Everyone and only grouped by home, repo or owner, groups
+   with nobody reachable and no open ask fold into one row named by the
+   grouping ("22 quiet homes", "22 quiet repos", "22 quiet owners"). A
+   search narrows the rows by any word of home, agent, person, repo,
+   branch, task, harness, model or PR; while it is active the groups with
+   hits show unfolded without touching the remembered folds, and clearing
+   it brings them back. The status groups are
    working (`working`, `bus`), listening (`listening`, `online`), idle
    (`idle`, `away`, `silent`), offline, and other: a state the console does
    not know is never guessed into a group. **The server counts**
@@ -5058,8 +5063,11 @@ The console is the operators' view of the bus itself.
    asks for the operator and the sum of today's tokens of every group and
    of the panel come from it, the browser counts nothing over the cards. The
    panel "At a glance" on the left has four tiles — Reachable, Working
-   now, For you, You may answer — each with the operator's own number large
-   and the flock's small, "Needs you" (the asks for the operator and those
+   now, For you, You may answer. Reachable and Working now show the
+   operator's own agents large and the flock small; For you (open asks that
+   ask the operator, whoever owns the asking agent) and You may answer (open
+   asks to another human by agents that trust the operator) show their count
+   large and all open asks in view small. "Needs you" (the asks for the operator and those
    it may answer; a click opens the asking agent), and "Flock by status".
    It folds to a rail with three numbers (asks for you, reachable,
    working); folded, each row gains a fourth column (posts and tool calls
@@ -5828,12 +5836,15 @@ working agents, the open asks, those for the operator and those it may
 answer, and the sum of today's tokens, and with it the panel's numbers for
 the operator's own agents and for the whole flock. The same rule as the
 per-agent rows holds: a group's token sum covers only the agents the
-operator may see numbers of (own or trusted, point 15), says how many that
-are (`tokensAgents` of `total`), and is null (n/a), never 0, when none of
-them states a count. Without the operator's anchor nothing is "mine" and
-no ask is "for you". "Mine" counts the agents whose fresh attestation names
-the operator as owner; "Trusting me" counts those that name the operator
-as owner or trusted. `GET /v1/graph` stays on the server, unused by the app.
+operator may see numbers of (own or trusted, point 15) and that state a
+count, says how many that are (`tokensAgents` of `total`; the list shows "6
+of 7 agents" only when that leaves agents out), and is null (n/a), never 0,
+when none of them states a count. The panel's ask tiles count over all open
+asks in view (`glance.asks`: for you, may answer, open), whoever owns the
+asking agent. Without the operator's anchor nothing is "mine" and no ask is
+"for you". "Mine" counts the agents whose fresh attestation names the
+operator as owner; "Trusting me" those plus the others' agents that name the
+operator as trusted; "Everyone" all the operator may see. `GET /v1/graph` stays on the server, unused by the app.
 Still open, the owner's decision: who sees which homes (today every logged-in
 person sees every card with task and branch) and the cost in money beside
 tokens (no agent reports it); the console builds without both.

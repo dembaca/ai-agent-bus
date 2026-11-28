@@ -1,9 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it } from "vitest"
-import type { AgentCard, Ask, GroupBy, Scope } from "../api/types"
+import type { AgentCard, Ask, GroupBy, GroupsAnswer, Scope } from "../api/types"
 import { mockApi, mockGroups } from "../api/mock"
 import { DEFAULT_PREFS, type Prefs } from "../prefs"
-import { AgentList, EMPTY, matches } from "./AgentList"
+import { AgentList, EMPTY, foldPatch, matches } from "./AgentList"
 import { NO_LAST_POST, NO_STATS_ROW, STATS_ROWS_NOTE, statsByAgent } from "./agents"
 import { Detail } from "./Detail"
 
@@ -23,6 +23,7 @@ const noop = () => {}
 async function list(opts: {
   cards?: AgentCard[]; asks?: Ask[]; by?: GroupBy; scope?: Scope; prefs?: Partial<Prefs>
   stats?: boolean; query?: string; panelFolded?: boolean; selected?: string
+  patch?: (answer: GroupsAnswer) => GroupsAnswer
 } = {}): Promise<string> {
   const base = await fleet()
   const cards = opts.cards ?? base.cards
@@ -30,7 +31,7 @@ async function list(opts: {
   const by = opts.by ?? "home"
   const scope = opts.scope ?? "everyone"
   const rows = await mockApi().agentStats()
-  const answer = mockGroups(cards, asks, rows, by, scope)
+  const answer = (opts.patch ?? ((a) => a))(mockGroups(cards, asks, rows, by, scope))
   return renderToStaticMarkup(
     <AgentList answer={answer} cards={cards} asks={asks}
       stats={opts.stats === false ? null : statsByAgent(rows)}
@@ -124,11 +125,55 @@ describe("the agents list (#283)", () => {
     expect(html).toContain('class="agents__quiet" aria-expanded="false"')
   })
 
-  it("shows the group's tokens with how many agents they cover, n/a-safe", async () => {
-    const html = await list({ scope: "everyone" })
-    expect(html).toContain("92.1k tokens today")
-    expect(html).toMatch(/1 of \d+ agents/)
-    expect(html).toContain("Tokens of the last 24 hours of the agents you may see numbers of")
+  it("names the quiet row by the grouping, only in Everyone and only by home, repo or owner", async () => {
+    const { cards } = await fleet()
+    const gone = cards.map((c, i) => (i < 2 ? c : { ...c, state: "offline" as const,
+      home: `~quiet-${i}`, project: `quiet/repo-${i}`, for: `quiet-owner-${i}` }))
+    for (const [by, noun] of [["home", "homes"], ["repo", "repos"], ["owner", "owners"]] as const) {
+      const html = await list({ cards: gone, asks: [], by, scope: "everyone" })
+      expect(html).toMatch(new RegExp(`\\d+ quiet ${noun}`))
+    }
+    for (const scope of ["mine", "trusting"] as const) {
+      expect(await list({ cards: gone, asks: [], by: "home", scope })).not.toContain("quiet homes")
+    }
+    for (const by of ["status", "none"] as const) {
+      expect(await list({ cards: gone, asks: [], by, scope: "everyone" })).not.toMatch(/\d+ quiet /)
+    }
+    // a group the person unfolded or folded herself is no quiet one
+    const picked = await list({ cards: gone, asks: [], by: "home", scope: "everyone",
+      prefs: { folded: { "home:~quiet-2": false } } })
+    expect(picked).toContain("~quiet-2")
+  })
+
+  it("shows the group's tokens, and 'n of m agents' only when the sum leaves agents out", async () => {
+    const whole = await list({ scope: "everyone", by: "home", patch: (a) => ({ ...a,
+      groups: a.groups.map((g) => ({ ...g, tokens: 92_100, tokensAgents: g.total })) }) })
+    expect(whole).toContain("92.1k tokens today")
+    expect(whole).not.toContain("group__covers")
+    const partial = await list({ scope: "everyone", by: "home", patch: (a) => ({ ...a,
+      groups: a.groups.map((g) => ({ ...g, tokens: 92_100, tokensAgents: g.total - 1 })) }) })
+    expect(partial).toContain("92.1k tokens today")
+    expect(partial).toMatch(/ · \d+ of \d+ agents/)
+    expect(partial).toContain("Tokens of the last 24 hours of the agents you may see numbers of")
+    const none = await list({ scope: "everyone", by: "home", patch: (a) => ({ ...a,
+      groups: a.groups.map((g) => ({ ...g, tokens: null, tokensAgents: 0 })) }) })
+    expect(none).not.toContain("tokens today")
+  })
+
+  it("shows a search's hits unfolded and writes nothing to the remembered folds", async () => {
+    const { cards } = await fleet()
+    const target = cards.find((c) => c.for === "carol")!
+    // Everyone folds every group without an ask for the operator
+    const quietly = await list({ scope: "everyone", prefs: { folded: { [`home:${target.home}`]: true } } })
+    expect(quietly).not.toContain(target.name)
+    const searched = await list({ scope: "everyone", query: "carol",
+      prefs: { folded: { [`home:${target.home}`]: true } } })
+    expect(searched).toContain(target.name)
+    expect(searched).not.toContain('aria-expanded="false"')
+    // a click on a header while searching changes nothing; without a search it folds
+    const prefs = { ...DEFAULT_PREFS, scope: "everyone" as const, folded: { "home:~a": true } }
+    expect(foldPatch(prefs, "~a", false, true)).toBeNull()
+    expect(foldPatch(prefs, "~a", false, false)).toEqual({ folded: { "home:~a": false } })
   })
 
   it("gives each row a fourth column with the panel folded (posts, tool calls, owner)", async () => {

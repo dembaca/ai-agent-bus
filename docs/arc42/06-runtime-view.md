@@ -1999,14 +1999,22 @@ The rule that an operator reads the guest channels of agents that trust them onl
     counts by status group (`working`/`bus`, `listening`/`online`,
     `idle`/`away`/`silent`, `offline`, else `other`), the reachable and working
     agents, the open asks, those for the operator and those it may answer, and the
-    sum of today's tokens; and the panel's numbers for the operator's own agents
-    and for the whole flock. The scopes come from the attestation (RT-6.41):
-    "mine" the agents whose fresh attestation names the operator's anchor as
-    owner, "trusting" those that name it as owner or trusted (the agents of
-    step 8's rows), "everyone" all. A group's token sum adds the tokens of the
-    last 24 hours of the agents that have a per-agent row only, and says how many
-    that are (`tokensAgents` of `total`); it is null (n/a), never 0, when none of
-    them states a count. Without the operator's anchor nothing is "mine" and no
+    sum of today's tokens; and the panel's numbers (`glance`): `mine` for the
+    operator's own agents and `flock` for the whole flock, and `asks` over all
+    open asks in view, whoever owns the asking agent: `forYou` (asks that ask the
+    operator, which holds only where the asking agent's attestation names the
+    operator, as `for_me` always did), `mayAnswer` (open asks to another human by
+    agents that trust the operator) and `open` (all of them, the tiles' small
+    number). Only the agent numbers (reachable, working) are split into own and
+    flock. The scopes come from the attestation (RT-6.41) and each widens the
+    one before: "mine" the agents whose fresh attestation names the operator's
+    anchor as owner, "trusting" those plus the others' agents that name it as
+    trusted (the agents of step 8's rows), "everyone" all the operator may see.
+    A group's token sum adds the tokens of the last 24 hours of the agents that
+    have a per-agent row and state a count, and says how many that are
+    (`tokensAgents` of `total`; the list shows "6 of 7 agents" only when that
+    leaves agents out); it is null (n/a), never 0, when none of them states a
+    count. Without the operator's anchor nothing is "mine" and no
     ask is "for you". The groups with an ask for the operator come first, the
     rest by name; the status groups in their fixed order. An unknown `by` or
     `scope` is a 400. The route is behind the operator's login like every `/v1`

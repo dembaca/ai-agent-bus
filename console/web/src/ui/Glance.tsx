@@ -11,7 +11,7 @@ const STATUS_NAMES: ReadonlyArray<[string, string]> = [
 ]
 
 /** The panel "At a glance" on the left of the agents list (#283): four tiles
- * with the operator's own number large and the flock's small, "Needs you" and
+ * with one number large and the flock's small, "Needs you" and
  * "Flock by status". Every number is the server's (`GET /v1/groups`); the
  * browser counts nothing over the cards. Folded it is a narrow rail with three
  * numbers: the asks for you, the agents reachable and those working. */
@@ -26,6 +26,7 @@ export function Glance({ answer, asks, cards, folded, onFold, onOpenAgent, onOpe
 }) {
   const mine = answer?.glance.mine
   const flock = answer?.glance.flock
+  const asksNow = answer?.glance.asks
   if (folded) {
     return (
       <aside className="glance glance--rail" aria-label="At a glance, folded">
@@ -33,7 +34,7 @@ export function Glance({ answer, asks, cards, folded, onFold, onOpenAgent, onOpe
           title="Unfold the panel" onClick={() => onFold(false)}>
           <ChevronsRight size={15} aria-hidden="true" />
         </button>
-        <Rail value={mine?.asksForYou} label="for you" hot />
+        <Rail value={asksNow?.forYou} label="for you" hot />
         <Rail value={mine?.reachable} label="reachable" />
         <Rail value={mine?.working} label="working" />
       </aside>
@@ -52,8 +53,10 @@ export function Glance({ answer, asks, cards, folded, onFold, onOpenAgent, onOpe
       <div className="glance__tiles">
         <Tile label="Reachable" mine={mine?.reachable} flock={flock?.reachable} />
         <Tile label="Working now" mine={mine?.working} flock={flock?.working} />
-        <Tile label="For you" mine={mine?.asksForYou} flock={flock?.asksForYou} hot />
-        <Tile label="You may answer" mine={mine?.asksMayAnswer} flock={flock?.asksMayAnswer} />
+        <Tile label="For you" mine={asksNow?.forYou} flock={asksNow?.open} hot
+          title="open asks that ask you, whoever owns the asking agent; small: all open asks in view" />
+        <Tile label="You may answer" mine={asksNow?.mayAnswer} flock={asksNow?.open}
+          title="open asks to another human by agents that trust you; small: all open asks in view" />
       </div>
 
       <section className="glance__block" aria-label="Needs you">
@@ -102,17 +105,20 @@ export function Glance({ answer, asks, cards, folded, onFold, onOpenAgent, onOpe
   )
 }
 
-/** The operator's own number large, the flock's small; "For you" is lit only
+/** The big number is the operator's own agents' ("Reachable", "Working now") or
+ * the asks that concern the operator ("For you", "You may answer"); the small one
+ * is the flock's, for the asks all open asks in view. "For you" is lit only
  * above zero. A number not read yet is a dash, never 0. */
-function Tile({ label, mine, flock, hot = false }: {
+function Tile({ label, mine, flock, hot = false, title }: {
   label: string
   mine: number | undefined
   flock: number | undefined
   hot?: boolean
+  title?: string
 }) {
   const lit = hot && (mine ?? 0) > 0
   return (
-    <div className={"tile" + (lit ? " tile--hot" : "")}>
+    <div className={"tile" + (lit ? " tile--hot" : "")} title={title}>
       <span className="tile__label">{label}</span>
       <span className="tile__mine" title="yours">{mine ?? "–"}</span>
       <span className="tile__flock muted small" title="the whole flock">flock {flock ?? "–"}</span>

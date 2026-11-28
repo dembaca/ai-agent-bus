@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it } from "vitest"
-import type { AgentCard, Ask } from "../api/types"
+import type { AgentCard, Ask, GroupsAnswer } from "../api/types"
 import { mockApi, mockGroups } from "../api/mock"
 import { Glance } from "./Glance"
 
@@ -32,8 +32,31 @@ describe("the panel At a glance (#283)", () => {
     expect((html.match(/>flock \d+</g) ?? []).length).toBe(4)
   })
 
+  it("counts the asks over the whole view and splits only Reachable and Working now", async () => {
+    const { cards, asks } = await fleet()
+    const real = mockGroups(cards, asks, [], "home", "mine")
+    const answer: GroupsAnswer = { ...real, glance: { ...real.glance,
+      asks: { forYou: 3, mayAnswer: 2, open: 9 } } }
+    const html = renderToStaticMarkup(<Glance answer={answer} asks={asks} cards={cards} folded={false}
+      onFold={noop} onOpenAgent={noop} onOpenAsk={noop} />)
+    const tile = (label: string) => {
+      const at = html.indexOf(`>${label}<`)
+      return html.slice(at, html.indexOf("</div>", at))
+    }
+    expect(tile("For you")).toContain('title="yours">3<')
+    expect(tile("For you")).toContain(">flock 9<")
+    expect(tile("You may answer")).toContain('title="yours">2<')
+    expect(tile("You may answer")).toContain(">flock 9<")
+    expect(tile("Reachable")).toContain(`>flock ${real.glance.flock.reachable}<`)
+    expect(tile("Working now")).toContain(`>flock ${real.glance.flock.working}<`)
+    // the folded rail's "for you" is the same number
+    const rail = renderToStaticMarkup(<Glance answer={answer} asks={asks} cards={cards} folded
+      onFold={noop} onOpenAgent={noop} onOpenAsk={noop} />)
+    expect(rail).toContain('class="rail__n">3<')
+  })
+
   it("lights only 'For you', and only above zero", async () => {
-    expect(await panel(false)).toMatch(/tile tile--hot"><span class="tile__label">For you/)
+    expect(await panel(false)).toMatch(/tile tile--hot"[^>]*><span class="tile__label">For you/)
     const { cards, asks } = await fleet()
     const none = mockGroups(cards, asks.map((a) => ({ ...a, forMe: false })), [], "home", "mine")
     const html = renderToStaticMarkup(<Glance answer={none} asks={[]} cards={cards} folded={false}
