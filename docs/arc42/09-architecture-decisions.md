@@ -4950,6 +4950,48 @@ which each piece reads for itself.
       - Test: hook tests: no registration and no Mattermost token for such
         a session, registration for a mixed one. Lab: the acceptance
         below.
+      - Built (14a, after 0.104.0; RT-6.18 step 13, RT-6.10 step 8): the
+        decision, in `nobot.py` with the predicate `NatsPort.bot_needed`.
+        Inert until 14c: the crown still needs the bot's identity (the
+        lease heartbeat and its NATS beat run only with a token, the claim
+        carries the bot's id), so the predicate always names that reason
+        (`nobot.CROWN_NEEDS_BOT`, which 14c deletes; RT-6.6 step 13) and
+        every session registers; the corral start hook defers none either
+        (`CB_CROWN_NEEDS_BOT` in `bin/mm-agent-lib.sh`, which 14c flips in
+        the same commit), so every session registers there as before.
+        What follows is built and tested with both off.
+        A corral start whose every channel `CB_NATS_HOMES` lists
+        (`mm_bot_deferrable`, a pre-filter of the host's settings that can
+        only delay a registration) registers nothing and hands the host
+        process the bot's name and the registration secret in the start
+        line's `defer`; the host process registers only when its NATS read
+        shows a channel or piece off, and drops the secret either way.
+        Without corral `session_start` decides on the same predicate. The
+        predicate reads only this bus's copy of the login service's
+        records: every channel of the session (home, guests, lobby) one of
+        the bus's, each with pieces 1 to 13 in a fresh record, the stats
+        channel off or on NATS through the home's piece 13 (the plan's
+        second question, as recommended), and only once the bus is
+        connected and has read the presence replay; `CB_PLANB_TEST` does
+        not count. In doubt a bot: no login or replay within 60 s, no NATS
+        side, an error. Where the build settles what the text leaves open:
+        the decision is kept for the session's run, so a record that goes
+        stale or is switched off later leaves a session started without a
+        bot without Mattermost (what needs it fails with a text that says
+        to restart), never with a late token; the bot a host process
+        registers is not kept for `claude --continue` (the start hook marks
+        its session file `DEFERRED=1`), but its token goes into that
+        host-side session file at once, so the stop hook or
+        `mm-agent-sweep.sh` can still unregister it when the exit's own
+        unregister failed; until the decision and after a failed
+        registration, `bus_info` and what needs Mattermost say so in their
+        own text; a session that may
+        be fully switched starts its NATS bus without a bot id and links
+        the bot once registered. Everything a session holding no bot still
+        sends to Mattermost is the audit of every tool, hook route and
+        shell client (gate 9 of the plan), not 14a's. Unit tests and a real `nats-server` test in
+        `mcp/tests/test_planb_piece14.py`, hook tests in
+        `tests/hooks/test_planb_piece14_hooks.py`.
 - **Order (proposed).** First the pieces that move no message of
   people: channels from the directory, the roster and the link, DMs
   between agents, and the trusted humans from the attestation (pieces 1
