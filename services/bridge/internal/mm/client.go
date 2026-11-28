@@ -196,11 +196,23 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 		return User{}, fmt.Errorf("mattermost: user %q: %w", userID, err)
 	}
 	if raw.ID == "" {
-		return User{}, fmt.Errorf("mattermost: no user %q", userID)
+		return User{}, fmt.Errorf("mattermost: no user %q: %w", userID, errNoUser)
 	}
 	return User{ID: raw.ID, Username: raw.Username, IsBot: raw.IsBot, Deactivated: raw.DeleteAt != 0,
 		Guest: slices.Contains(strings.Fields(raw.Roles), "system_guest"), AuthService: raw.AuthService,
 		AuthData: raw.AuthData}, nil
+}
+
+// errNoUser is GetUser's answer for a body that names no user.
+var errNoUser = errors.New("no user in the answer")
+
+// notDecodable says err is a real decode error (the body is not the JSON asked
+// for), not a read that was cut or failed: that one is the network's and is
+// retried.
+func notDecodable(err error) bool {
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	return errors.As(err, &syn) || errors.As(err, &typ)
 }
 
 // Person is the user id of username's account when it is a person's: it
@@ -215,6 +227,13 @@ func (c *Client) Person(ctx context.Context, username string) (string, error) {
 		DeleteAt int64  `json:"delete_at"`
 	}
 	if err := c.do(ctx, "POST", "/api/v4/users/usernames", []string{username}, &raw); err != nil {
+		// A refusal keeps its status and a request that got no answer, or whose
+		// answer was cut or failed to read, is retried; only an answer that does
+		// not decode counts as no person (404), not as a failure to retry for
+		// ever (#287).
+		if notDecodable(err) {
+			err = &StatusError{Status: http.StatusNotFound, Err: err}
+		}
 		return "", fmt.Errorf("mattermost: username %q: %w", username, err)
 	}
 	for _, u := range raw {
@@ -239,29 +258,31 @@ func (c *Client) Member(ctx context.Context, channelID, userID string) (bool, er
 // Target reads one post by id and its author, for plan B piece 7 (RT-6.42
 // step 13, mirror.Targets): the bridge checks it before an agent's reply or
 // reaction naming it is written. A refusal keeps its status (StatusError) and
-// a request that got no answer is retried; an answer that does not decode
-// (also a body cut mid-read), or names no post or author, counts as no such
-// post (404), so it is skipped rather than retried for ever.
+// a request that got no answer, or whose body was cut or failed mid-read, is
+// retried; an answer that does not decode, or names no post or author, counts
+// as no such post (404), so it is skipped rather than retried for ever.
 func (c *Client) Target(ctx context.Context, postID string) (mirror.Target, error) {
 	var raw postJSON
 	body, err := c.request(ctx, "GET", "/api/v4/posts/"+url.PathEscape(postID), nil)
 	if err != nil {
 		return mirror.Target{}, fmt.Errorf("mattermost: post %q: %w", postID, err)
 	}
-	err = json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&raw)
+	err = decodeBody(body, &raw)
 	body.Close()
+	if err != nil && !notDecodable(err) {
+		// a cut or failed read is no answer about the post: retried
+		return mirror.Target{}, fmt.Errorf("mattermost: post %q: %w", postID, err)
+	}
 	if err != nil || raw.ID == "" || raw.UserID == "" {
 		return mirror.Target{}, &StatusError{Status: http.StatusNotFound,
 			Err: fmt.Errorf("mattermost: post %q: no post in the answer", postID)}
 	}
 	u, err := c.GetUser(ctx, raw.UserID)
 	if err != nil {
-		// A refusal keeps its status and the network (a *url.Error: no answer, a
-		// timeout) is retried; an answer that does not decode, or names no user,
-		// is none (404), so it is skipped rather than retried for ever.
-		var st *StatusError
-		var ue *url.Error
-		if !errors.As(err, &st) && !errors.As(err, &ue) {
+		// A refusal keeps its status and the network (no answer, a timeout, a cut
+		// or failed read) is retried; an answer that does not decode, or names no
+		// user, is none (404), so it is skipped rather than retried for ever.
+		if notDecodable(err) || errors.Is(err, errNoUser) {
 			err = &StatusError{Status: http.StatusNotFound, Err: err}
 		}
 		return mirror.Target{}, err
@@ -774,7 +795,18 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if out == nil {
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(out)
+	return decodeBody(body, out)
+}
+
+// decodeBody reads the whole body first and decodes it after, so a read that
+// is cut or fails (an error of the network) is told from a body that is no
+// JSON of the shape asked for (a *json.SyntaxError or *json.UnmarshalTypeError).
+func decodeBody(body io.Reader, out any) error {
+	data, err := io.ReadAll(io.LimitReader(body, 1<<20))
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
 }
 
 // request is do and doLimit's shared half: one request sent, its status
