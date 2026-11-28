@@ -112,6 +112,19 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **Plan B piece 5b: a session reads people's history through the bridge**
+  (#244, ADR-014 phase 5, RT-6.42 step 11). With piece 5 switched on for a home
+  over NATS, `channel_posts`, `list_recent`, `posts_after`, a person's `thread`
+  and `reactions` read that channel's people from the bridge's history answer
+  (`<req>.history.<agent>`) instead of Mattermost. A person's post keeps its
+  Mattermost id and is authored `hu:<anchor>`, with the account record the
+  bridge answers beside it; a stale record still names the person but approves
+  nothing, as a live event's would. An answer's `bot` posts are the Mattermost
+  ones (an ask), its reactions carry their senders' anchors and records, and
+  `more`/`next` pages the read forward (at most five pages), with the posts
+  deduped by id. A failed request reads nothing and never falls back to
+  Mattermost; off, nothing changes. The NATS memory is merged as before.
+
 - **The NATS crown says why `take` waits, and a `crown` debug category** (#243, RT-6.38, RT-6.31).
   `coordinator("take")` in a home over NATS names the case instead of always "another agent
   holds the crown": `pending: @<bot> holds the crown…`, `pending: a NATS agent without a linked
