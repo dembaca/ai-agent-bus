@@ -692,6 +692,18 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **The login approval is at this machine only: no DM, no ask** (#198, RT-6.34,
+  ADR-014 item 14; plan B piece 14c-3). The MCP server used to send the approval
+  link and code as a direct message under the agent's bot and post an ask in the
+  home that pointed to it, settling asks of earlier approvals at its start; a fully
+  switched session holds no bot token, so all three go. The approval now reaches the
+  human through the browser, the address and code in the MCP log and the harness's
+  terminal line (Claude Code's `SessionStart` and Stop hooks, the OpenCode plugin,
+  the pi extension), also under corral, where the relay shows it and the host
+  process keeps it for the line; the host no longer needs a chat for it. A wrong
+  person's approval is a log line and `WrongHuman`, not a DM; the theft notices
+  stay a DM where a bot posts them (RT-6.34). With nobody at the machine, a new
+  login waits (the price the owner accepted, RISK-29).
 - **CI: each check runs only for the areas a PR touches.** A `changes` job in
   `.github/workflows/checks.yml` (it replaces `console-changed`) names the areas a
   pull request touches, and each job carries an `if:` on them, so a skipped job
