@@ -142,6 +142,12 @@ okup  twhose briodgy doe's explicit `the thread is not idecode was taken ~<chann
 
 ### Breaking
 
+- **`GET /v1/graph` is removed from the console server** (#283, ADR-015 point 7
+  withdrawn). The agents list replaced the Graph view and nothing draws the
+  graph any more; the route answers like any unknown path (404, after the
+  login) and no longer counts under its own bucket in `/metrics`. Anything that
+  read the endpoint reads `/v1/groups` or `/v1/fleet` instead.
+
 - **NATS names lose the `agent-` prefix** (#274, RT-6.36 step 8). An agent's NATS
   name is now its hash alone: 25 characters of lower-case base32 (125 bits of the
   SHA-256 over owner, host key and session part), where it was `agent-` and 26.
@@ -670,7 +676,7 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
   agents whose numbers the operator may see (own or trusted) and that state a
   count, and says "· 6 of 7 agents" only when it leaves agents out. The answer's
   `glance` gains `asks` (`forYou`, `mayAnswer`, `open`). Fields the API does not carry yet are left out of the rows. `GET
-  /v1/graph` stays on the server, unused by the console. Open, the owner's
+  /v1/graph` is removed from the server (see Breaking). Open, the owner's
   decision: who sees which homes, and a cost in money beside tokens.
 - **A Mattermost account is bound to its Keycloak identity by proof, once,
   and a trusted human's answer on Mattermost approves without the approver
