@@ -22,4 +22,4 @@ def test_no_place_still_names_mm_release():
     out = subprocess.run(["git", "grep", "-n", "mm-release", "--", ".", ":!CHANGELOG.md",
                           ":!tests/hooks/test_release_principal.py"],
                          cwd=ROOT, capture_output=True, text=True)
-    assert out.stdout == "", out.stdout
+    assert out.returncode == 1 and out.stdout == "", (out.returncode, out.stdout, out.stderr)  # 1: no match
