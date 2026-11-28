@@ -34,13 +34,14 @@
 #
 # Since plan B piece 2b (RT-6.2 step 9) a session keys its kept state by its NATS
 # name (25 lower-case base32 characters) instead of the bot id: any
-# <kind>-<name>.env/.jsonl/.log, by that pattern, whatever the kind, so files
-# that move to the name later need no change here (RT-6.1 step 7). Only the
+# <kind>-<name>.env/.jsonl/.log/.lock, by that pattern, whatever the kind, so
+# files that move to the name later need no change here (RT-6.1 step 7). A
+# running MCP server names its key in its endpoint file (CB_STATE_KEY); the
 # marker copied-<name>.env ties a name to its bots (CB_COPIED_FROM=<bot id>, one
-# line per bot that used it). A name's files go when its marker names no bot
-# with a session file or a running MCP server and none of them was touched for
-# a day; without a marker nothing ties the name to a session, so they stay
-# (--force includes them by the day rule).
+# line per bot that used it). A name's files go when no running server names it,
+# its marker names no bot with a session file or a running MCP server and none
+# of them was touched for a day; without a marker nothing ties the name to a
+# session, so they stay (--force includes them by the day rule).
 #
 # A keyless corral session (RT-6.18) has its MCP server running on the host:
 # its session file records CB_BUS_HOST_PID, and the process keeps its files in
@@ -72,7 +73,7 @@ for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=1 ;;
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,51p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -110,7 +111,7 @@ is_state_file() { [[ "$(basename "$1")" =~ $STATE_RE ]]; }
 # pattern (natsbus.NAME_HASH_LEN characters of lower-case base32, no prefix since #274),
 # so the kinds that move to the name later are covered without a list. A file holding
 # a bot's token or registration name is a session, whatever its name.
-NAME_STATE_RE='^[a-z]+-[a-z2-7]{25}\.(env|jsonl|log)$'
+NAME_STATE_RE='^[a-z]+-[a-z2-7]{25}\.(env|jsonl|log|lock)$'
 is_name_state_file() {
   [[ "$(basename "$1")" =~ $NAME_STATE_RE ]] || return 1
   ! grep -Eq '^(export )?(CB_MM_BOT_TOKEN|MM_BOT_TOKEN|MM_REG_BOT_NAME|MM_BOT_NAME)=' "$1" 2>/dev/null
@@ -265,10 +266,14 @@ shopt -s nullglob
 for f in "$STATE_DIR"/*.env; do
   not_a_session "$f" || KEEP_UIDS+="$(field "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID) "
 done
-# So do the bots of MCP servers that still run (their endpoint file, RT-6.17).
+# So do the bots of MCP servers that still run (their endpoint file, RT-6.17),
+# and the NATS names they key their state by (CB_STATE_KEY, section 3b).
+KEEP_NAMES=" "
 for f in "$STATE_DIR"/endpoint-*.env; do
   [[ "$(basename "$f")" =~ $ENDPOINT_RE ]] || continue
-  is_live "$(field "$f" CB_BUS_PID MM_BUS_PID)" && KEEP_UIDS+="$(field "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID) "
+  is_live "$(field "$f" CB_BUS_PID MM_BUS_PID)" || continue
+  KEEP_UIDS+="$(field "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID) "
+  KEEP_NAMES+="$(field "$f" CB_STATE_KEY) "
 done
 stale=0
 for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/stats-*.jsonl "$STATE_DIR"/permission-*.log "$STATE_DIR"/crown-*.log; do
@@ -289,12 +294,13 @@ if (( stale > 0 )); then
 fi
 
 # --- 3b. state files keyed by a NATS name (RT-6.1 step 7, RT-6.2 step 9) ------
-# A name is in use while its marker copied-<name>.env names a bot kept above, or
-# while any of its files was touched within a day. Without a marker nothing ties
+# A name is in use while a running MCP server keys its state by it (CB_STATE_KEY
+# in its endpoint file), while its marker copied-<name>.env names a bot kept
+# above, or while any of its files was touched within a day. Without a marker nothing ties
 # the name to a session: its files stay, unless --force.
 shopt -s nullglob
 NAMES=" "
-for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/*-*.jsonl "$STATE_DIR"/*-*.log; do
+for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/*-*.jsonl "$STATE_DIR"/*-*.log "$STATE_DIR"/*-*.lock; do
   is_name_state_file "$f" || continue
   n="$(basename "$f")"; n="${n#*-}"; n="${n%%.*}"
   [[ "$NAMES" == *" $n "* ]] || NAMES+="$n "
@@ -302,10 +308,12 @@ done
 named=0
 untied=0
 for n in $NAMES; do
+  [[ "$KEEP_NAMES" == *" $n "* ]] && continue
   files=()
-  for f in "$STATE_DIR"/*-"$n".env "$STATE_DIR"/*-"$n".jsonl "$STATE_DIR"/*-"$n".log; do
+  for f in "$STATE_DIR"/*-"$n".env "$STATE_DIR"/*-"$n".jsonl "$STATE_DIR"/*-"$n".log "$STATE_DIR"/*-"$n".lock; do
     is_name_state_file "$f" && files+=("$f")
   done
+  (( ${#files[@]} )) || continue   # bash 3.2 with set -u: no empty "${files[@]}"
   marker="$STATE_DIR/copied-$n.env"
   if [[ -f "$marker" && ! -L "$marker" ]]; then
     tied=0
@@ -322,6 +330,8 @@ for n in $NAMES; do
     [[ -n "$(find "$f" -mtime +0 2>/dev/null)" ]] || fresh=1   # touched within a day
   done
   [[ "$fresh" -eq 1 ]] && continue
+  # A start may have written the marker since the check above.
+  [[ -f "$marker" && -z "$(find "$marker" -mtime +0 2>/dev/null)" ]] && continue
   named=$((named + ${#files[@]}))
   [[ "$APPLY" -eq 1 ]] && rm -f "${files[@]}"
 done

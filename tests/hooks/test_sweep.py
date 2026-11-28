@@ -262,9 +262,11 @@ def test_a_dead_takeovers_claim_goes_back(mm, run):
 NAME = "g" * 25  # a NATS name: 25 lower-case base32 characters, no prefix (#274)
 OTHER = "h" * 25
 DEAD_UID = "d" * 26
-# Today's name-keyed kinds and those plan B piece 14c moves to the name (any kind counts).
+# Today's name-keyed kinds and those plan B piece 14c moves to the name (any kind counts):
+# the MCP server's (askmode, asks, channel, gate, notice, read, remind, stall, ...) and the
+# shell's (listen, update, presence, coord, turn).
 NAME_KINDS = ("last", "threads", "unanswered", "listen", "update", "presence", "coord", "turn",
-              "asks", "gate", "watermark", "reminders")
+              "askmode", "asks", "channel", "gate", "notice", "read", "remind", "stall")
 
 
 def name_state(run, name: str, *, uid: str | None, days_old: float) -> list[str]:
@@ -272,6 +274,7 @@ def name_state(run, name: str, *, uid: str | None, days_old: float) -> list[str]
     files = [state_file(run, f"{k}-{name}.env", days_old=days_old) for k in NAME_KINDS]
     files.append(state_file(run, f"stats-{name}.jsonl", days_old=days_old))
     files.append(state_file(run, f"crown-{name}.log", days_old=days_old))
+    files += [state_file(run, f"{k}-{name}.lock", days_old=days_old) for k in ("asks", "remind", "stats")]
     if uid is not None:
         m = run.state_dir / f"copied-{name}.env"
         m.write_text(f"CB_COPIED_FROM={uid}\n")
@@ -344,3 +347,45 @@ def test_a_session_file_with_a_name_like_name_is_still_a_session(mm, run):
     r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
     assert "ACTIVE  mac-" in r.stderr and "keyed by a NATS name" not in r.stderr
     assert (run.state_dir / f).exists() and (run.state_dir / uid_file).exists()
+
+
+def endpoint_file(run, *, pid: str, key: str | None, uid: str | None = None) -> str:
+    f = run.state_dir / f"endpoint-sid-{'e' * 16}.env"
+    f.write_text("CB_BUS_ENDPOINT=http://127.0.0.1:9\nCB_BUS_KEY=x\n"
+                 f"CB_BUS_PID={pid}\n" + (f"CB_MM_BOT_USER_ID={uid}\n" if uid else "")
+                 + (f"CB_STATE_KEY={key}\n" if key else ""))
+    return f.name
+
+
+def test_a_running_server_keeps_the_name_it_keys_by(mm, run):
+    """RT-6.1 step 7: a running MCP server names its state key in its endpoint file
+    (CB_STATE_KEY); its name's files stay whatever the marker says (it may run as another
+    bot by now, or as none), and a name without any marker too."""
+    files = name_state(run, NAME, uid=DEAD_UID, days_old=3)
+    others = name_state(run, OTHER, uid=None, days_old=3)
+    endpoint_file(run, pid=str(os.getpid()), key=NAME)
+    r = run(SWEEP, "--apply", "--force", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert all((run.state_dir / f).exists() for f in files)
+    assert f"removed {len(others)} state file(s) keyed by a NATS name" in r.stderr
+
+
+def test_a_gone_servers_state_key_keeps_nothing(mm, run):
+    """RT-6.1 step 7: an endpoint file whose CB_BUS_PID is dead ties neither its key nor
+    its bot: the name's files go by the marker's and the day's rule."""
+    files = name_state(run, NAME, uid=DEAD_UID, days_old=3)
+    endpoint_file(run, pid=DEAD_PID, key=NAME, uid=DEAD_UID)
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert f"removed {len(files)} state file(s) keyed by a NATS name" in r.stderr
+    assert not any((run.state_dir / f).exists() for f in files)
+
+
+def test_a_symlinked_marker_ties_nothing(mm, run):
+    """RT-6.1 step 7: a marker that is a symlink is no marker: the name's files stay
+    (untied) without --force."""
+    files = name_state(run, NAME, uid=None, days_old=3)
+    target = run.state_dir.parent / "elsewhere.env"
+    target.write_text(f"CB_COPIED_FROM={DEAD_UID}\n")
+    (run.state_dir / f"copied-{NAME}.env").symlink_to(target)
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert "without copied-<name>.env" in r.stderr and "removed" not in r.stderr.replace("0 removed", "")
+    assert all((run.state_dir / f).exists() for f in files) and target.exists()
