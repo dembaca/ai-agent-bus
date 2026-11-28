@@ -5947,14 +5947,14 @@ agent publishes passes for a person's word.
     (RT-6.35 step 1): subjects `<stats>.>` (`AUTH_STATS_PREFIX`, new,
     default `stats`, different from the other prefixes and not
     `deliver`), 30 days (365 days since the addition of 2026-11-27
-    below), 64 MiB in all, at most 8 KiB per message and 500
+    below), 1 GiB in all, at most 8 KiB per message and 500
     messages per subject, the oldest discarded; and grants each agent
     publish on `<stats>.<name>` for its own name only. Why: no agent's
     channel consumer delivers them, and the retention covers the 7-day
     reports with room. The 500 per subject bound what one name can flood:
     it pushes out only its own oldest lines. Many names together (each a
     new credential, a new process) can still push out the oldest lines of
-    all within the 64 MiB; a report then says the age of its oldest line
+    all within the stream's size; a report then says the age of its oldest line
     (RISK-22). Alternative: on the `BUS` stream as `<bus>.stats.<name>`.
     Rejected: 14 days, and every filter on `<bus>.>` would have to leave
     them out. Alternative: one shared subject without the name. Rejected:
@@ -6048,9 +6048,11 @@ kept 30 days.
 
 - **`STATS` itself keeps a year.** 365 days (one constant, so 180 is a
   one-line change), the oldest discarded, so a new line can always be
-  written; 64 MiB, 8 KiB per message and 500 per subject stay. Why 64
-  MiB: a part is about 470 bytes, today's fleet writes about 7 a day, so a
-  year is about 1.2 MB, and 64 MiB is room for some fifty times that. Why
+  written; 8 KiB per message and 500 per subject stay, the size is 1 GiB (64 MiB
+  until #310, the owner approved 1 GiB on 2026-11-28). Why 1 GiB: a part is
+  about 470 bytes, today's fleet writes about 7 a day, so a year is about 1.2
+  MB, but at 300 to 500 agents the 64 MiB held only 117 to 195 days of daily
+  parts, and 1 GiB holds a year with room. Why
   500: a name lives as long as its session, which writes at most one part
   a day and one at its end. The login service brings an existing stream's
   age and cap per subject, up or down, and a smaller size, to these in
@@ -6095,7 +6097,7 @@ kept 30 days.
   it there. Imported lines are the bots' word, attested by nothing
   (RISK-22). A flood of one agent evicts old history only through its cap
   of 500 and the stream's discard of the oldest. Open for the owner: the
-  365 days (or 180), the 64 MiB and the cap of 500.
+  365 days (or 180), the size (1 GiB) and the cap of 500.
 - **Not yet.** A reader of the imported lines (`stats_report` reading NATS),
   and a fill the console can show. The console's time range beyond 7 days is
   built (ADR-015, addition of 2026-11-28 on the Stats page, #284).
@@ -6108,11 +6110,11 @@ only the hours and words with posts (RT-6.9 step 2). Absolute hours, not
 offsets from the part's start, so a part published late (kept after a
 failed publish) still lands in the right hours. Counts only, no
 characters: the bars count posts. The cadence stays one part a day and one
-at the session's end. Why: `STATS` holds 64 MiB over 365 days, about 184,000
-bytes a day for all agents; at 300 to 500 agents that is 368 to 613 bytes per
-agent and day, which one daily part already passes, so hourly parts (8 / 5
-days in 64 MiB, and 21 days of one session under the cap of 500 per subject)
-or parts every 6 hours (45 / 27 days) do not fit (RT-6.45 step 1). Within a
+at the session's end. Why: `STATS` holds 1 GiB over 365 days, about 2.94 million
+bytes a day for all agents; at 300 to 500 agents that is 5,900 to 9,800 bytes per
+agent and day, which one daily part stays well within, while hourly parts (128 / 80
+days in 1 GiB, and 21 days of one session under the cap of 500 per subject)
+do not fit a year (RT-6.45 step 1). Within a
 line, the hours give way first: a part that would pass 8000 bytes leaves out
 its oldest hours, so no part that fit before goes unpublished. An older
 reader ignores the key (an object of objects of numbers passes its rule for

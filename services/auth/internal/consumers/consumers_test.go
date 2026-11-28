@@ -28,7 +28,7 @@ func safe(name string) map[string]any {
 	}
 	if name == StatsStream {
 		g["max_age"], g["max_msgs_per_subject"], g["subjects"] = float64(StatsMaxAge), float64(500), []any{"stats.>"}
-		g["max_bytes"], g["max_msg_size"], g["storage"] = float64(64<<20), float64(8192), "file"
+		g["max_bytes"], g["max_msg_size"], g["storage"] = float64(1<<30), float64(8192), "file"
 	}
 	return g
 }
@@ -210,7 +210,7 @@ func TestTheLocksMapDoesNotGrow(t *testing.T) {
 }
 
 // The STATS stream's creation request says what the spec says (RT-6.43): its
-// own subjects, file storage, 365 days, 64 MiB, 8 KiB per line, 500 per
+// own subjects, file storage, 365 days, 1 GiB, 8 KiB per line, 500 per
 // subject, the oldest discarded.
 func TestTheStatsStreamDefinition(t *testing.T) {
 	var got map[string]any
@@ -219,7 +219,7 @@ func TestTheStatsStreamDefinition(t *testing.T) {
 	}
 	for k, want := range map[string]any{
 		"name": "STATS", "storage": "file", "retention": "limits", "discard": "old", "no_ack": true,
-		"max_age": float64(365 * 24 * time.Hour), "max_bytes": float64(64 << 20), "max_msg_size": float64(8192),
+		"max_age": float64(365 * 24 * time.Hour), "max_bytes": float64(1 << 30), "max_msg_size": float64(8192),
 		"max_msgs_per_subject": float64(500), "num_replicas": float64(1),
 	} {
 		if got[k] != want {

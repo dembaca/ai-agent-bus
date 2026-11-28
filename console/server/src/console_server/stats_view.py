@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 WEEK_SEC = 7 * 86400
 DAY_SEC = 86400
 YEAR_SEC = 365 * 86400   # the STATS stream's age (RT-6.45): the longest time range
-# Lines held at most: the stream keeps 500 per name and 64 MiB in all; a year's lines of a
+# Lines held at most: the stream keeps 500 per name and 1 GiB in all; a year's lines of a
 # large flock fit, and a flood cannot grow the console's memory without bound.
 MAX_LINES = 100_000
 

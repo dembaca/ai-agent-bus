@@ -95,6 +95,9 @@ const (
 	statsPerName = consumers.StatsMaxMsgsPerSubject
 	// defaultMaxLines bounds the lines one run holds to publish.
 	defaultMaxLines = 100000
+	// defaultMaxHeld is the memory one run takes: 64 MiB, whatever the
+	// stream's own size (RT-6.45 step 4).
+	defaultMaxHeld = 64 << 20
 	// lineOverhead is what a line takes in STATS beside its body: subject,
 	// the three headers and the store's own record, counted generously
 	// against the room.
@@ -249,7 +252,7 @@ func importStats(ctx context.Context, si *StatsImport, now, known time.Time) (re
 		maxLines = defaultMaxLines
 	}
 	if maxHeld <= 0 {
-		maxHeld = int(consumers.DefaultStatsMaxBytes)
+		maxHeld = defaultMaxHeld
 	}
 	if wait <= 0 {
 		wait = 500 * time.Millisecond
