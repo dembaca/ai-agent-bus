@@ -4,7 +4,7 @@
 # server found wrong (unknown CB_ names, a home outside CB_NATS_HOMES; #261).
 #
 # The MCP server holds the device grant while the human has to approve the login
-# (decision 10, RT-6.34). It reaches the MCP log, but not the TUI the person works
+# (decision 10, RT-6.34). With a bot, the human's DM too. It reaches the MCP log, but not the TUI the person works
 # in, so this hook asks for it (GET /v1/login) and shows the link and the code —
 # never a token — as a systemMessage, then marks it shown, so the next turn's
 # notice does not show it again (POST /v1/login/shown, once per login).
