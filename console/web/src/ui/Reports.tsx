@@ -29,7 +29,7 @@ export function Reports({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
     <>
     <div className="page-head">
       <div className="page-head__title">
-        <h1>Reports</h1>
+        <h1>Stats</h1>
         <span className="page-head__sub">counts and seconds from the agents' STATS lines; n/a where a line has no value</span>
       </div>
     </div>

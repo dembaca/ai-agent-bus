@@ -7,7 +7,7 @@ import './console.css'
 // picture and the window carries a "Preview" badge of its own.
 //
 // One window in the console's agreed design (2026-11-25): a top bar with the
-// views (Agents, the home, then Asks, Graph, Overview, Reports), the open ask
+// views (Agents, the start page, then Asks and Stats), the open ask
 // on top of the agents list, then one compact row per agent with its state.
 // One caused motion: the ask's "Waits on you" settles to "Answered in the
 // chat", since the console reads first and the answer still comes from a
@@ -35,7 +35,7 @@ const ROWS: Row[] = [
 
 const TONE = { working: 'accent', listening: 'success', idle: 'neutral' } as const
 
-const VIEWS = ['Agents', 'Asks', 'Graph', 'Overview', 'Reports']
+const VIEWS = ['Agents', 'Asks', 'Stats']
 
 function useWidth(fallback: number) {
   const ref = useRef<HTMLDivElement>(null)
@@ -52,10 +52,10 @@ function useWidth(fallback: number) {
   return [ref, width] as const
 }
 
-function Views({ compact }: { compact: boolean }) {
+function Views() {
   return (
     <span className="cn-views">
-      {(compact ? VIEWS.slice(0, 3) : VIEWS).map((v) => (
+      {VIEWS.map((v) => (
         <span key={v} className="cn-view" data-on={v === 'Agents' ? '' : undefined}>
           {v}
         </span>
@@ -76,7 +76,7 @@ export default function Console({ theme }: { theme: Theme }) {
             title="Choirbus"
             lights="grey"
             className="cn-win"
-            lead={<Views compact={compact} />}
+            lead={<Views />}
             toolbar={
               <span className="cn-preview">
                 <Badge tone="neutral">Read only</Badge>

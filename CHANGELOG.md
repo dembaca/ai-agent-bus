@@ -626,6 +626,34 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
 
 ### Changed
 
+- **The operator console opens on the agents list, with three views** (#283,
+  ADR-015 points 3 and 6, RT-6.43 step 11). The console has Agents (the start
+  page), Asks and Stats; the Overview page, the "Bus map" panel and the Graph
+  view are gone, and with them the React Flow and dagre libraries. The agents
+  list shows one row per agent in three columns, grouped by home, repo, owner,
+  status or not at all, with a header per group that folds it, a scope switch
+  Mine (the agents you own, the default), Trusting me (those plus the others'
+  agents that name you as trusted) or Everyone (all you may see), each widening
+  the one before, and a search over home, agent and person that shows its hits
+  unfolded and leaves the remembered folds alone. In Everyone, grouped by home,
+  repo or owner, groups with nobody reachable and no open ask fold into one row
+  ("22 quiet homes"). A panel "At a glance" on the left has four tiles
+  (Reachable and Working now split into your own agents and the flock; For you
+  and You may answer count the open asks over the whole view, whoever owns the
+  asking agent, with all open asks in view as the small number), the asks that
+  need you and the flock by status, and folds to a rail. An agent's detail
+  opens as a drawer from the right that does not block the page: Esc, the cross
+  or a second click closes it, arrow up and down move to the next agent, and the
+  open agent is in the address. The console remembers the panel, the grouping,
+  the folded groups and the scope per person. The server counts per group: the
+  new `GET /v1/groups?by=…&scope=…` answers the state counts, the reachable
+  agents, the asks for the operator and the sum of today's tokens, so the browser
+  no longer counts over every presence card. A group's token sum covers only the
+  agents whose numbers the operator may see (own or trusted) and that state a
+  count, and says "· 6 of 7 agents" only when it leaves agents out. The answer's
+  `glance` gains `asks` (`forYou`, `mayAnswer`, `open`). Fields the API does not carry yet are left out of the rows. `GET
+  /v1/graph` stays on the server, unused by the console. Open, the owner's
+  decision: who sees which homes, and a cost in money beside tokens.
 - **A Mattermost account is bound to its Keycloak identity by proof, once,
   and a trusted human's answer on Mattermost approves without the approver
   flag** (#266, part of #268; RT-6.41 step 6, RT-6.42 step 3; the owner's

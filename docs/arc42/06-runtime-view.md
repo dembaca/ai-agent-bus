@@ -2035,6 +2035,35 @@ The rule that an operator reads the guest channels of agents that trust them onl
     `build` field, and the console's footer shows them.
 
     **The unattended page** (the owner's go, #158): with `CB_CONSOLE_METRICS_NKEY_SEED_FILE` and `CB_CONSOLE_METRICS_TOKEN_FILE` (both or neither, the start refuses a pair torn in half) the console runs a service reading of its own — one fleet and one stats book, no person, no anchor, no login — fed by two push consumers the **login service makes** at its start (`CB_AUTH_CONSOLE_METRICS` there, default off: `console-metrics_presence`, filtering `presence.*.*` and `presence.ask.*.*`, delivered to `deliver.metrics.presence`, and `console-metrics_stats`, 7 days back, on `deliver.metrics.stats`). The account that consumes them is a static nkey of the NATS configuration, a fourth in `auth_users`, **subscribe-only** on the two deliver subjects: no publish, no JetStream right, no directory, no person's record — the narrowing of the owner's go. A Bearer scrape token (the token file, compared constant-time) gates **a listener of the unattended page's own**, `CB_CONSOLE_METRICS_LISTEN_ADDR` (host:port, default 127.0.0.1:8748 — the owner's ask said loopback): the token's page serves the service reading there alone, every other path on it 404, and without or with a wrong token 401, plain, no operator session to fall back on. The main listener's /metrics stays the operator's session page; the 
+11. **The agents list's groups and the panel** (#283, ADR-015 points 6 and 10).
+    `GET /v1/groups?by=home|repo|owner|status|none&scope=mine|trusting|everyone`
+    answers from the session's own reading (steps 6 and 8) what the start page
+    shows, so the browser counts nothing over the presence cards: per group the
+    agents' names (the rows are drawn from the fleet stream's cards), the state
+    counts by status group (`working`/`bus`, `listening`/`online`,
+    `idle`/`away`/`silent`, `offline`, else `other`), the reachable and working
+    agents, the open asks, those for the operator and those it may answer, and the
+    sum of today's tokens; and the panel's numbers (`glance`): `mine` for the
+    operator's own agents and `flock` for the whole flock, and `asks` over all
+    open asks in view, whoever owns the asking agent: `forYou` (asks that ask the
+    operator, which holds only where the asking agent's attestation names the
+    operator, as `for_me` always did), `mayAnswer` (open asks to another human by
+    agents that trust the operator) and `open` (all of them, the tiles' small
+    number). Only the agent numbers (reachable, working) are split into own and
+    flock. The scopes come from the attestation (RT-6.41) and each widens the
+    one before: "mine" the agents whose fresh attestation names the operator's
+    anchor as owner, "trusting" those plus the others' agents that name it as
+    trusted (the agents of step 8's rows), "everyone" all the operator may see.
+    A group's token sum adds the tokens of the last 24 hours of the agents that
+    have a per-agent row and state a count, and says how many that are
+    (`tokensAgents` of `total`; the list shows "6 of 7 agents" only when that
+    leaves agents out); it is null (n/a), never 0, when none of them states a
+    count. Without the operator's anchor nothing is "mine" and no
+    ask is "for you". The groups with an ask for the operator come first, the
+    rest by name; the status groups in their fixed order. An unknown `by` or
+    `scope` is a 400. The route is behind the operator's login like every `/v1`
+    route and counted under its own bucket.
+
 ### Error Handling
 
 | Step | Failure | System Response |

@@ -115,6 +115,18 @@ async def test_asks_and_stats_answer_empty_until_nats_carries_them(
     assert status == 200 and json.loads(body) == []
 
 
+async def test_groups_answer_empty_and_refuse_an_unknown_grouping(console: Console) -> None:
+    """RT-6.43 step 11, #283: the groups of an empty fleet are none, the panel's numbers zero; a grouping or scope
+    that does not exist is a 400, never a guess."""
+    status, _headers, body = await get(console, "/v1/groups?by=status&scope=everyone")
+    doc = json.loads(body)
+    assert status == 200 and doc["groups"] == [] and doc["glance"]["flock"]["total"] == 0
+    assert doc["glance"]["mine"]["tokens"] is None  # n/a, never 0
+    for bad in ("/v1/groups?by=colour", "/v1/groups?scope=all"):
+        status, _headers, _body = await get(console, bad)
+        assert status == 400, bad
+
+
 async def test_threads_answer_an_empty_page(console: Console) -> None:
     status, _headers, body = await get(console, "/v1/threads/anything")
     assert status == 200
@@ -180,7 +192,7 @@ async def test_every_v1_route_answers_401_without_a_session() -> None:
         return c.endpoints  # type: ignore[return-value]
     await c.start(discover=fake_discover)
     try:
-        for path in ("/v1/me", "/v1/asks", "/v1/stats", "/v1/agent-stats", "/v1/graph",
+        for path in ("/v1/me", "/v1/asks", "/v1/stats", "/v1/agent-stats", "/v1/groups", "/v1/graph",
                      "/v1/threads/x"):
             status, headers, _b = await get(c, path)
             assert status == 401, path
