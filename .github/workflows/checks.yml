@@ -293,7 +293,7 @@ jobs:
           # A manual run of main publishes on purpose, as bridge.yml's does; so does
           # a push whose previous head is gone.
           if [ "$EVENT" = "workflow_dispatch" ] || [ "$have_base" != true ] ||
-             printf '%s\n' "$files" | grep -qE '^(console/|mcp/|\.github/workflows/checks\.yml$)'; then
+             grep -qE '^(console/|mcp/|\.github/workflows/checks\.yml$)' <<< "$files"; then
             publish=true
           fi
           if [ "$EVENT" != "pull_request" ] || [ "$have_base" != true ] || [ -n "$deleted" ]; then
