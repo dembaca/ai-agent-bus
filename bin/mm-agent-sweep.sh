@@ -90,7 +90,9 @@ note() { echo "$*" >&2; }
 # field FILE KEY [OLD_KEY]: the new key first, else the old one (#169).
 field() { mm_kv "$@"; }
 
-# A session is live when its supervising process still exists.
+# A session is live when its supervising process still exists. Only `kill -0`, no
+# start-time check: a recycled pid keeps a gone session's files (bot-id and NATS
+# name alike) while the foreign process runs, which is the safe direction.
 is_live() {
   local pid="$1"
   [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] || return 1
