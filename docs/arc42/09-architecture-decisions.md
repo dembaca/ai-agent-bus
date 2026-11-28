@@ -3425,8 +3425,9 @@ separately.
       `<presence>.crown.<channel>.<name>`, `<presence>.member.<channel>.<name>`
       (the membership, apart from the crown; both prefixes are settings of the
       login service, `bus` and `presence`). `<presence>.attest.<name>.v1` is the
-      login service's record of an agent's owner and trust list (RT-6.41): only
-      the service publishes it, no agent has a right on it. A crown claim is granted only for
+      login service's record of an agent's owner, trust list and the hello's
+      granted home (RT-6.41, #255): only the service publishes it, no agent has
+      a right on it. A crown claim is granted only for
       the hello's home channel, a membership for every granted channel: a guest
       could otherwise claim the crown of a channel it only visits and block that
       home (review of the crown over NATS, RT-6.38). The presence subject carries the
