@@ -516,6 +516,19 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **The sweep removes state keyed by a NATS name** (#244 plan B piece 14 gate 8, #253,
+  RT-6.1 step 7, RT-6.2 step 9). Since plan B piece 2b a session keeps `last-`,
+  `threads-`, `unanswered-<name>.env` and the marker `copied-<name>.env` under its NATS
+  name; one that did not end cleanly left them for good. `mm-agent-sweep.sh` now takes
+  any `<kind>-<name>.env`, `.jsonl`, `.log` or `.lock` with a 25-character base32 key as state,
+  whatever the kind (so the files piece 14c moves are covered), no longer reports them
+  as sessions without a bot name, and with `--apply` removes a name's files once no
+  running MCP server keys its state by it, its marker names no bot with a session file
+  or a running MCP server and none was touched for a day. The MCP server names that key
+  in its endpoint file (`CB_STATE_KEY`), whichever bot it runs as. Without either they
+  stay (`--force` includes them). A bot whose MCP server still runs now also keeps its
+  bot-id state files.
+
 - **A NATS home comes back at once after a connection nats-py closed without telling**
   (#221, #222, RT-6.36 step 2). nats-py 2.16 skips `disconnected_cb` and `closed_cb`
   when its read loop meets a reset connection while a publish is still pending (a post
