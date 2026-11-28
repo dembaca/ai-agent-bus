@@ -2,23 +2,26 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it } from "vitest"
 import { App } from "./App"
 import { mockApi } from "./api/mock"
-import { asPlace } from "./nav"
 import { busWord, plainText } from "./ui/Detail"
 import { TopBar } from "./ui/TopBar"
 
 describe("the shell", () => {
-  it("renders the top bar, the Overview first and as the default, and the footer (#200)", () => {
+  it("renders the top bar with three views, the Agents first as the start page, and the footer (#283)", () => {
     const html = renderToStaticMarkup(<App api={mockApi()} />)
     expect(html).toContain('class="topbar"')
     expect(html).toContain('aria-label="Views"')
-    expect(html).toMatch(/aria-current="page"><span class="topbar__label"><span>Overview<\/span>/)
-    // the Overview is the first tab
-    expect(html.indexOf(">Overview<")).toBeLessThan(html.indexOf(">Agents<"))
-    expect(html).toContain("<h1>Overview</h1>")
-    expect(html).toContain('class="solo"')  // no detail open: no split
+    expect(html).toMatch(/aria-current="page"><span class="topbar__label"><span>Agents<\/span>/)
+    expect(html.indexOf(">Agents<")).toBeLessThan(html.indexOf(">Asks<"))
+    expect(html.indexOf(">Asks<")).toBeLessThan(html.indexOf(">Stats<"))
+    // the Overview and the Graph are gone, the brand leads to Agents
+    for (const gone of ["Overview", "Graph", "Reports", "Bus map"]) expect(html).not.toContain(gone)
+    expect(html).toContain('aria-label="Choirbus, the agents"')
+    expect(html).toContain("<h1>Agents</h1>")
+    expect(html).toContain('aria-label="At a glance')
+    expect(html).not.toContain('class="drawer"')  // no detail open: no drawer
     expect(html).toContain('class="footer"')
     expect(html).toContain("version n/a · commit n/a")  // no build before /v1/me answers
-    expect(html).not.toContain("side__")  // the sidebar is gone
+    expect(html).not.toMatch(/fleet/i)  // many agents are a flock
   })
 
   it("logs out with a POST form, never a link (RT-6.43 step 9)", () => {
@@ -28,18 +31,6 @@ describe("the shell", () => {
     expect(html).toMatch(/<form method="post" action="\/logout"[^>]*><button type="submit"/)
     expect(html).not.toMatch(/<a [^>]*logout/)
     expect(html).toContain("topbar__badge--for-me")
-  })
-})
-
-describe("the history's places", () => {
-  it("reads only places it wrote", () => {
-    expect(asPlace({ view: "graph" })).toEqual({ view: "graph" })
-    expect(asPlace({ view: "agents", agent: "agent-a", ask: "p1" }))
-      .toEqual({ view: "agents", agent: "agent-a", ask: "p1" })
-    expect(asPlace({ view: "overview" })).toEqual({ view: "overview" })
-    expect(asPlace({ view: "kanban" })).toBeNull()
-    expect(asPlace(null)).toBeNull()
-    expect(asPlace("agents")).toBeNull()
   })
 })
 

@@ -1,6 +1,4 @@
-/* The agents list: open asks on top, then the compact table. */
-
-.agents__for-me { color: var(--ask-text); font-weight: 600; }
+/* The agents list (#283): groups with a header, one row per agent in three columns. */
 
 .agents__controls {
   display: flex;
@@ -58,78 +56,90 @@
 .seg__btn--on:hover { color: var(--on-btn); }
 .seg__count { font-size: 11px; }
 
-/* the open asks above the table */
-.asks-top {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 10px;
-}
-.asks-top__more {
-  justify-self: start;
-  align-self: center;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font-weight: 500;
-  cursor: pointer;
-}
-.asks-top__more:hover { text-decoration: underline; }
+.seg__label { display: inline-flex; align-items: center; padding: 0 6px 0 8px; color: var(--muted); }
 
-.ask-tile {
+.agents { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.group { background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); min-width: 0; }
+.group__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 6px 12px;
+  width: 100%;
+  padding: 9px 14px;
   border: 0;
-  border-radius: var(--radius);
-  background: var(--ask-bg);
-  box-shadow: var(--shadow);
+  background: transparent;
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+}
+.group__head:hover { background: var(--surface-2); }
+.group__name { font-weight: 600; }
+.group__chev { display: inline-flex; color: var(--muted); }
+.group__tokens { margin-left: auto; white-space: nowrap; }
+.group__covers { font-size: 11px; }
+.agents__quiet {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+.agents__quiet:hover { background: var(--surface-2); }
+
+/* the small stacked bar of states, in a group header and in the panel */
+.statebar {
+  display: inline-flex;
+  width: 72px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--idle-bg);
+  flex: none;
+}
+.statebar__seg { display: block; height: 100%; min-width: 2px; }
+.statebar__seg--working { background: var(--state-working); }
+.statebar__seg--listening { background: var(--state-listening); }
+.statebar__seg--idle { background: var(--state-idle); }
+.statebar__seg--offline { background: var(--state-offline); }
+.statebar__seg--other { background: var(--ask-fill); }
+
+/* a row: three columns, a fourth with the panel folded */
+.rows { list-style: none; margin: 0; padding: 0; }
+.agents__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, .8fr) minmax(0, 1.5fr);
+  gap: 4px 18px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+  align-items: start;
+}
+.agents__row--wide { grid-template-columns: minmax(0, 1.1fr) minmax(0, .8fr) minmax(0, 1.5fr) minmax(0, .8fr); }
+.agents__row:hover { background: var(--surface-2); }
+/* the agent whose drawer is open */
+.agents__row--selected, .agents__row--selected:hover { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+/* an agent without fresh presence: its text muted */
+.agents__row--offline { color: var(--muted); }
+
+.agents__who, .agents__status, .agents__work, .agents__today {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
   min-width: 0;
 }
-.ask-tile__icon {
-  width: 26px;
-  height: 26px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  background: var(--ask-fill);
-  color: var(--on-ask);
-  border-radius: var(--radius);
-}
-.ask-tile__body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.ask-tile__need {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-.ask-tile__by { color: var(--muted); }
-.ask-tile__marks { display: flex; flex-direction: column; align-items: end; gap: 3px; }
-
-/* the table */
-.agents { overflow-x: auto; }
-.agents__table {
-  width: 100%;
-  min-width: 1040px;   /* below it the table scrolls inside its card */
-  table-layout: fixed;
-  border-collapse: collapse;
-}
-/* the columns' widths (table-layout: fixed): the task takes the rest */
-.agents__col--agent { width: 190px; }
-.agents__col--status { width: 190px; }
-.agents__col--branch { width: 140px; }
-.agents__col--home { width: 164px; }   /* ~ai-agent-bus-dev (123 px Task)
-                                        beside the +N guest count, #187 */
-.agents__col--ctx { width: 104px; }
-.agents__col--asks { width: 60px; }
-.agents__col--tokens { width: 76px; }
-.agents__col--last { width: 84px; }
-
+.agents__name { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-weight: 500; min-width: 0; max-width: 100%; }
+.agents__name .linkish { font-weight: 500; }
+.agents__model { color: var(--muted); font-size: 12px; }
+.agents__ctxline { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.agents__where { display: flex; align-items: center; gap: 8px; max-width: 100%; }
 /* one line, an ellipsis, the whole text in the title */
 .agents__clip {
   display: block;
@@ -138,59 +148,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.agents__table th {
-  text-align: left;
-  padding: 8px 10px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  white-space: nowrap;
-}
-.agents__table th.num { text-align: right; }
-.agents__table th:first-child, .agents__table td:first-child { padding-left: 14px; }
-.agents__table th:last-child, .agents__table td:last-child { padding-right: 14px; }
-.agents__table td {
-  padding: 6px 10px;
-  border-top: 1px solid var(--line);
-  vertical-align: middle;
-}
-
-.agents__row { cursor: pointer; }
-.agents__row:hover td { background: var(--surface-2); }
-/* the agent whose detail is open beside the list (#200) */
-.agents__row--selected td { background: var(--accent-soft); }
-.agents__row--selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-/* beside a detail: four columns, narrower name and status */
-.agents__table--compact { min-width: 520px; }
-.agents__table--compact .agents__col--agent { width: 170px; }
-.agents__table--compact .agents__col--status { width: 170px; }
-.agents__table--compact .agents__col--last { width: 80px; }
-/* an agent without fresh presence: its text muted, its pill red (faded
-   rows would fail the contrast check) */
-.agents__row--offline td { color: var(--muted); }
-
-.agents__who { white-space: nowrap; overflow: hidden; }
-.agents__name { display: flex; align-items: center; gap: 6px; font-weight: 500; min-width: 0; }
-.agents__name .agents__clip { min-width: 0; }
-.agents__name .linkish { font-weight: 500; }
-.agents__model { display: block; color: var(--muted); font-size: 12px; }
-/* one line, the full task on hover: a compact row is about 44 px */
-.agents__task-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agents__waits { margin-left: 4px; }
+.agents__task-text { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .agents__empty {
   margin: 0;
   padding: 20px 14px;
   color: var(--muted);
-  border-top: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius);
 }
 .agents__note { font-size: 12px; }
-.agents__status { overflow: hidden; }
-/* the state pill and "waits on you" on one middle line */
-.agents__status .pill { vertical-align: middle; }
-.agents__home { display: flex; gap: 3px; min-width: 0; }  /* #187: the
-                                        clipped name keeps its ellipsis beside +N */
-.agents__home .agents__clip { min-width: 0; }
-.agents__guests { flex: none; }
+
+@media (max-width: 700px) {
+  .agents__row, .agents__row--wide { grid-template-columns: minmax(0, 1fr); }
+}

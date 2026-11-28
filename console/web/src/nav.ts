@@ -1,17 +1,17 @@
-import type { ReactNode } from "react"
-import { createElement } from "react"
-import type { AgentCard, Ask, FleetEvent } from "./api/types"
 import type { View } from "./ui/TopBar"
 
-// Where the console stands, as the browser's history keeps it: the view, and
-// the agent or ask whose detail page is open (by name and id, never the
-// objects: those change with the live fleet). Every move pushes a place, so
-// the browser's Back leaves a detail page for the list it came from. The URL
-// stays the same: the server serves the app at "/" alone.
+// Where the console stands, as the browser's history and the address keep it:
+// the view, and the agent or ask whose detail drawer is open (by name and id,
+// never the objects: those change with the live flock). The open agent is
+// part of the address (`?agent=<name>`, an ask `&ask=<id>`, a view other than
+// the start page `&view=asks`), so a link or a reload opens the same drawer;
+// the path stays "/" because the server serves the app there alone. Every
+// move pushes a place, the browser's Back and Forward come back through
+// popstate.
 
 export type Place = { view: View; agent?: string; ask?: string }
 
-const VIEWS: readonly string[] = ["overview", "agents", "asks", "graph", "reports"]
+const VIEWS: readonly string[] = ["agents", "asks", "stats"]
 
 /** A place from history.state, or null for anything else (another app's
  * state, a page loaded fresh). */
@@ -25,46 +25,62 @@ export function asPlace(state: unknown): Place | null {
   return place
 }
 
-/** What a place shows with the fleet and asks the console holds now: the
- * view, and the ask and agent of its detail — null for one no longer there
- * (an agent that left: its detail closes, an ask stays with "agent gone"). */
-export function resolvePlace(place: Place, cards: readonly AgentCard[], asks: readonly Ask[]):
-    { view: View; agent: AgentCard | null; ask: Ask | null } {
-  const ask = place.ask ? asks.find((a) => a.id === place.ask) ?? null : null
-  const by = place.agent ?? ask?.by
-  const agent = by ? cards.find((c) => c.name === by) ?? null : null
-  return { view: place.view, agent, ask }
+/** The place an address names: `?view=`, `?agent=` and `?ask=`; anything
+ * else (no query, an unknown view) is the start page. */
+export function placeOfSearch(search: string): Place {
+  const q = new URLSearchParams(search)
+  const view = q.get("view") ?? "agents"
+  const place: Place = { view: VIEWS.includes(view) ? view as View : "agents" }
+  const agent = q.get("agent")
+  const ask = q.get("ask")
+  if (agent) place.agent = agent
+  if (ask) place.ask = ask
+  return place
 }
 
-/** The agent of an open detail after a fleet event: its newer card, or
- * null once it left the fleet — never a card that is gone. */
-export function selectedAfter(event: FleetEvent, sel: AgentCard | null): AgentCard | null {
-  if (!sel) return sel
-  if (event.type === "snapshot") return event.cards.find((c) => c.name === sel.name) ?? null
-  if (event.type === "card") return event.card.name === sel.name ? event.card : sel
-  return event.name === sel.name ? null : sel
+/** The query string of a place: empty for the start page alone. */
+export function searchOf(place: Place): string {
+  const q = new URLSearchParams()
+  if (place.view !== "agents") q.set("view", place.view)
+  if (place.agent) q.set("agent", place.agent)
+  if (place.ask) q.set("ask", place.ask)
+  const text = q.toString()
+  return text ? `?${text}` : ""
 }
 
-/** The view alone, or the view and a detail beside it (#200): the view stays
- * mounted either way; below 1000 px the CSS hides it beside a detail. */
-export function Split({ detail, children }: { detail: ReactNode; children: ReactNode }) {
-  return createElement("div", { className: detail ? "split" : "solo" },
-    createElement("div", { className: "view" }, children),
-    detail ? createElement("div", { className: "split__detail" }, detail) : null)
+/** The agent of an open drawer: the one the place names, else the asker of
+ * the ask it names; null when neither is in the flock now. */
+export function agentOf<T extends { name: string }>(place: Place, cards: readonly T[],
+                                                    askBy: string | undefined): T | null {
+  const name = place.agent ?? askBy
+  return name ? cards.find((c) => c.name === name) ?? null : null
 }
 
-export function pushPlace(place: Place): void {
+/** The agent after the open one in the list's order: `step` 1 is down, -1 up;
+ * stops at the ends. The first one when none is open. */
+export function neighbour(order: readonly string[], open: string | null, step: 1 | -1): string | null {
+  if (order.length === 0) return null
+  const at = open === null ? -1 : order.indexOf(open)
+  if (at < 0) return order[step === 1 ? 0 : order.length - 1]
+  return order[Math.max(0, Math.min(order.length - 1, at + step))]
+}
+
+function write(how: "pushState" | "replaceState", place: Place): void {
   try {
-    window.history.pushState(place, "")
+    window.history[how](place, "", window.location.pathname + searchOf(place))
   } catch {
     // no history (a test, a sandboxed frame): the page still moves
   }
 }
 
-export function replacePlace(place: Place): void {
+export function pushPlace(place: Place): void { write("pushState", place) }
+export function replacePlace(place: Place): void { write("replaceState", place) }
+
+/** The place the page was loaded with. */
+export function loadedPlace(): Place {
   try {
-    window.history.replaceState(place, "")
+    return placeOfSearch(window.location.search)
   } catch {
-    // as above
+    return { view: "agents" }
   }
 }

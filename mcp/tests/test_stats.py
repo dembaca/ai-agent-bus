@@ -980,8 +980,95 @@ def test_the_largest_line_with_the_traffic_stays_within_the_limit():
             "inject": dict.fromkeys(stats.INJECT_KINDS, big),
             "wakes": dict.fromkeys(stats.WAKE_REASONS, 10**12), "blocks": dict.fromkeys(stats.BLOCK_KINDS, 10**12)}
     body = stats.nats_body(line | {k: 10**12 for k, label in stats.LINE_KEYS.items()
-                                   if k not in line and k not in ("final", "part", "posts", "compact", "tok")})
+                                   if k not in line and k not in ("final", "part", "posts", "compact", "tok", "post_hours")})
     assert body is not None and len(body) <= stats.NATS_BODY_MAX
+
+
+# --- the own posts by hour (#290, the console's 24 h bars) ---------------------------------
+
+H = 494_000  # an hour since the epoch (2026-05-10)
+
+
+def test_a_part_counts_its_own_posts_by_the_hour_they_were_made_in():
+    """#290, RT-6.9 step 2: `post_hours` holds the part's own posts by UTC hour (seconds //
+    3600, as text) and bus word, counts only; an unknown word is `other`; the sums equal
+    `post_words`. A part without posts carries `{}`, so zero is told from an older line."""
+    _write_events(
+        {"k": "post", "t": H * 3600 + 10, "chars": 40, "w": "ACK"},
+        {"k": "post", "t": H * 3600 + 3599, "chars": 9, "w": "ACK"},
+        {"k": "post", "t": (H + 1) * 3600, "chars": 30, "w": "DONE"},
+        {"k": "post", "t": (H + 2) * 3600 + 5, "chars": 7, "w": "evil"},
+    )
+    s = stats.summary("0.104.0")
+    assert s["post_hours"] == {str(H): {"ACK": 2}, str(H + 1): {"DONE": 1}, str(H + 2): {"other": 1}}
+    assert {w: v[0] for w, v in s["post_words"].items()} == {"ACK": 2, "DONE": 1, "other": 1}
+    assert stats.decode_line(stats.nats_body(s) or b"")["post_hours"] == s["post_hours"]
+    stats._path().unlink()
+    stats.record("turn")
+    assert stats.summary("0.104.0")["post_hours"] == {}
+
+
+def test_the_hours_decode_strictly_and_drop_unknown_keys():
+    """#290, RT-6.43 step 7: an hour off its pattern and a word outside POST_WORDS are left out,
+    never shown; a count that is no integer 0 to NUM_MAX, or an hour that is no object,
+    drops the whole line."""
+    line = {"v": "0.104.0", "post_hours": {str(H): {"ACK": 2, "secret-name": 1}, "x1": {"ACK": 1},
+                                           "1" * 10: {"ACK": 1}}}
+    assert stats.decode_line(json.dumps(line).encode())["post_hours"] == {str(H): {"ACK": 2}}
+    for bad in ({str(H): {"ACK": [1, 2]}}, {str(H): {"ACK": -1}}, {str(H): {"ACK": 10**13}},
+                {str(H): 3}, {str(H): {"ACK": True}}, [1, 2], {str(H): {"ACK": "1"}}):
+        with pytest.raises(stats.LineError):
+            stats.decode_line(json.dumps({"v": "0.104.0", "post_hours": bad}).encode())
+
+
+def test_an_older_reader_ignores_the_hours_and_keeps_every_other_key(monkeypatch):
+    """#290: a reader before `post_hours` (its allow list without the key) takes the new line
+    whole, the key left out as any unknown one, every other key as it was."""
+    line = {"v": "0.104.0", "sid": "3f9a1c2b7d4e", "part": 1, "min": 60,
+            "post_words": {"ACK": [2, 49]}, "post_hours": {str(H): {"ACK": 2}}}
+    body = stats.nats_body(line) or b""
+    new = stats.decode_line(body)
+    monkeypatch.setattr(stats, "LINE_KEYS", {k: v for k, v in stats.LINE_KEYS.items() if k != "post_hours"})
+    old = stats.decode_line(body)
+    assert "post_hours" not in old and old == {k: v for k, v in new.items() if k != "post_hours"}
+    assert stats.report([old]) == stats.report([new])
+
+
+def test_the_hours_give_way_so_the_part_still_fits():
+    """#290, RT-6.43 step 7: a part whose hours would take it over NATS_BODY_MAX leaves out
+    its oldest hours (post_words keeps the total), so it is still published and still within
+    the 8000 bytes the STATS import takes; a part that fits keeps every hour."""
+    big = [10**12, 10**12]
+    line = {"v": "0.104.0", "sid": "3f9a1c2b7d4e", "rt": "claude-code", "kind": "session",
+            "tools": {n: big for n in stats.TOOL_NAMES}, "post_words": dict.fromkeys(stats.POST_WORDS, big),
+            "inbound": dict.fromkeys(stats.INBOUND_KEYS, big), "polls": big,
+            "inject": dict.fromkeys(stats.INJECT_KINDS, big),
+            "wakes": dict.fromkeys(stats.WAKE_REASONS, 10**12), "blocks": dict.fromkeys(stats.BLOCK_KINDS, 10**12)}
+    line |= {k: 10**12 for k in stats.LINE_KEYS
+             if k not in line and k not in ("final", "part", "posts", "compact", "tok", "post_hours")}
+    hours = {str(H + i): dict.fromkeys(stats.POST_WORDS, 999) for i in range(24)}
+    line["post_hours"] = dict(hours)
+    stats._fit(line)
+    kept = line["post_hours"]
+    assert 0 < len(kept) < 24 and min(kept, key=int) > str(H) and max(kept, key=int) == str(H + 23)
+    body = stats.nats_body(line)
+    assert body is not None and len(body) <= stats.NATS_BODY_MAX
+    # A day of every word in every hour, three digits each, beside an ordinary line: all kept.
+    small = {"v": "0.104.0", "min": 1440, "post_words": {"ACK": [24, 2400]}, "post_hours": dict(hours)}
+    stats._fit(small)
+    assert small["post_hours"] == hours
+
+
+def test_the_hours_summed_over_lines_and_none_for_older_lines():
+    """#290: hours_of sums the hours of the lines by the hour's start (epoch seconds) and
+    word, and says how many lines carried them; lines before `post_hours` give None (no
+    hourly data, never 0), and an empty `post_hours` still counts as carried."""
+    a = {"post_hours": {str(H): {"ACK": 2}, str(H + 1): {"DONE": 1}}}
+    b = {"post_hours": {str(H): {"ACK": 1, "ask": 1}}}
+    got = stats.hours_of([a, b, {"min": 5}, {"post_hours": {}}])
+    assert got == {"hours": {H * 3600: {"ACK": 3, "ask": 1}, (H + 1) * 3600: {"DONE": 1}}, "lines": 3, "of": 4}
+    assert stats.hours_of([{"min": 5}, {"post_words": {"ACK": [1, 1]}}]) is None
+    assert stats.hours_of([]) is None
 
 
 def test_the_report_groups_the_traffic_into_overhead_and_coordination():

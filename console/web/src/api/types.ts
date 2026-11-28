@@ -195,37 +195,52 @@ export interface ThreadPage {
   next: string | null
 }
 
-/** The graph (ADR-015 point 7): people, channels (homes), agents. */
-export type GraphNode = {
-  id: string
-  kind: "person" | "channel" | "agent"
+/** How the agents list groups its rows (#283): the server groups and counts. */
+export type GroupBy = "home" | "repo" | "owner" | "status" | "none"
+
+/** Whose agents the list shows: the operator's own, those that name the
+ * operator as owner or trusted ("trusting me"), or everyone's. */
+export type Scope = "mine" | "trusting" | "everyone"
+
+/** The numbers the server counts of a set of agents (`GET /v1/groups`, #283);
+ * the browser never counts over the presence cards. A token sum is null when
+ * no agent counted states one (n/a, never 0); `tokensAgents` of `total`
+ * agents are the ones the operator may see per-agent numbers of (own or
+ * trusted, ADR-015 point 15) and that state a count: the sum covers those,
+ * and the list says "6 of 7 agents" only when it leaves agents out. */
+export interface GroupNumbers {
+  total: number
+  /** Agents by status group: working, listening, idle, offline, other. */
+  states: Record<string, number>
+  reachable: number
+  working: number
+  asksOpen: number
+  asksForYou: number
+  asksMayAnswer: number
+  tokens: number | null
+  tokensAgents: number
+}
+
+/** One group of the list: its key and label, the names of its agents (the
+ * rows come from the fleet stream's cards) and its numbers. */
+export interface Group extends GroupNumbers {
+  key: string
   label: string
-  /** For an agent: the crown mark on its node. */
-  crown?: boolean
-  /** For an agent: its harness logo on the node. */
-  harness?: Harness
-  state?: AgentState
-  /** For a person: the logged-in operator's own node (ADR-015 point 7),
-   * marked from the login's own record's anchor — never from the browser. */
-  you?: boolean
+  agents: string[]
 }
 
-export interface GraphEdge {
-  id: string
-  from: string
-  to: string
-  /** `coordinates`: an agent's home channel; `guest`: a channel it only
-   * visits (RT-6.16). */
-  kind: "trusts" | "coordinates" | "guest"
-  /** Shown where the depth of two cuts an edge away. */
-  cut?: boolean
-}
+/** The panel's ask tiles, whoever owns the asking agent: the open asks that
+ * ask the operator, the open asks to another human by agents that trust the
+ * operator, and all open asks in view. */
+export interface GlanceAsks { forYou: number; mayAnswer: number; open: number }
 
-export interface GraphData {
-  nodes: GraphNode[]
-  edges: GraphEdge[]
-  /** True when the shown graph is cut at depth two (a mark says where). */
-  cutDepth: 2 | null
+/** `GET /v1/groups`: the groups, and the panel's numbers: the operator's own
+ * agents, the whole flock and the asks. */
+export interface GroupsAnswer {
+  by: GroupBy
+  scope: Scope
+  groups: Group[]
+  glance: { mine: GroupNumbers; flock: GroupNumbers; asks: GlanceAsks }
 }
 
 /** A report field: counts and seconds only, no names, no text
@@ -321,7 +336,8 @@ export interface ConsoleApi {
   watchFleet(onEvent: (event: FleetEvent) => void,
              onState?: (state: ConnState) => void): () => void
   asks(): Promise<Ask[]>
-  graph(): Promise<GraphData>
+  /** `GET /v1/groups`: the groups of the list and the panel's numbers (#283). */
+  groups(by: GroupBy, scope: Scope): Promise<GroupsAnswer>
   stats(): Promise<Report[]>
   agentStats(): Promise<AgentStatsRow[]>
   thread(rootId: string, next?: string | null): Promise<ThreadPage>

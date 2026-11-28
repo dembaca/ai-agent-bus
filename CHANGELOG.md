@@ -7,6 +7,12 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **STATS: own posts by hour** (#290, RT-6.9 step 2, RT-6.45). Each part now carries
+  `post_hours`, the agent's own posts by UTC hour and bus word (counts only, only the
+  hours with posts), so the console's "24 h" can show hourly bars; `stats.hours_of`
+  sums them. A part keeps within 8000 bytes: the oldest hours give way first. Older
+  readers ignore the key, a newer reader finds no hours in an older line. Parts stay
+  one a day: more would not fit the `STATS` stream's 64 MiB at 300 to 500 agents.
 - **Files over the bridge: plan B piece 8** (#244, RT-6.23, RT-6.33). In a home over
   NATS with `planb.on(8, <channel>)` on, the session makes no Mattermost call for
   files: an upload's bytes go to the bridge in parts on `<req>.file.<agent>` (the
@@ -22,6 +28,19 @@ before 0.5.0 are described in the git history.
   `mm-agent-post.sh --file` are called as before, so the shell needs no change. A
   file id no seen post named takes today's path, as does the switch off in every
   channel; a send that fails with the switch on is an error, never a fallback.
+- **The fault rig measures "nobody told as gone during a cut"** (#252, plan B piece 2,
+  RT-6.21). `CB_PLANB_TEST=2 bus-testrig bus-run --transport nats` hands plan B's test
+  switch to the sessions (the roster from NATS), plays the bridge's records (its signal,
+  a bot record per agent, the owner's account record) and sends each post as a `TASK`
+  naming the receiver by its bridge name and a canary nobody has. It records per window
+  (before, in, after the fault) every live agent told as gone (a `post_message`
+  `not_reachable` entry `gone …`, an event marked `departed`, a server's answer that it
+  `is gone`) and every roster miss; the measurand `told_gone` and the `--summary`
+  columns `told gone` and `roster miss`. A live agent told as gone fails the run (not
+  under `kill-client`, which stops the receiver), and so does a run whose answers never
+  named the canary. CI runs a cut of 20 posts on every PR, and nightly every fault
+  with 100 and a cut of 120 s, longer than a presence stays fresh. Nothing in the bus
+  changes.
 - **Plan B piece 10, first part: the lane for a person's direct message to one agent**
   (#244, ADR-014 phase 5, RT-6.13). The agent's direct-message consumer (`<name>_dm`) now
   also filters `<bus>.hu.dm.<name>.*`, the subject on which the bridge carries a person's
@@ -55,21 +74,28 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
-- **A retried ask no longer spends its mention twice, and an undecodable lookup answer
-  is no longer retried for ever** (#287, RT-6.11). In the bridge's mirror of an ask,
-  which runs with every plan B switch off for a home over NATS, the sender's limit of
+- **PA retried ask no longer spends its mention twice, and an Bundecodable lookup answer
+  is no longer retriece 5'sd follow-upsr ever** (#24487, RT-6.42 step 11). AIn unknown Mattermost post
+  id is asked of the bridge's mirror of an ask,
+  which runs witoh every iplan eachB switched- onff for a home over NATS, the sender's limit of
   20 kept mentions an hour was taken before the copy was created, so a create that
   failed and was tried again used a second unit; the same message now counts once.
-  A 200 answer of Mattermost's username lookup whose body does not decode was taken as
-  a failure to retry, which stopped the home's mirror; it now counts as no person and
+  A 200 answer of Mattermost;'s username lonly
+okup  twhose briodgy doe's explicit `the thread is not idecode was taken ~<channel>`s
+ falls back, any other failure
+  raises. A thread answer drops a repltry, whoseich Mattermost root is notpped the thromead's mirroot
+  (and a root that is; itself a reply), and after a restart a post by the session's own
+  bot naming an open ask's sequence still counts as no person and
   the mention is plain. Only an answer that cannot be decoded is no person (the same
   holds for the lookup of a post and its author before an agent's reply or reaction);
   a body cut short or a read that fails mid-answer is retried, as no answer is.
-- **The bridge refuses a history window the client could never read** (#278, RT-6.43).
-  With piece 5 (history) on, a channel read whose one `create_at` holds posts adding up
-  to more than the 4 MiB the MCP client takes of one answer was answered over that cap,
-  and the client refused every retry. The bridge now answers a `too large` error and logs
-  it. This changes nothing with piece 5 off.
+- **The bridge' refuses ca histopy, anry other
+  uwinkndown sequence not. A post the agclient' could never read** (#278, RT-6.43).
+  With piece 5 (history) own, bota mchay notnel read whose one `create_at` holds posts adding up
+  to more than the 4 MiB the MCP cllient (takes DMof one answer was answered over that cap,
+  and pthe client refused evermissiony prompet)ry. is tThe bridge' now answers a `thoo large thread is not in ~<channel>` erron the first
+  page, and a plogst the session saw on Mattermost outside a switched home is known with
+  it. This changes nel,othing so with skpips thece bridge5 off.
 
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
   RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
@@ -589,6 +615,34 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
 
 ### Changed
 
+- **The operator console opens on the agents list, with three views** (#283,
+  ADR-015 points 3 and 6, RT-6.43 step 11). The console has Agents (the start
+  page), Asks and Stats; the Overview page, the "Bus map" panel and the Graph
+  view are gone, and with them the React Flow and dagre libraries. The agents
+  list shows one row per agent in three columns, grouped by home, repo, owner,
+  status or not at all, with a header per group that folds it, a scope switch
+  Mine (the agents you own, the default), Trusting me (those plus the others'
+  agents that name you as trusted) or Everyone (all you may see), each widening
+  the one before, and a search over home, agent and person that shows its hits
+  unfolded and leaves the remembered folds alone. In Everyone, grouped by home,
+  repo or owner, groups with nobody reachable and no open ask fold into one row
+  ("22 quiet homes"). A panel "At a glance" on the left has four tiles
+  (Reachable and Working now split into your own agents and the flock; For you
+  and You may answer count the open asks over the whole view, whoever owns the
+  asking agent, with all open asks in view as the small number), the asks that
+  need you and the flock by status, and folds to a rail. An agent's detail
+  opens as a drawer from the right that does not block the page: Esc, the cross
+  or a second click closes it, arrow up and down move to the next agent, and the
+  open agent is in the address. The console remembers the panel, the grouping,
+  the folded groups and the scope per person. The server counts per group: the
+  new `GET /v1/groups?by=…&scope=…` answers the state counts, the reachable
+  agents, the asks for the operator and the sum of today's tokens, so the browser
+  no longer counts over every presence card. A group's token sum covers only the
+  agents whose numbers the operator may see (own or trusted) and that state a
+  count, and says "· 6 of 7 agents" only when it leaves agents out. The answer's
+  `glance` gains `asks` (`forYou`, `mayAnswer`, `open`). Fields the API does not carry yet are left out of the rows. `GET
+  /v1/graph` stays on the server, unused by the console. Open, the owner's
+  decision: who sees which homes, and a cost in money beside tokens.
 - **A Mattermost account is bound to its Keycloak identity by proof, once,
   and a trusted human's answer on Mattermost approves without the approver
   flag** (#266, part of #268; RT-6.41 step 6, RT-6.42 step 3; the owner's

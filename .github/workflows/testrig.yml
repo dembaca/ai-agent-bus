@@ -93,6 +93,15 @@ jobs:
           uv run --locked bus-testrig bus-run --transport nats --fault all --count 10 --summary
           uv run --locked bus-testrig coord-run --transport nats --stops 1 --sessions 2 --summary
 
+      # Plan B piece 2, the roster from NATS (#252): a cut must tell no live agent
+      # as gone. CB_PLANB_TEST is plan B's test switch, which the rig hands to its
+      # sessions; the run exits 1 on a live agent told as gone, and on a run whose
+      # roster was never checked.
+      - name: nobody told as gone during a cut, the roster from NATS
+        run: uv run --locked bus-testrig bus-run --transport nats --fault cut --count 20 --summary
+        env:
+          CB_PLANB_TEST: "2"
+
       # The probes drive the *real* bus code over the stub. A test of the stub's
       # own shape cannot see a difference between what it invents and what the
       # bus parses (review of #60: a top-level `custom_status` object against
@@ -130,6 +139,8 @@ jobs:
       - name: sync the bus
         run: uv sync --locked --directory ../mcp
       - name: delivery, 100 messages per fault
+        # `always()`: one failing nightly step does not skip the others' numbers
+        if: always()
         # The run's whole output goes to the step summary and the artifact even
         # when it fails (that run's numbers are what one needs), then the step
         # exits with the run's own status.
@@ -142,7 +153,29 @@ jobs:
           { echo; echo '## Delivery, 100 messages per fault'; echo '```'; cat results/delivery.txt; echo '```'; } \
             >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+      - name: told gone, every fault with the roster from NATS
+        # `always()`: one failing nightly step does not skip the others' numbers
+        if: always()
+        # Plan B piece 2 (#252): the delivery run again with CB_PLANB_TEST=2, each
+        # send a TASK that names the receiver; `told gone` must be 0. Then one cut of
+        # 120 s, longer than a presence stays fresh (90 s): the agents' presences are
+        # old when the sessions come back.
+        env:
+          CB_PLANB_TEST: "2"
+        run: |
+          set -uo pipefail
+          mkdir -p results
+          rc=0
+          uv run --locked bus-testrig bus-run --transport nats --fault all --count 100 --summary \
+            | tee results/told-gone.txt || rc=$?
+          uv run --locked bus-testrig bus-run --transport nats --fault cut --fault-sec 120 --count 100 --summary \
+            | tee -a results/told-gone.txt || rc=$?
+          { echo; echo '## Told gone, the roster from NATS (CB_PLANB_TEST=2)'; echo '```'; cat results/told-gone.txt; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
       - name: 50 hard stops of the coordinator
+        # `always()`: one failing nightly step does not skip the others' numbers
+        if: always()
         run: |
           set -uo pipefail
           mkdir -p results
