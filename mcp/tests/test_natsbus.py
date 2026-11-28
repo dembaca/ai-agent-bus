@@ -2948,3 +2948,75 @@ async def test_an_answer_over_the_part_or_byte_cap_is_an_error(
             await requests.request(bus, "file", timeout=5)
     finally:
         await sub.unsubscribe()
+
+# --- #274: names without a prefix, and the reserved tokens (RT-6.36 step 8) ----------------------
+
+RESERVED = ("account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch", "console-metrics",
+            "copied", "crown", "deliver", "directory", "dm", "hu", "import", "mattermost", "member",
+            "metrics", "moved", "notice", "person", "planb", "presence", "req", "stats", "v1", "x")
+
+
+def test_the_reserved_names_are_the_login_services() -> None:
+    """RT-6.36 step 8: natsbus.RESERVED_NAMES and NAME_HASH_LEN are the login service's
+    reservedNames and NameHashLen (services/auth/internal/callout/names.go)."""
+    go = (Path(__file__).resolve().parents[2] / "services/auth/internal/callout/names.go").read_text()
+    block = go.split("var reservedNames = []string{", 1)[1].split("}", 1)[0]
+    assert set(re.findall(r'"([^"]+)"', block)) == natsbus.RESERVED_NAMES == set(RESERVED)
+    assert re.search(r"const NameHashLen = (\d+)", go).group(1) == str(natsbus.NAME_HASH_LEN)  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("token", RESERVED)
+def test_a_reserved_token_is_no_agent_name(token: str) -> None:
+    """RT-6.36 step 8: without a prefix a name cannot be told from a subject's other tokens by
+    its start, so none of them is ever an agent's name, in any case."""
+    assert not natsbus.agent_ok(token) and not natsbus.agent_ok(token.upper())
+    bus, _ = _unit_bus()
+    assert not bus.agent_ok(token)
+    with pytest.raises(ValueError):
+        bus._dm_subject(token)
+
+
+def test_the_configured_prefixes_and_special_tokens_are_no_agent_names() -> None:
+    bus, _ = _unit_bus(bus="chat", presence="pres", stats="st", req="rq")
+    for name in ("chat", "pres", "st", "rq", "CHAT"):
+        assert natsbus.agent_ok(name) and not bus.agent_ok(name)
+    for name in ("_INBOX", "_x", "$SYS", "-a", "a.b", "a*", "a>", "a b", "", "a" * 129):
+        assert not natsbus.agent_ok(name) and not bus.agent_ok(name)
+    for name in (VECTOR_NAME, "agent-" + VECTOR_NAME, "bridged", "persons"):
+        assert bus.agent_ok(name)
+
+
+async def test_a_presence_or_claim_under_a_reserved_name_is_dropped() -> None:
+    """RT-6.36 step 8: the session's decoders read no agent under a reserved token."""
+    bus, _ = _unit_bus()
+    for token in ("bridge", "crown", VECTOR_NAME):
+        await _presence(bus, token, 1, T0)
+        await _claim(bus, token, "home", 2, T0)
+    assert bus.presence_of(VECTOR_NAME) == "online"
+    assert bus.presence_of("bridge") == bus.presence_of("crown") == "offline"
+
+
+def test_a_person_name_is_no_agent_name() -> None:
+    """RT-6.36 step 8: the login service refuses a name with the person prefix (default
+    `person-`); the session drops a sender under one."""
+    bus, _ = _unit_bus()
+    for name in ("person-abc", "PERSON-abc", "person-" + VECTOR_NAME):
+        assert not natsbus.agent_ok(name) and not bus.agent_ok(name)
+
+
+@pytest.mark.parametrize("prefix", ["a", "7", "A"])
+def test_a_one_character_name_prefix_is_refused(prefix: str) -> None:
+    """RT-6.36 step 8: one character plus the 25-character hash is a Mattermost id's form."""
+    with pytest.raises(ValueError, match="name prefix"):
+        natsbus.NatsSettings(servers=("tls://nats.example:4222",), home="home", name_prefix=prefix)
+
+
+@pytest.mark.parametrize("prefix", ["", "ab", "agent-", "A_1-"])
+def test_a_longer_name_prefix_is_accepted(prefix: str) -> None:
+    natsbus.NatsSettings(servers=("tls://nats.example:4222",), home="home", name_prefix=prefix)
+
+
+def test_the_name_has_no_prefix_by_default() -> None:
+    """#274: the bus's own name is the hash alone, as the login service issues it."""
+    bus, _ = _unit_bus()
+    assert len(bus.name) == natsbus.NAME_HASH_LEN and "-" not in bus.name and bus.agent_ok(bus.name)
