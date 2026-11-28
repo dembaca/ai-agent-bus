@@ -268,7 +268,7 @@ func (s *idSink) Create(context.Context, string, string, string, map[string]any)
 func (*idSink) React(context.Context, string, string) error   { return nil }
 func (*idSink) Unreact(context.Context, string, string) error { return nil }
 
-// RT-6.36 step 4, RT-6.42 step 5, #297: an agent's reaction mirrored onto the
+// RT-6.36 step 6, #297: an agent's reaction mirrored onto the
 // copy never replaces the copy's way back, so a person's reply or reaction on
 // the copy names the post's sequence, also after the entry is read again.
 func TestAMirroredReactionLeavesThePostsWayBack(t *testing.T) {
@@ -281,7 +281,11 @@ func TestAMirroredReactionLeavesThePostsWayBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := uint64(5)
-	for seq, kind := range map[uint64]message.Kind{6: message.Reaction, 7: message.Unreaction, 8: message.Reaction} {
+	for _, r := range []struct {
+		seq  uint64
+		kind message.Kind
+	}{{6, message.Reaction}, {7, message.Unreaction}, {8, message.Reaction}} {
+		seq, kind := r.seq, r.kind
 		if err := m.Handle(ctx, ch, "agent-c", seq, message.Msg{Kind: kind, Ref: &ref, Emoji: "thumbsup"}); err != nil {
 			t.Fatal(err)
 		}
