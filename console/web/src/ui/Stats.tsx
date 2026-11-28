@@ -46,9 +46,9 @@ export function Stats({ api, onFail, range, onRange }: {
           {named} · counts and seconds from the agents' STATS lines; n/a where a line has no value
         </span>
       </div>
-      <div className="range" role="group" aria-label="Time range">
+      <div className="stats-range" role="group" aria-label="Time range">
         {RANGES.map((r) => (
-          <button key={r.key} type="button" className="range__btn"
+          <button key={r.key} type="button" className="stats-range__btn"
             aria-pressed={range === r.key} onClick={() => onRange(r.key)}>{r.label}</button>
         ))}
       </div>
@@ -61,12 +61,12 @@ export function Stats({ api, onFail, range, onRange }: {
 /** The cards of the page, in the order the server sends them. */
 export function Cards({ reports }: { reports: Report[] }) {
   return (
-    <div className="cards">
+    <div className="stats-cards">
       {reports.map((report) => {
         if (report.activity) {
           return (
-            <section key={report.id} className="card card--wide" aria-label={report.title}>
-              <h2 className="card__title">{report.title}</h2>
+            <section key={report.id} className="stats-card stats-card--wide" aria-label={report.title}>
+              <h2 className="stats-card__title">{report.title}</h2>
               <ActivityChart activity={report.activity} />
             </section>
           )
@@ -101,14 +101,14 @@ export function wait(s: number | null): string {
 
 /** A card's n/a reason, when the whole card is n/a (a range the stream does not hold). */
 function Unavailable({ report }: { report: Report }) {
-  return report.unavailable ? <p className="card__note" role="status">n/a: {report.unavailable}</p> : null
+  return report.unavailable ? <p className="stats-card__note" role="status">n/a: {report.unavailable}</p> : null
 }
 
 /** The small figures a card keeps beside its chart (lines counted, age of the oldest line):
  * every one shown, n/a where the stream has no value. */
 function Facts({ items }: { items: { label: string; text: string }[] }) {
   return (
-    <dl className="facts">
+    <dl className="stats-facts">
       {items.map((i) => (
         <div key={i.label}><dt>{i.label}</dt><dd>{i.text}</dd></div>
       ))}
@@ -125,29 +125,29 @@ const ageText = (s: number | null): string => s === null ? "n/a" : s >= 86400 ? 
 export function ShareCard({ report }: { report: Report }) {
   const rows = report.fields.filter((f) => f.label.startsWith("version "))
   return (
-    <section className="card" aria-label={report.title}>
-      <h2 className="card__title">{report.title}</h2>
+    <section className="stats-card" aria-label={report.title}>
+      <h2 className="stats-card__title">{report.title}</h2>
       <Unavailable report={report} />
-      <div className="bars bars--share">
+      <div className="stats-bars stats-bars--share">
         {rows.map((row) => {
           const label = row.label.slice("version ".length)
           const v = row.value
           return (
             <Fragment key={row.label}>
-              <span className="bars__label bars__label--mono">{label}</span>
-              <span className="bars__track" role="img"
+              <span className="stats-bars__label stats-bars__label--mono">{label}</span>
+              <span className="stats-bars__track" role="img"
                 aria-label={v === null ? `${label}: n/a, no token counts` : `${label}: ${v} percent of all tokens`}>
-                {v !== null && <span className="bars__fill bars__fill--share"
+                {v !== null && <span className="stats-bars__fill stats-bars__fill--share"
                   style={{ width: `${Math.min(100, (v / 20) * 100)}%` }} />}
               </span>
-              <span className="bars__value">{percent(v)}</span>
+              <span className="stats-bars__value">{percent(v)}</span>
             </Fragment>
           )
         })}
       </div>
-      {rows.length === 0 && !report.unavailable && <p className="card__note" role="status">n/a: no version sent token counts</p>}
+      {rows.length === 0 && !report.unavailable && <p className="stats-card__note" role="status">n/a: no version sent token counts</p>}
       <Facts items={[{ label: "lines", text: count(value(report, "lines")) }, age(report)]} />
-      <p className="card__note">
+      <p className="stats-card__note">
         The bar's full width is 20%. Sessions that sent no token counts are left out, not counted as zero.
       </p>
     </section>
@@ -161,24 +161,25 @@ export function AsksCard({ now, before }: { now: Report; before?: Report }) {
     const answered = value(r, "answered")
     const share = value(r, "answered share")
     return (
-      <tr key={r.id} className={muted ? "asks__row asks__row--before" : "asks__row"}>
+      <tr key={r.id} className={muted ? "stats-asks__row stats-asks__row--before" : "stats-asks__row"}>
         <th scope="row">{r.window}</th>
-        <td>{count(asked)}</td>
-        <td>{count(answered)}{answered !== null && share !== null ? ` · ${share}%` : ""}</td>
-        <td>{count(value(r, "still open at the part's end"))}</td>
-        <td>{wait(value(r, "mean wait for an answer"))}</td>
-        <td>{wait(value(r, "longest wait for an answer"))}</td>
+        <td data-label="Asked">{count(asked)}</td>
+        <td data-label="Answered">{count(answered)}{answered !== null && share !== null ? ` · ${share}%` : ""}</td>
+        <td data-label="Open">{count(value(r, "still open at the part's end"))}</td>
+        <td data-label="Mean wait">{wait(value(r, "mean wait for an answer"))}</td>
+        <td data-label="Longest wait">{wait(value(r, "longest wait for an answer"))}</td>
       </tr>
     )
   }
   return (
-    <section className="card" aria-label={now.title}>
-      <h2 className="card__title">{now.title}</h2>
+    <section className="stats-card" aria-label={now.title}>
+      <h2 className="stats-card__title">{now.title}</h2>
       <Unavailable report={now} />
       {before?.unavailable && (
-        <p className="card__note" role="status">{before.window}: n/a, {before.unavailable}</p>
+        <p className="stats-card__note" role="status">{before.window}: n/a, {before.unavailable}</p>
       )}
-      <table className="asks">
+      <div className="stats-asks-wrap">
+      <table className="stats-asks">
         <thead>
           <tr>
             <th scope="col">Window</th><th scope="col">Asked</th><th scope="col">Answered</th>
@@ -190,7 +191,8 @@ export function AsksCard({ now, before }: { now: Report; before?: Report }) {
           {before && row(before, true)}
         </tbody>
       </table>
-      <p className="card__note">An ask that expired without an answer counts as asked, not as answered.</p>
+      </div>
+      <p className="stats-card__note">An ask that expired without an answer counts as asked, not as answered.</p>
     </section>
   )
 }
@@ -200,31 +202,31 @@ export function TrafficCard({ report }: { report: Report }) {
   const group = (title: string, rows: { label: string; v: number | null }[]) => {
     const max = Math.max(0, ...rows.map((r) => r.v ?? 0))
     return (
-      <div className="bars bars--traffic" role="group" aria-label={title}>
+      <div className="stats-bars stats-bars--traffic" role="group" aria-label={title}>
         {rows.map((r) => (
           <Fragment key={r.label}>
-            <span className="bars__label">{r.label}</span>
-            <span className="bars__track" role="img"
+            <span className="stats-bars__label">{r.label}</span>
+            <span className="stats-bars__track" role="img"
               aria-label={r.v === null ? `${title}, ${r.label}: n/a` : `${title}, ${r.label}: ${count(r.v)}`}>
-              {r.v !== null && max > 0 && <span className="bars__fill bars__fill--traffic"
+              {r.v !== null && max > 0 && <span className="stats-bars__fill stats-bars__fill--traffic"
                 style={{ width: `${(r.v / max) * 100}%` }} />}
             </span>
-            <span className="bars__value">{count(r.v)}</span>
+            <span className="stats-bars__value">{count(r.v)}</span>
           </Fragment>
         ))}
       </div>
     )
   }
   return (
-    <section className="card" aria-label={report.title}>
-      <h2 className="card__title">{report.title}</h2>
+    <section className="stats-card" aria-label={report.title}>
+      <h2 className="stats-card__title">{report.title}</h2>
       <Unavailable report={report} />
-      <h3 className="card__sub">Items</h3>
+      <h3 className="stats-card__sub">Items</h3>
       {group("Items", [
         { label: "bus overhead", v: value(report, "bus overhead, items") },
         { label: "coordination", v: value(report, "coordination, items") },
       ])}
-      <h3 className="card__sub">Characters</h3>
+      <h3 className="stats-card__sub">Characters</h3>
       {group("Characters", [
         { label: "bus overhead", v: value(report, "bus overhead, characters") },
         { label: "coordination", v: value(report, "coordination, characters") },
@@ -237,7 +239,7 @@ export function TrafficCard({ report }: { report: Report }) {
         { label: "lines", text: count(value(report, "lines")) },
         age(report),
       ]} />
-      <p className="card__note">Counted from the STATS lines every session publishes.</p>
+      <p className="stats-card__note">Counted from the STATS lines every session publishes.</p>
     </section>
   )
 }
@@ -245,14 +247,14 @@ export function TrafficCard({ report }: { report: Report }) {
 /** A card the design has no place for: its figures as facts, in the same shell. */
 function FigureCard({ report }: { report: Report }) {
   return (
-    <section className="card" aria-label={report.title}>
-      <h2 className="card__title">{report.title}</h2>
+    <section className="stats-card" aria-label={report.title}>
+      <h2 className="stats-card__title">{report.title}</h2>
       <Unavailable report={report} />
       <Facts items={report.fields.map((f) => ({
         label: f.label,
         text: f.unit === "s" ? wait(f.value) : f.unit === "%" ? percent(f.value) : count(f.value),
       }))} />
-      {report.note && <p className="card__note">{report.note}</p>}
+      {report.note && <p className="stats-card__note">{report.note}</p>}
     </section>
   )
 }
@@ -283,49 +285,49 @@ export function ActivityChart({ activity }: { activity: Activity }) {
   const peak = Math.max(0, ...bars.map(total))
   const step = Math.ceil(bars.length / 10) || 1
   return (
-    <div className="activity">
-      <span className="activity__legend">
+    <div className="stats-activity">
+      <span className="stats-activity__legend">
         {groups.map((g) => (
-          <span key={g.id} className={`activity__key activity__seg--${g.id}`}>{g.label}</span>
+          <span key={g.id} className={`stats-activity__key stats-activity__seg--${g.id}`}>{g.label}</span>
         ))}
       </span>
       {activity.unavailable ? (
         <>
-          <p className="activity__empty" role="status">{activity.unavailable}</p>
-          {activity.reason && <p className="card__note">{activity.reason}</p>}
+          <p className="stats-activity__empty" role="status">{activity.unavailable}</p>
+          {activity.reason && <p className="stats-card__note">{activity.reason}</p>}
         </>
       ) : peak === 0 ? (
-        <p className="activity__empty" role="status">no posts counted in this range</p>
+        <p className="stats-activity__empty" role="status">no posts counted in this range</p>
       ) : (
-        <div className="activity__plot">
-          <span className="activity__max">{peak}</span>
-          <div className="activity__bars">
+        <div className="stats-activity__plot">
+          <span className="stats-activity__max">{peak}</span>
+          <div className="stats-activity__bars">
             {bars.map((bar, i) => {
               const words = Object.entries(bar.words).filter(([, n]) => n > 0)
                 .map(([w, n]) => `${w} ${n}`).join(", ")
               const text = `${barLabel(bar.start, bucket)}: ${total(bar)} posts${words ? ` (${words})` : ""}`
               return (
-                <div key={bar.start} className="activity__col" tabIndex={0} title={text} aria-label={text}>
-                  <span className="activity__stack" style={{ height: `${(total(bar) / peak) * 100}%` }}>
+                <div key={bar.start} className="stats-activity__col" tabIndex={0} title={text} aria-label={text}>
+                  <span className="stats-activity__stack" style={{ height: `${(total(bar) / peak) * 100}%` }}>
                     {groups.map((g) => (bar.groups[g.id] ?? 0) > 0 && (
-                      <span key={g.id} className={`activity__seg activity__seg--${g.id}`}
+                      <span key={g.id} className={`stats-activity__seg stats-activity__seg--${g.id}`}
                         style={{ flexGrow: bar.groups[g.id] }} />
                     ))}
                   </span>
-                  <span className="activity__label">{i % step === 0 ? barLabel(bar.start, bucket) : ""}</span>
+                  <span className="stats-activity__label">{i % step === 0 ? barLabel(bar.start, bucket) : ""}</span>
                 </div>
               )
             })}
           </div>
         </div>
       )}
-      <ul className="activity__words">
+      <ul className="stats-activity__words">
         {groups.map((g) => (
-          <li key={g.id}><span className={`activity__key activity__seg--${g.id}`}>{g.label}</span>
+          <li key={g.id}><span className={`stats-activity__key stats-activity__seg--${g.id}`}>{g.label}</span>
             {" "}({GROUP_WORDS[g.id] ?? ""})</li>
         ))}
       </ul>
-      <p className="card__note">
+      <p className="stats-card__note">
         Every post of an agent starts with a bus word. A bar counts the agents' own posts by that word;
         people's posts are not in it. The exact words show on hovering a bar.
       </p>
@@ -346,34 +348,34 @@ export function TokensCard({ report }: { report: Report }) {
   const stacks: ReportStack[] = report.stacks ?? []
   const estimated = stacks.some((s) => s.estimated)
   return (
-    <section className="card" aria-label={report.title}>
-      <div className="card__head">
-        <h2 className="card__title">
+    <section className="stats-card" aria-label={report.title}>
+      <div className="stats-card__head">
+        <h2 className="stats-card__title">
           {report.title}
-          {estimated && <span className="chip">estimated</span>}
+          {estimated && <span className="stats-chip">estimated</span>}
         </h2>
-        <div className="range range--small" role="group" aria-label="Unit">
-          <button type="button" className="range__btn" aria-pressed={!raw} onClick={() => setRaw(false)}>
+        <div className="stats-range stats-range--small" role="group" aria-label="Unit">
+          <button type="button" className="stats-range__btn" aria-pressed={!raw} onClick={() => setRaw(false)}>
             Input-token equivalents
           </button>
-          <button type="button" className="range__btn" aria-pressed={raw} onClick={() => setRaw(true)}>
+          <button type="button" className="stats-range__btn" aria-pressed={raw} onClick={() => setRaw(true)}>
             Raw tokens
           </button>
         </div>
       </div>
       <Unavailable report={report} />
-      {stacks.length === 0 && !report.unavailable && <p className="card__note" role="status">n/a: no token split in this range</p>}
-      <div className="stacks">
+      {stacks.length === 0 && !report.unavailable && <p className="stats-card__note" role="status">n/a: no token split in this range</p>}
+      <div className="stats-stacks">
         {stacks.map((stack) => {
           const segments = raw ? stack.raw : stack.segments
           const said = segments.map((seg) =>
             `${seg.percent === null ? "n/a" : `${seg.percent} percent`} ${CATEGORY_LABEL[seg.category]}`).join(", ")
           return (
             <Fragment key={stack.label}>
-              <span className="bars__label bars__label--mono">{stack.label}</span>
-              <span className="stack" role="img" aria-label={`${stack.label}: ${said}`}>
+              <span className="stats-bars__label stats-bars__label--mono">{stack.label}</span>
+              <span className="stats-stack" role="img" aria-label={`${stack.label}: ${said}`}>
                 {segments.map((seg) => (seg.percent ?? 0) > 0 && (
-                  <span key={seg.category} className={`stack__seg stack__seg--${seg.category}`}
+                  <span key={seg.category} className={`stats-stack__seg stats-stack__seg--${seg.category}`}
                     style={{ flex: seg.percent ?? 0 }}
                     title={`${CATEGORY_LABEL[seg.category]}: ${count(seg.value)} (${seg.percent}%)`} />
                 ))}
@@ -382,9 +384,9 @@ export function TokensCard({ report }: { report: Report }) {
           )
         })}
       </div>
-      <span className="legend">
+      <span className="stats-legend">
         {(Object.keys(CATEGORY_LABEL) as TokenCategory[]).map((c) => (
-          <span key={c} className={`legend__key stack__seg--${c}`}>{CATEGORY_LABEL[c]}</span>
+          <span key={c} className={`stats-legend__key stats-stack__seg--${c}`}>{CATEGORY_LABEL[c]}</span>
         ))}
       </span>
       <Facts items={[
@@ -393,7 +395,7 @@ export function TokensCard({ report }: { report: Report }) {
         { label: "requests driven by coordination", text: count(value(report, "requests driven by coordination")) },
         age(report),
       ]} />
-      <p className="card__note">
+      <p className="stats-card__note">
         A request's tokens are split by what its context and output hold, not by what started the turn.
       </p>
     </section>

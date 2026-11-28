@@ -651,7 +651,9 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
   the range and a muted one for the range before, the bus traffic by category as
   bars relative to the largest, and the tokens by category as stacked bars with an
   "estimated" chip and a switch between input-token equivalents and raw tokens;
-  every missing figure shows n/a with its reason.
+  every missing figure shows n/a with its reason. The Stats styles carry their own
+  `stats-` prefix, so they leave the Asks page and the app-wide chips alone; the asks
+  table stacks into one block per row on a phone.
 
 - **The operator console opens on the agents list, with three views** (#283,
   ADR-015 points 3 and 6, RT-6.43 step 11). The console has Agents (the start
