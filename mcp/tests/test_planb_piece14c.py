@@ -711,14 +711,16 @@ def test_a_claim_of_a_pid_that_runs_keeps_the_takeover_open(state: Path, tmp_pat
     left.write_text('{"k":"left"}\n')
     monkeypatch.setenv("CB_PLANB_TEST", "2")
     session_file.latch(NAME_B, HOME, UID)
-    assert left.exists() and f"CB_TAKING={NAME}" in (state / f"copied-{NAME_B}.env").read_text()
+    marked = (state / f"copied-{NAME_B}.env").read_text()
+    assert left.exists() and f"CB_MOVING={NAME}" in marked and "CB_TAKING" not in marked
     assert "CB_TAKEN_BY" not in (state / f"copied-{NAME}.env").read_text()
     _restart(monkeypatch)
     monkeypatch.setattr(session_file, "_pid_alive", lambda pid: False)  # that process ended
     session_file.latch(NAME_C, HOME, UID)
     assert _lines(state, NAME_C) == ['{"k":"left"}', '{"k":"run 1"}']
     assert not list(state.glob("*.moving-*"))
-    assert not [m.name for m in state.glob("copied-*.env") if "CB_TAKING=" in m.read_text()]
+    assert not [m.name for m in state.glob("copied-*.env") if "CB_TAKING=" in m.read_text() or
+                "CB_MOVING=" in m.read_text()]
 
 
 def test_a_failed_journal_write_keeps_the_takeover_open(state: Path, tmp_path: Path,
@@ -740,7 +742,7 @@ def test_a_failed_journal_write_keeps_the_takeover_open(state: Path, tmp_path: P
     monkeypatch.setenv("CB_PLANB_TEST", "2")
     session_file.latch(NAME_B, HOME, UID)
     assert list(state.glob(f"stats-{NAME}.jsonl.moving-*"))
-    assert f"CB_TAKING={NAME}" in (state / f"copied-{NAME_B}.env").read_text()
+    assert f"CB_MOVING={NAME}" in (state / f"copied-{NAME_B}.env").read_text()
     assert "CB_TAKEN_BY" not in (state / f"copied-{NAME}.env").read_text()
     monkeypatch.setattr(session_file, "_mark", real)
     _restart(monkeypatch)  # the process ends: its claim is a dead one's
@@ -762,6 +764,7 @@ def test_a_name_being_taken_is_passed_over_under_its_lock(state: Path, tmp_path:
     try:
         monkeypatch.setattr(session_file, "_candidates", lambda bot, name: [NAME])  # listed before
         assert session_file._copy_source(UID, NAME_C) == (UID, [])
+        assert "CB_TAKEN_BY" not in (state / f"copied-{NAME}.env").read_text()
     finally:
         os.close(fd)
 
@@ -791,3 +794,56 @@ def test_a_source_another_name_took_is_not_taken_again(state: Path, tmp_path: Pa
     assert not list(state.glob("*.moving-*"))
     assert "CB_TAKING" not in (state / f"copied-{NAME_B}.env").read_text()
     assert f"CB_TAKEN_BY={NAME_C}" in (state / f"copied-{NAME_B}.env").read_text()
+
+
+def test_a_name_that_ran_with_an_open_move_gets_only_its_counters_moved(state: Path, tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 9 (review of #340): a name whose counter move a claim left open runs on,
+    deletes a file in its normal work (an empty unanswered- list removes it) and counts on;
+    the next start moves only the counters: no deleted file comes back stale, every counter
+    line is counted once."""
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    _age(state / f"copied-{NAME}.env", 60)
+    (state / f"unanswered-{NAME}.env").write_text("post 1\n")
+    (state / f"stats-{NAME}.jsonl.moving-1").write_text('{"k":"left"}\n')  # pid 1 runs
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    session_file.latch(NAME_B, HOME, UID)
+    assert (state / f"unanswered-{NAME_B}.env").exists()
+    (state / f"unanswered-{NAME_B}.env").unlink()  # N's own work
+    with (state / f"stats-{NAME_B}.jsonl").open("a") as f:
+        f.write('{"k":"own"}\n')
+    _restart(monkeypatch)  # N exits
+    monkeypatch.setattr(session_file, "_pid_alive", lambda pid: False)
+    session_file.latch(NAME_C, HOME, UID)
+    assert not (state / f"unanswered-{NAME_C}.env").exists()
+    assert _lines(state, NAME_C) == ['{"k":"left"}', '{"k":"own"}', '{"k":"run 1"}']
+    assert "CB_MOVING" not in (state / f"copied-{NAME_B}.env").read_text()
+    assert f"CB_TAKEN_BY={NAME_B}" in (state / f"copied-{NAME}.env").read_text()
+    assert not list(state.glob("*.moving-*"))
+
+
+def test_a_short_write_leaves_no_fragment(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 9 (review of #340): an append that fails after a short write (a full disk)
+    is cut back to the journaled size: the retry appends the claim once, and the name's own
+    next line is not glued to a fragment."""
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    _age(state / f"copied-{NAME}.env", 60)
+    (state / f"stats-{NAME}.jsonl.moving-999999").write_text('{"k":"left"}\n')  # two inputs: an append
+    real = session_file._append_bytes
+
+    def short(path: Path, data: bytes) -> None:
+        real(path, data[: len(data) // 2])
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(session_file, "_append_bytes", short)
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    session_file.latch(NAME_B, HOME, UID)
+    assert (state / f"stats-{NAME_B}.jsonl").read_text().splitlines() == ['{"k":"left"}']
+    monkeypatch.setattr(session_file, "_append_bytes", real)
+    with (state / f"stats-{NAME_B}.jsonl").open("a") as f:
+        f.write('{"k":"own"}\n')
+    _restart(monkeypatch)
+    session_file.latch(NAME_C, HOME, UID)
+    assert _lines(state, NAME_C) == ['{"k":"left"}', '{"k":"own"}', '{"k":"run 1"}']

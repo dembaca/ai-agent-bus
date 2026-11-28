@@ -530,9 +530,19 @@ def _append(claim: Path, data: bytes, dst: Path, marker: Path | None) -> None:
     if not dst.exists() and not dst.is_symlink():
         os.rename(claim, dst)
         return
-    if marker is None or not _mark(marker, add=[f"CB_APPENDING={claim.name}:{dst.stat().st_size}"]):
+    size = dst.stat().st_size
+    if marker is None or not _mark(marker, add=[f"CB_APPENDING={claim.name}:{size}"]):
         raise OSError(errno.EIO, "the counter move cannot be journaled", str(marker))
-    _append_bytes(dst, data)
+    try:
+        _append_bytes(dst, data)
+    except OSError:
+        # A short write (a full disk) leaves no fragment for the next line to glue onto, and
+        # the retry appends the claim whole: cut back to the journaled size, if that works.
+        try:
+            os.truncate(dst, size)
+        except OSError:
+            pass
+        raise
     claim.unlink()
 
 
@@ -839,7 +849,8 @@ def _candidates(bot_id: str, name: str) -> list[str]:
     (the bot is the lineage across --resume and the workspace's next server, so another
     session on a shared tie is never one). Without a bot the tie alone decides: on the
     workspace tie only the holder of tie-<hash>.lock gets here (_hold_tie). A name another
-    name's unfinished takeover is taking (its CB_TAKING) is that one's to finish (_finish)."""
+    name's unfinished takeover is taking (its CB_TAKING or CB_MOVING) is that one's to finish
+    (_finish)."""
     me, out = f"CB_TIE={tie()}", []
     taking: set[str] = set()
     markers: list[tuple[Path, list[str]]] = []
@@ -847,7 +858,7 @@ def _candidates(bot_id: str, name: str) -> list[str]:
         if marker.is_symlink():
             continue
         lines = _marker_lines(marker)
-        taking.update(ln.partition("=")[2] for ln in lines if ln.startswith("CB_TAKING="))
+        taking.update(ln.partition("=")[2] for ln in lines if ln.startswith(_INTENTS))
         markers.append((marker, lines))
     for marker, lines in markers:
         pred = marker.name.removeprefix("copied-").removesuffix(".env")
@@ -871,8 +882,9 @@ def _take(src: str, name: str, add_ids: list[str] | None = None,
     with `add_ids` and `add`: the tie and the bot), then the copy and the counter move, then
     src's CB_TAKEN_BY=<name> and the end of the intent (CB_TAKING and CB_APPENDING go). A
     later start that finds the intent finishes it under name's lock (_finish). A counter
-    claim the move left behind (_stranded) keeps the intent and leaves src unmarked, so that
-    later start tries again. Returns the kinds copied and whether the takeover is done;
+    claim the move left behind (_stranded) leaves src unmarked and narrows the intent to the
+    counters (CB_MOVING=<src>, the CB_APPENDING lines kept): name runs on and may delete
+    files of its own, so that later start moves only the counters, never copies again. Returns the kinds copied and whether the takeover is done;
     nothing when the marker cannot be written."""
     d = state_dir()
     marker = d / f"copied-{name}.env"
@@ -882,8 +894,9 @@ def _take(src: str, name: str, add_ids: list[str] | None = None,
     _stranded.clear()
     copied = copy_state_once(src, name, since=since)
     if _stranded:
-        logging.getLogger(__name__).warning("session: the takeover of %s stays open: %s left behind",
+        logging.getLogger(__name__).warning("session: the counter move from %s stays open: %s left behind",
                                             src, ", ".join(_stranded))
+        _mark(marker, add=[f"CB_MOVING={src}"], drop=("CB_TAKING=",))
         return copied, False
     if not _BOT_ID_RE.fullmatch(src):
         _mark(d / f"copied-{src}.env", add=[f"CB_TAKEN_BY={name}"])
@@ -891,15 +904,43 @@ def _take(src: str, name: str, add_ids: list[str] | None = None,
     return copied, True
 
 
+# The two intents a marker can carry (RT-6.2 step 9): a whole takeover under way
+# (CB_TAKING, _take), and only its counter move (CB_MOVING, left open by a stranded claim).
+_INTENTS = ("CB_TAKING=", "CB_MOVING=")
+
+
+def _move_only(src: str, name: str, mark_taken: bool) -> bool:
+    """Only the counter move of an open intent, src's `stats-` into name's (journaled in
+    name's marker), then, with `mark_taken`, src's CB_TAKEN_BY=<name>, and the intent goes.
+    False while a claim stays behind."""
+    d = state_dir()
+    marker = d / f"copied-{name}.env"
+    _stranded.clear()
+    try:
+        _move(d / _kind_file("stats.jsonl", src), d / _kind_file("stats.jsonl", name), marker)
+    except OSError:
+        return False
+    if _stranded:
+        return False
+    if mark_taken and not _BOT_ID_RE.fullmatch(src):
+        _mark(d / f"copied-{src}.env", add=[f"CB_TAKEN_BY={name}"])
+    _mark(marker, drop=(*_INTENTS, "CB_APPENDING="))
+    return True
+
+
 def _finish(name: str, held: list[int], depth: int = 0) -> bool:
-    """The takeover `name` began (CB_TAKING in its marker) and its process did not finish (it
-    was killed in its latch, before it ever used the name): finish it now, under name's lock
-    (the caller holds it), first the one its source began, if any. The locks taken go into
-    `held`. False when a source's process still runs, a counter claim stays behind (_take),
-    or the chain is too long. A source another name took over meanwhile (its CB_TAKEN_BY
-    names another) is not taken again: only the counter claims this marker journals are
-    resolved into name's file, then the intent goes."""
-    src = _value(name, "CB_TAKING")
+    """An intent `name`'s marker still carries, under name's lock (the caller holds it; the
+    source's is taken here, into `held`): CB_TAKING, a takeover its process began and did
+    not finish (it was killed in its latch, before it used the name), is done again, first
+    the one its source began, if any; CB_MOVING, a takeover whose counter move a stranded
+    claim left open while the name ran on, gets only that move (_move_only), since the name
+    may have deleted files of its own since. False when a source's process still runs, a
+    counter claim stays behind, or the chain is too long. A source another name took over
+    meanwhile (its CB_TAKEN_BY names another) is not taken again: only the counter claims
+    this marker journals are resolved into name's file, then the intent goes."""
+    src, moving = _value(name, "CB_TAKING"), False
+    if src is None:
+        src, moving = _value(name, "CB_MOVING"), True
     if src is None:
         return True
     if depth >= 8 or src == name or not key_ok(src):
@@ -910,26 +951,19 @@ def _finish(name: str, held: list[int], depth: int = 0) -> bool:
             return False
         held.append(fd)
         if (by := _value(src, "CB_TAKEN_BY")) is not None and by != name:
-            d = state_dir()
-            marker = d / f"copied-{name}.env"
-            _stranded.clear()
-            try:
-                _move(d / _kind_file("stats.jsonl", src), d / _kind_file("stats.jsonl", name), marker)
-            except OSError:
-                return False
-            if _stranded:
-                return False
-            _mark(marker, drop=("CB_TAKING=", "CB_APPENDING="))
-            return True
-        if not _finish(src, held, depth + 1):
+            return _move_only(src, name, mark_taken=False)
+        if not moving and not _finish(src, held, depth + 1):
             return False
+    if moving:
+        return _move_only(src, name, mark_taken=True)
     return _take(src, name)[1]
 
 
 def _being_taken(name: str) -> bool:
-    """Whether another name's marker carries CB_TAKING=<name>: that takeover is its to finish."""
-    line = f"CB_TAKING={name}"
-    return any(line in _marker_lines(m) for m in state_dir().glob("copied-*.env")
+    """Whether another name's marker carries CB_TAKING=<name> or CB_MOVING=<name>: that
+    takeover is its to finish."""
+    lines = {f"{intent}{name}" for intent in _INTENTS}
+    return any(lines & set(_marker_lines(m)) for m in state_dir().glob("copied-*.env")
                if m.name != f"copied-{name}.env" and not m.is_symlink())
 
 
@@ -950,7 +984,7 @@ def _copy_source(bot_id: str, name: str) -> tuple[str | None, list[int]]:
             continue
         held = [fd]
         # Read again under the lock: another start may have taken it, or begun to take it
-        # (its CB_TAKING, written after this process listed the candidates).
+        # (its CB_TAKING or CB_MOVING, written after this process listed the candidates).
         if _value(pred, "CB_TAKEN_BY") is not None or _being_taken(pred) or not _finish(pred, held):
             for h in held:
                 os.close(h)
