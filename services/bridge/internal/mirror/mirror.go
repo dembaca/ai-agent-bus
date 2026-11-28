@@ -159,6 +159,14 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 		if err != nil {
 			return err
 		}
+		if ok && msg.MMRoot != "" && t.RootID != "" {
+			// A reply to a reply joins its thread: the thread's root passes the
+			// same check, so no reply lands in another agent's thread.
+			_, ok, err = m.target(ctx, cid, sender, linked, t.RootID)
+			if err != nil {
+				return err
+			}
+		}
 		if !ok {
 			return m.save(ctx, seq, Post{})
 		}

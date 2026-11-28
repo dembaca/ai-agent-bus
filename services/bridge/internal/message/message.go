@@ -5,10 +5,11 @@
 // kind of post, reaction or unreaction; a post carries its text (which may be
 // empty) and optionally the stream sequence of its thread's root, a reaction
 // the sequence it reacts to and one emoji. With plan B piece 7 (RT-6.42 step
-// 11) a post may name a Mattermost post as its root (`mm_root`) and a reaction
-// the Mattermost post it reacts to (`mm_ref`) instead of a sequence. Decoding is as strict as the Python
-// side: no invalid UTF-8, no duplicate keys, props with the bus prefix only and
-// scalar values. Anything else is refused, never guessed.
+// 13) a post may name a Mattermost post as its root (`mm_root`) and a
+// reaction the Mattermost post it reacts to (`mm_ref`) instead of a sequence.
+// Decoding is as strict as the Python side: no invalid UTF-8, no duplicate
+// keys, props with the bus prefix only and scalar values. Anything else is
+// refused, never guessed.
 package message
 
 import (
@@ -42,7 +43,7 @@ type Msg struct {
 	Ref   *uint64 // reaction: the stream sequence of the post
 	Emoji string  // reaction
 	Props map[string]any
-	// Plan B piece 7 (RT-6.42 step 12): a Mattermost post named by its id
+	// Plan B piece 7 (RT-6.42 step 13): a Mattermost post named by its id
 	// instead of a sequence, never beside Root or Ref.
 	MMRoot string // post: the Mattermost post it replies to
 	MMRef  string // reaction: the Mattermost post it reacts to

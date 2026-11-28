@@ -11,7 +11,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/message"
 )
 
-// RT-6.42 step 12, plan B piece 7: an agent's reply in a person's Mattermost
+// RT-6.42 step 13, plan B piece 7: an agent's reply in a person's Mattermost
 // thread and its reaction on a Mattermost post, named by the post's id, are
 // written only after the bridge read the post and found it in the home.
 
@@ -19,17 +19,20 @@ const (
 	personPost = "qqqqqqqqqqqqqqqqqqqqqqqqqq"
 	personNote = "rrrrrrrrrrrrrrrrrrrrrrrrrr" // a person's reply in that thread
 	oldAsk     = "oooooooooooooooooooooooooo" // agent-a's ask from before the switch
+	otherAsk   = "bbbbbbbbbbbbbbbbbbbbbbbbbb" // agent-b's ask from before the switch
+	otherNote  = "nnnnnnnnnnnnnnnnnnnnnnnnnn" // a person's reply in agent-b's ask thread
 )
 
 type fakeTargets struct {
 	posts map[string]Target
 	read  []string
 	err   error
+	errOn string // only this post's read fails with err, when set
 }
 
 func (f *fakeTargets) Target(_ context.Context, id string) (Target, error) {
 	f.read = append(f.read, id)
-	if f.err != nil {
+	if f.err != nil && (f.errOn == "" || f.errOn == id) {
 		return Target{}, f.err
 	}
 	t, ok := f.posts[id]
@@ -55,6 +58,8 @@ func targetMirror(t *testing.T, on bool) (*Mirror, *fakeSink, *fakeStore, *fakeT
 		personPost: {ID: personPost, ChannelID: "chan", AuthorName: "dembaca"},
 		personNote: {ID: personNote, ChannelID: "chan", RootID: personPost, AuthorName: "dembaca"},
 		oldAsk:     {ID: oldAsk, ChannelID: "chan", AuthorName: "agent-a-bot", AuthorBot: true},
+		otherAsk:   {ID: otherAsk, ChannelID: "chan", AuthorName: "agent-b-bot", AuthorBot: true},
+		otherNote:  {ID: otherNote, ChannelID: "chan", RootID: otherAsk, AuthorName: "dembaca"},
 	}}
 	m.Targets = tg
 	return m, sink, st, tg, &logs
@@ -205,5 +210,33 @@ func TestWithPiece7OnAReminderInAMattermostThreadKeepsTheAsksMention(t *testing.
 	}
 	if _, ok := sink.posts[0].props["x_ask_to"]; ok {
 		t.Fatalf("ask_to reached Mattermost: %+v", sink.posts[0].props)
+	}
+}
+
+// The thread a reply joins passes the check too: a person's reply in another
+// agent's ask thread is a person's post, but its root is another bot's, so
+// nothing is written there; a reaction on that reply is the person's post's
+// own and goes on.
+func TestWithPiece7OnAReplyToAPersonsReplyChecksTheThreadsRoot(t *testing.T) {
+	m, sink, st, tg, logs := targetMirror(t, true)
+	ctx := context.Background()
+	if err := m.Handle(ctx, channel, "agent-a", 5, reply(otherNote, "me too")); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.posts) != 0 || st.pos != 5 || !strings.Contains(logs.String(), "post="+otherAsk) {
+		t.Fatalf("posts %+v pos %d log %q", sink.posts, st.pos, logs.String())
+	}
+	if tg.read[len(tg.read)-1] != otherAsk {
+		t.Fatalf("the root was not read: %v", tg.read)
+	}
+	if err := m.Handle(ctx, channel, "agent-a", 6, react(message.Reaction, otherNote)); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.reacted) != 1 {
+		t.Fatalf("reacted %v", sink.reacted)
+	}
+	tg.err, tg.errOn = statusErr(503), personPost // the root's read may pass: tried again
+	if err := m.Handle(ctx, channel, "agent-a", 7, reply(personNote, "x")); err == nil || len(sink.posts) != 0 {
+		t.Fatalf("a failed read of the root must be retried: %v %+v", err, sink.posts)
 	}
 }

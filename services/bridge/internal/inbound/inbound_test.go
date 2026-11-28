@@ -1147,7 +1147,7 @@ func TestTheSignalNamesPiece6OnlyWhileItsSwitchIsOn(t *testing.T) {
 	}
 }
 
-// RT-6.42 step 12, plan B piece 7: the signal names piece 7 beside piece 6,
+// RT-6.42 step 13, plan B piece 7: the signal names piece 7 beside piece 6,
 // each only while its switch is on.
 func TestTheSignalNamesPiece7OnlyWhileItsSwitchIsOn(t *testing.T) {
 	for _, tc := range []struct {

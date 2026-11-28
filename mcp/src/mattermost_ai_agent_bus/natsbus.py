@@ -232,7 +232,7 @@ class Message:
     ref: int | None = None  # reaction: stream sequence of the post
     emoji: str | None = None
     props: dict[str, Prop] = field(default_factory=dict)
-    # Plan B piece 7 (RT-6.42 step 12): a Mattermost post named by its id instead of a sequence,
+    # Plan B piece 7 (RT-6.42 step 13): a Mattermost post named by its id instead of a sequence,
     # a person's or the sender's own from before the switch. Sent only while the piece is on,
     # never beside `root` or `ref`; absent from the body otherwise.
     mm_root: str | None = None  # post: the Mattermost id of the post it replies to
@@ -2078,7 +2078,7 @@ class NatsBus:
 
     async def post_mm(self, channel: str, text: str, mm_root: str,
                       props: dict[str, Prop] | None = None) -> None:
-        """Plan B piece 7 (RT-6.42 step 12): a reply in the thread of the Mattermost post
+        """Plan B piece 7 (RT-6.42 step 13): a reply in the thread of the Mattermost post
         `mm_root` (a person's), which the bridge posts there once it checked the post is in
         `channel`."""
         body = encode(Message("post", text, props=props or {}, mm_root=mm_root), self._s.props_prefix)

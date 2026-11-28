@@ -236,10 +236,11 @@ func (c *Client) Member(ctx context.Context, channelID, userID string) (bool, er
 }
 
 // Target reads one post by id and its author, for plan B piece 7 (RT-6.42
-// step 12, mirror.Targets): the bridge checks it before an agent's reply or
-// reaction naming it is written. A refusal keeps its status (StatusError); an
-// answer that does not decode, or names no post or author, counts as no
-// such post (404), so it is skipped rather than retried for ever.
+// step 13, mirror.Targets): the bridge checks it before an agent's reply or
+// reaction naming it is written. A refusal keeps its status (StatusError) and
+// a request that got no answer is retried; an answer that does not decode
+// (also a body cut mid-read), or names no post or author, counts as no such
+// post (404), so it is skipped rather than retried for ever.
 func (c *Client) Target(ctx context.Context, postID string) (mirror.Target, error) {
 	var raw postJSON
 	body, err := c.request(ctx, "GET", "/api/v4/posts/"+url.PathEscape(postID), nil)
@@ -254,8 +255,12 @@ func (c *Client) Target(ctx context.Context, postID string) (mirror.Target, erro
 	}
 	u, err := c.GetUser(ctx, raw.UserID)
 	if err != nil {
+		// A refusal keeps its status and the network (a *url.Error: no answer, a
+		// timeout) is retried; an answer that does not decode, or names no user,
+		// is none (404), so it is skipped rather than retried for ever.
 		var st *StatusError
-		if !errors.As(err, &st) && strings.Contains(err.Error(), "no user") {
+		var ue *url.Error
+		if !errors.As(err, &st) && !errors.As(err, &ue) {
 			err = &StatusError{Status: http.StatusNotFound, Err: err}
 		}
 		return mirror.Target{}, err

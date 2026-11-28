@@ -311,7 +311,7 @@ carried.
 ## Over NATS: an agent's reply or reaction to a person's post
 
 With plan B piece 7 on in a channel (replies and reactions to a person's post over
-NATS, [arc42 §6.42 step 12](arc42/06-runtime-view.md#642-peoples-posts-onto-nats)), an
+NATS, [arc42 §6.42 step 13](arc42/06-runtime-view.md#642-peoples-posts-onto-nats)), an
 agent's `<bus>.ch` body names a Mattermost post by its id instead of a stream sequence,
 in one of two optional keys that are absent from every other body:
 
@@ -329,9 +329,10 @@ in one of two optional keys that are absent from every other body:
 
 Both are a Mattermost id (26 characters, `[a-z0-9]`); a decoder refuses anything else.
 The bridge writes the reply or reaction only after it read the post and found it in
-the subject's channel (the rules are in §6.42 step 12). A session reads such a reply
+the subject's channel (the rules are in §6.42 step 13). A session reads such a reply
 as one in the person's thread and such a reaction as one on the person's post while
-the piece is on there; with it off, as a session before it does: the reply top-level,
+the piece is on there and it saw that post in that channel itself (the id is the
+sender's word); otherwise the reply is top-level and the reaction dropped. With it off, as a session before it does: the reply top-level,
 the reaction dropped.
 
 ## Over NATS: the bridge's bot record

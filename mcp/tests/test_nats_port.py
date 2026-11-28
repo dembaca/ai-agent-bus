@@ -174,7 +174,7 @@ class FakeNats:
 
     async def post_mm(self, channel: str, text: str, mm_root: str,
                       props: dict[str, natsbus.Prop] | None = None) -> None:
-        """Plan B piece 7: a reply naming a Mattermost post (RT-6.42 step 12)."""
+        """Plan B piece 7: a reply naming a Mattermost post (RT-6.42 step 13)."""
         self.sent.append(("post_mm", channel, text, mm_root, props))
         await self._come_back(channel, Message("post", text, props=props or {}, mm_root=mm_root))
 

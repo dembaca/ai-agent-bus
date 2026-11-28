@@ -4555,7 +4555,7 @@ which each piece reads for itself.
        posts, the agent replies and reacts, each seen once; the BYE at
        exit.
      - Built 2026-11-28, behind the switch (#244 piece 7, RT-6.42 step
-       12): `planb.on(7, channel)`, off by default. A reply whose root is
+       13): `planb.on(7, channel)`, off by default. A reply whose root is
        a Mattermost post and a reaction on one, or its removal, go over
        NATS as the agent's message naming the post by its Mattermost id
        (`mm_root`, `mm_ref`, never beside `root` or `ref`; absent from
@@ -4568,7 +4568,9 @@ which each piece reads for itself.
        rule) and the link `🙋 ask <id>` in a person's thread. The bridge
        reads the named post with its own bot's token and writes only when
        it is in the home's channel, not deleted, an ordinary post, no
-       webhook's, and a person's or the sender's own linked bot's; every
+       webhook's, and a person's or the sender's own linked bot's, and so
+       must the root of the thread a reply joins; another session takes
+       the named post as root only when it saw it in that channel; every
        other mention in such a reply is plain. Where the build differs
        from the text above or leaves a point open: the synchronous posts
        (`post_sync`, `post_by_name_sync`, the BYE at exit) still go to

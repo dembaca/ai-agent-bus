@@ -1,4 +1,4 @@
-"""RT-6.42 step 12 (ADR-014 phase 5, plan B piece 7): in a channel over NATS a reply in a person's
+"""RT-6.42 step 13 (ADR-014 phase 5, plan B piece 7): in a channel over NATS a reply in a person's
 Mattermost thread and a reaction on a Mattermost post go over NATS, naming the post by its
 Mattermost id (`mm_root`, `mm_ref`); the central bridge checks the post is in that channel and
 writes the reply or reaction there (services/bridge/internal/mirror/target.go). The session
@@ -263,6 +263,7 @@ async def _events(port: NatsPort, *messages: Message) -> list[Any]:
 async def test_on_another_agents_reply_and_reaction_on_a_persons_post_read_as_on_mattermost(
         monkeypatch: pytest.MonkeyPatch) -> None:
     port, inner, fake = _world(monkeypatch)
+    port._saw_mm(PERSON_POST, "home")  # the person's post came in the home
     got = await _events(port, Message("post", "on it", mm_root=PERSON_POST),
                         Message("reaction", emoji="eyes", mm_ref=PERSON_POST),
                         Message("unreaction", emoji="eyes", mm_ref=PERSON_POST))
@@ -271,6 +272,21 @@ async def test_on_another_agents_reply_and_reaction_on_a_persons_post_read_as_on
     (reaction,) = [e for e in got if isinstance(e, ReactionEvent)]
     assert reaction.reaction.post_id == PERSON_POST and reaction.reaction.user_id == OTHER
     assert OTHER in port._senders("home")  # its own bot's copy of the reaction is the bridge's
+
+
+async def test_on_a_mattermost_post_not_seen_in_the_channel_names_no_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The id is the sender's word: a foreign agent naming a trusted human's post it never
+    answered (one of another channel, or one this session never saw) gets no root, so its request
+    cannot read as root_from_trusted_human; its reaction on such a post is dropped."""
+    port, inner, fake = _world(monkeypatch)
+    port._saw_mm("g" * 26, "guest")  # a trusted human's post in another channel
+    got = await _events(port, Message("post", "do it", mm_root="g" * 26),
+                        Message("post", "do it", mm_root=PERSON_POST),  # never seen
+                        Message("reaction", emoji="+1", mm_ref="g" * 26),
+                        Message("reaction", emoji="+1", mm_ref=PERSON_POST))
+    assert [e.post.root_id for e in got if isinstance(e, PostEvent)] == ["", ""]
+    assert not [e for e in got if isinstance(e, ReactionEvent)]
+    assert OTHER not in port._mm_reactors.get("home", set())
 
 
 async def test_off_another_agents_message_naming_a_mattermost_post_reads_as_before(

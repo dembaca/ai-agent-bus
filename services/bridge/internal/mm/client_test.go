@@ -479,7 +479,7 @@ func TestMember(t *testing.T) {
 	}
 }
 
-// RT-6.42 step 12, plan B piece 7: Target reads a post and its author for
+// RT-6.42 step 13, plan B piece 7: Target reads a post and its author for
 // the mirror's check; a refusal keeps its status, an answer without a post
 // counts as none (404), so the mirror skips it instead of retrying.
 func TestTarget(t *testing.T) {
@@ -496,6 +496,14 @@ func TestTarget(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"u1","username":"dembaca","is_bot":false}`))
 		case "/api/v4/users/b1":
 			_, _ = w.Write([]byte(`{"id":"b1","username":"agent-a-bot","is_bot":true}`))
+		case "/api/v4/posts/p3":
+			_, _ = w.Write([]byte(`{"id":"p3","user_id":"u-junk","channel_id":"c1"}`))
+		case "/api/v4/posts/p4":
+			_, _ = w.Write([]byte(`{"id":"p4","user_id":"u-none","channel_id":"c1"}`))
+		case "/api/v4/users/u-junk":
+			_, _ = w.Write([]byte(`{"id":`))
+		case "/api/v4/users/u-none":
+			_, _ = w.Write([]byte(`{}`))
 		case "/api/v4/posts/hidden":
 			w.WriteHeader(http.StatusForbidden)
 		default:
@@ -510,7 +518,9 @@ func TestTarget(t *testing.T) {
 	if err != nil || !got.AuthorBot || got.AuthorName != "agent-a-bot" || got.Webhook {
 		t.Fatalf("p2: %+v %v", got, err)
 	}
-	for id, want := range map[string]int{"junk": 404, "hidden": 403, "down": 502} {
+	// an author that does not decode or is none counts as no such post, never
+	// as a failure to retry for ever
+	for id, want := range map[string]int{"junk": 404, "hidden": 403, "down": 502, "p3": 404, "p4": 404} {
 		_, err := c.Target(context.Background(), id)
 		var st *StatusError
 		if !errors.As(err, &st) || st.Status != want {
