@@ -27,7 +27,7 @@ from test_natsbus import Rig, _login_service
 
 from mattermost_ai_agent_bus import a2a, planb
 from mattermost_ai_agent_bus.client import post_of
-from mattermost_ai_agent_bus.events import PostEvent
+from mattermost_ai_agent_bus.events import PostEvent, ReactionEvent
 from mattermost_ai_agent_bus.model import ChannelUser, Post, Reaction
 from mattermost_ai_agent_bus.nats_port import NatsPort
 from mattermost_ai_agent_bus.natsbus import NatsSettings, OpenAsk
@@ -760,5 +760,35 @@ async def test_a_dm_post_known_from_mattermost_skips_the_bridge(
             assert [r.emoji_name for r in await port.reactions(dm.id)] == ["+1"]
             assert fake.asked == []  # the known DM channel skipped the bridge
             assert "thread" in inner.log and "reactions" in inner.log
+        finally:
+            await port.stop()
+
+
+async def test_a_reaction_without_a_channel_does_not_mark_a_home_post(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#305's second review: a reaction whose event carries no channel must not note the raw
+    id (or an empty one) and so overwrite a home post's entry from a history read; the post
+    still reads through the bridge."""
+    port, inner = await _setup(rig, monkeypatch, [5])
+    post_id = "w" * 26
+    base = _now() * 1000
+    alice = _account("alice-anchor", ALICE, name="alice")
+    found = _post(post_id, message="the post", anchor="alice-anchor", account=alice,
+                  create_at=base - 1000)
+
+    def bridge(payload: dict[str, Any]) -> Any:
+        return _result([found], thread=payload["thread"])
+
+    async with Bridge(rig, bridge) as fake:
+        try:
+            # the home's post is read through the bridge first: its channel is a home
+            assert [p.id for p in (await port.thread(post_id)).posts] == [post_id]
+            asked = len(fake.asked)
+            # a reaction without a channel id on that post must not note anything
+            event = ReactionEvent(Reaction(user_id=UNBOUND, post_id=post_id, emoji_name="+1"), "")
+            assert await port.skip(event) is False
+            assert [p.id for p in (await port.thread(post_id)).posts] == [post_id]
+            assert len(fake.asked) == asked + 1  # still the bridge, not Mattermost
+            assert inner.log == []
         finally:
             await port.stop()

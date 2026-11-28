@@ -1493,10 +1493,15 @@ class NatsPort:
             post_id, channel_id = event.reaction.post_id, event.channel_id
         else:
             return
+        if not channel_id or self._ids is None:
+            # Nothing to judge yet (a reaction without a channel, the ids not resolved):
+            # noting the raw id could mark a home's post as no home and route it away
+            # from the bridge (review of #305).
+            return
         try:
-            name = self._name_now(channel_id) if self._ids is not None else None
-        except Exception:  # noqa: BLE001 — not resolvable: its id is no home either
-            name = None
+            name = self._name_now(channel_id)
+        except Exception:  # noqa: BLE001 — unresolved: an id is no home either, but do not guess
+            return
         if name is None or not self._piece5(name):
             self._note_mm(post_id, name or channel_id)
 
