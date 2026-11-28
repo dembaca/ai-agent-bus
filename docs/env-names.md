@@ -272,7 +272,7 @@ directory in the first two tables are in `mcp/src/mattermost_ai_agent_bus/`.
 A name read by several components appears in each component's table, since
 each component's pull request renames its own reads.
 
-### The MCP server and the plugin (52)
+### The MCP server and the plugin (53)
 
 | Old name | New name | Mattermost | Where it appears | Note |
 |---|---|---|---|---|
@@ -327,6 +327,7 @@ each component's pull request renames its own reads.
 | `MM_WORKSPACE` | `CB_WORKSPACE` | no | `hookapi.py`, `hosted.py`, `session_file.py`; `bin/mm-agent-lib.sh` | |
 | `MM_RELEASE_SIGNERS` | `CB_RELEASE_SIGNERS` | no | `release.py`; `adapters/corral/90-mm-session-stop.sh`, `bin/mm-agent-host-install.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-release-check.sh` | also in the hooks table |
 | `MM_RELEASE_URL` | `CB_RELEASE_URL` | no | `release.py`; `adapters/corral/90-mm-session-stop.sh`, `bin/mm-agent-host-install.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-release-check.sh` | also in the hooks table |
+| `CB_RECORDS_URL` | `CB_RECORDS_URL` | no | `release.py` | new with plan B piece 14b (#244): no old spelling; the bridge's address for the signed records, where the release notice reads `GET …/register/v1/release` and checks the bridge's signature; unset: off, the host's release check as before. Built for the release record; the other signed records follow |
 | `CB_PLANB_TEST` | `CB_PLANB_TEST` | no | `planb.py` | new with #244: no old spelling; plan B pieces switched on for tests, read only while pytest runs a test |
 
 #### Why the channel names get `CB_MM_` and `BRIDGE_HOMES` does not
@@ -634,14 +635,15 @@ pinned keys come with it under a new `CB_` name of their own, not through
 this rename. Until then `MM_REGISTRAR_KEYS` keeps working under its name.
 
 `MM_REGISTER_URL` likewise names more than the registrar: it is also where
-hosts read the signed records and the release record. Planned, not built:
-once the bridge serves them, the hosts' setting for that address is
-`CB_RECORDS_URL` (decided 2026-11-27 by the owner, in phase 5 of the NATS
-decision as plan B, [ADR-014](arc42/09-architecture-decisions.md)). Until
-then `MM_REGISTER_URL` keeps working under its name. `MM_REG_SECRET`,
-`MM_REG_SECRET_GOPASS` and `MM_REG_SECRET_CMD` get no new name: hosts delete
-them, and the stored value they point to, two weeks after the registrar's
-shutdown (the same decision).
+hosts read the signed records and the release record. The hosts' setting for
+that address is `CB_RECORDS_URL` (decided 2026-11-27 by the owner, in phase 5
+of the NATS decision as plan B,
+[ADR-014](arc42/09-architecture-decisions.md)); it is built for the release
+record with plan B piece 14b (unset: off, the host's release check as before),
+and the other signed records follow. Until then `MM_REGISTER_URL` keeps
+working under its name. `MM_REG_SECRET`, `MM_REG_SECRET_GOPASS` and
+`MM_REG_SECRET_CMD` get no new name: hosts delete them, and the stored value
+they point to, two weeks after the registrar's shutdown (the same decision).
 
 ### Excluded names
 

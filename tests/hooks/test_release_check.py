@@ -225,6 +225,28 @@ def test_the_turn_end_banner_names_a_newer_release_once(mm, run):
     assert run(STOP).banner == ""
 
 
+def test_the_turn_end_banner_names_the_marketplace_for_the_record(mm, run, monkeypatch):
+    """RT-6.30 step 8, RT-6.2 step 8: with the bridge's record as the source,
+    the banner promises the harness's marketplace and names no host installer;
+    the server marks that line `source: "record"`."""
+    now = int(time.time())
+    state = release.State(newest="99.1.0", verified=True, checked_at=now,
+                          origin="record", expires_at=now + 600)
+    monkeypatch.setattr(release, "_record_cache", (time.monotonic(), state, ""))
+    r = run(STOP, CB_RECORDS_URL="https://bridge.example/register/v1")
+    assert r.passed and "release v99.1.0 is out (major; record signed)" in r.banner
+    assert "a human installs it through the harness's marketplace" in r.banner
+    assert "mm-agent-host-install.sh" not in r.banner and "installs it on the host" not in r.banner
+    assert run(STOP, CB_RECORDS_URL="https://bridge.example/register/v1").banner == ""
+    # The same line from release.env still names the host's installer (a version
+    # not told yet: RELEASE_NOTIFIED remembers 99.1.0).
+    run.state_dir.mkdir(parents=True, exist_ok=True)
+    (run.state_dir / "release.env").write_text("NEWEST=99.2.0\nVERIFIED=yes\n")
+    monkeypatch.setattr(release, "_record_cache", None)
+    r = run(STOP)
+    assert "a human installs it on the host: mm-agent-host-install.sh --release v99.2.0" in r.banner
+
+
 def test_an_older_newest_names_the_check_and_no_install(mm, run):
     """RT-6.30 step 6, RT-6.2 step 8: a newest older than this session (the
     check not run since, or the repository frozen or rewound) names when the
