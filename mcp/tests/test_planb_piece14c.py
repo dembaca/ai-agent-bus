@@ -297,6 +297,7 @@ def _restart(monkeypatch: pytest.MonkeyPatch, *, release: bool = True) -> None:
     monkeypatch.setattr(session_file, "_tie_fd", None)
     monkeypatch.setattr(session_file, "_tie_refused", "")
     monkeypatch.setattr(session_file, "_claims", set())
+    monkeypatch.setattr(session_file, "_stranded", [])
     monkeypatch.setattr(session_file, "_nats_name", None)
     monkeypatch.setattr(session_file, "_mirrors", {})
 
@@ -690,3 +691,103 @@ def test_a_kill_anywhere_in_the_takeover_loses_and_doubles_nothing(state: Path, 
         assert (state / f"asks-{NAME_C}.env").read_text() == "run 1\n", at
         _restart(monkeypatch)
     assert killed >= 5
+
+
+# --- plan B piece 14c-1c: a stranded claim keeps the takeover open (#244) -----------------
+
+def _lines(state: Path, name: str) -> list[str]:
+    return sorted((state / f"stats-{name}.jsonl").read_text().splitlines())
+
+
+def test_a_claim_of_a_pid_that_runs_keeps_the_takeover_open(state: Path, tmp_path: Path,
+                                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 9: a leftover claim whose pid runs (a taker still at work, or its pid
+    reused by an unrelated process) is left, and the takeover stays open: the intent stays,
+    the source gets no CB_TAKEN_BY, and the start after that one finishes it."""
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    _age(state / f"copied-{NAME}.env", 60)
+    left = state / f"stats-{NAME}.jsonl.moving-1"  # pid 1 runs (and may not be signalled)
+    left.write_text('{"k":"left"}\n')
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    session_file.latch(NAME_B, HOME, UID)
+    assert left.exists() and f"CB_TAKING={NAME}" in (state / f"copied-{NAME_B}.env").read_text()
+    assert "CB_TAKEN_BY" not in (state / f"copied-{NAME}.env").read_text()
+    _restart(monkeypatch)
+    monkeypatch.setattr(session_file, "_pid_alive", lambda pid: False)  # that process ended
+    session_file.latch(NAME_C, HOME, UID)
+    assert _lines(state, NAME_C) == ['{"k":"left"}', '{"k":"run 1"}']
+    assert not list(state.glob("*.moving-*"))
+    assert not [m.name for m in state.glob("copied-*.env") if "CB_TAKING=" in m.read_text()]
+
+
+def test_a_failed_journal_write_keeps_the_takeover_open(state: Path, tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 9: an append whose journal line cannot be written leaves its claim, and
+    the takeover stays open instead of being marked done: the next start finishes it."""
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    _age(state / f"copied-{NAME}.env", 60)
+    (state / f"stats-{NAME}.jsonl.moving-999999").write_text('{"k":"left"}\n')  # two inputs: an append
+    real = session_file._mark
+
+    def no_journal(marker: Path, add_ids=(), add=(), drop=()) -> bool:
+        if any(a.startswith("CB_APPENDING=") for a in add):
+            return False
+        return real(marker, add_ids, add, drop)
+
+    monkeypatch.setattr(session_file, "_mark", no_journal)
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    session_file.latch(NAME_B, HOME, UID)
+    assert list(state.glob(f"stats-{NAME}.jsonl.moving-*"))
+    assert f"CB_TAKING={NAME}" in (state / f"copied-{NAME_B}.env").read_text()
+    assert "CB_TAKEN_BY" not in (state / f"copied-{NAME}.env").read_text()
+    monkeypatch.setattr(session_file, "_mark", real)
+    _restart(monkeypatch)  # the process ends: its claim is a dead one's
+    session_file.latch(NAME_C, HOME, UID)
+    assert _lines(state, NAME_C) == ['{"k":"left"}', '{"k":"run 1"}']
+    assert not list(state.glob("*.moving-*"))
+
+
+def test_a_name_being_taken_is_passed_over_under_its_lock(state: Path, tmp_path: Path,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 9: a start listed the candidates before another start wrote its intent
+    (CB_TAKING) on the same predecessor; under the predecessor's lock it reads the markers
+    again and passes it over: one takeover per name."""
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    (state / f"copied-{NAME_B}.env").write_text(
+        f"CB_COPIED_FROM={UID}\nCB_TIE={session_file.tie()}\nCB_TAKING={NAME}\n")
+    fd = _hold(state, NAME_B)  # that start still runs
+    try:
+        monkeypatch.setattr(session_file, "_candidates", lambda bot, name: [NAME])  # listed before
+        assert session_file._copy_source(UID, NAME_C) == (UID, [])
+    finally:
+        os.close(fd)
+
+
+def test_a_source_another_name_took_is_not_taken_again(state: Path, tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 9: an unfinished takeover whose source another name took over meanwhile
+    (its CB_TAKEN_BY names that one) drops its intent: the claims its marker journals are
+    resolved into its own file (no double), the source's state is not copied again."""
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    (state / f"copied-{NAME}.env").write_text(f"CB_COPIED_FROM={UID}\nCB_TIE={session_file.tie()}\n"
+                                             f"CB_TAKEN_BY={NAME_D}\n")
+    (state / f"stats-{NAME}.jsonl").unlink()
+    (state / f"asks-{NAME}.env").write_text("taken by the other one\n")
+    part = '{"k":"b"}\n'
+    (state / f"stats-{NAME_B}.jsonl").write_text(part + '{"k":"x"}\n')  # appended, not yet removed
+    (state / f"stats-{NAME}.jsonl.moving-999999").write_text('{"k":"x"}\n')
+    (state / f"copied-{NAME_B}.env").write_text(
+        f"CB_COPIED_FROM={UID}\nCB_TIE={session_file.tie()}\nCB_TAKING={NAME}\n"
+        f"CB_APPENDING=stats-{NAME}.jsonl.moving-999999:{len(part)}\n")
+    (state / f"key-{NAME_B}.lock").write_text("")
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    session_file.latch(NAME_C, HOME, UID)
+    assert _lines(state, NAME_C) == ['{"k":"b"}', '{"k":"x"}']
+    assert not (state / f"asks-{NAME_C}.env").exists()
+    assert not list(state.glob("*.moving-*"))
+    assert "CB_TAKING" not in (state / f"copied-{NAME_B}.env").read_text()
+    assert f"CB_TAKEN_BY={NAME_C}" in (state / f"copied-{NAME_B}.env").read_text()
