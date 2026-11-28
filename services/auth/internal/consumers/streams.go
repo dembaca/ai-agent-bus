@@ -56,7 +56,7 @@ const (
 
 	DefaultBusMaxBytes      int64 = 1 << 30
 	DefaultPresenceMaxBytes int64 = 16 << 20
-	DefaultStatsMaxBytes    int64 = 64 << 20
+	DefaultStatsMaxBytes    int64 = 1 << 30
 )
 
 const (

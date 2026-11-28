@@ -101,12 +101,13 @@ func statsConfig(t *testing.T, m *Manager) map[string]any {
 
 // An existing STATS made by an older service (30 days, 100 per subject) is
 // brought to a year and 500 per subject in place, its lines kept; a second
-// start changes nothing; a larger max_bytes is kept, a smaller one raised.
+// start changes nothing; a larger max_bytes is kept, a smaller one (the
+// 64 MiB of releases before #310) is raised to 1 GiB.
 func TestAnOldStatsStreamIsUpdatedInPlace(t *testing.T) {
 	admin, _ := statsLab(t)
 	rec := &logRecorder{}
 	m := manager(t, admin, slog.New(rec), 0)
-	old := strings.Replace(StatsStreamJSON("stats", 32<<20), `"max_age":`+itoa(int64(StatsMaxAge)), `"max_age":`+itoa(int64(30*24*time.Hour)), 1)
+	old := strings.Replace(StatsStreamJSON("stats", 64<<20), `"max_age":`+itoa(int64(StatsMaxAge)), `"max_age":`+itoa(int64(30*24*time.Hour)), 1)
 	old = strings.Replace(old, `"max_msgs_per_subject":500`, `"max_msgs_per_subject":100`, 1)
 	if err := m.api(tctx(t), "$JS.API.STREAM.CREATE."+StatsStream, old, nil); err != nil {
 		t.Fatal(err)
@@ -126,7 +127,7 @@ func TestAnOldStatsStreamIsUpdatedInPlace(t *testing.T) {
 		}
 	}
 	got := statsConfig(t, m)
-	if got["max_age"] != float64(365*24*time.Hour) || got["max_msgs_per_subject"] != float64(500) || got["max_bytes"] != float64(64<<20) {
+	if got["max_age"] != float64(365*24*time.Hour) || got["max_msgs_per_subject"] != float64(500) || got["max_bytes"] != float64(1<<30) {
 		t.Fatalf("not updated: %v %v %v", got["max_age"], got["max_msgs_per_subject"], got["max_bytes"])
 	}
 	if err := checkStream(StatsStream, "stats.>", got); err != nil {
@@ -141,11 +142,11 @@ func TestAnOldStatsStreamIsUpdatedInPlace(t *testing.T) {
 	}
 	// An operator's larger max_bytes stays.
 	big := statsConfig(t, m)
-	big["max_bytes"] = float64(128 << 20)
+	big["max_bytes"] = float64(2 << 30)
 	if err := m.api(tctx(t), "$JS.API.STREAM.UPDATE."+StatsStream, big, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Stats().Update(tctx(t)); err != nil || statsConfig(t, m)["max_bytes"] != float64(128<<20) {
+	if err := m.Stats().Update(tctx(t)); err != nil || statsConfig(t, m)["max_bytes"] != float64(2<<30) {
 		t.Fatalf("the larger size: %v, %v", statsConfig(t, m)["max_bytes"], err)
 	}
 }
