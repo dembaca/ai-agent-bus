@@ -27,7 +27,10 @@ before 0.5.0 are described in the git history.
   what needs Mattermost say so, instead of naming a tool the sandbox does not have. A
   bot the host process registers goes into the host-side session file at once, so the
   stop hook, or `bin/mm-agent-sweep.sh` after it, can still unregister it when the
-  exit's own unregister failed. `CB_NATS_HOMES` and `MM_NATS_HOMES` set to different
+  exit's own unregister failed; the file is only appended to, so one the stop hook has
+  removed meanwhile is not created again holding just the token. While the bot is being
+  registered, a Mattermost route says so ("a Mattermost bot is being registered, try again
+  in a moment") instead of "bot token required". `CB_NATS_HOMES` and `MM_NATS_HOMES` set to different
   values now refuse the bus in the start hook too, as they did in the MCP server. The release that
   carries this with the release notice from the bridge and the identity by NATS name
   (pieces 14b and 14c) is planned with

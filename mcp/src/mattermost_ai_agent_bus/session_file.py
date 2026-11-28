@@ -308,10 +308,12 @@ def write_private(path: Path, text: str) -> None:
         raise
 
 
-def append_private(path: Path, text: str) -> None:
-    """Append to a state file, 0600, never through a symlink (O_NOFOLLOW)."""
+def append_private(path: Path, text: str, create: bool = True) -> None:
+    """Append to a state file, 0600, never through a symlink (O_NOFOLLOW). With `create=False`
+    a file that is not there is not created (FileNotFoundError): a file another process removed
+    must not come back holding only this text (nobot.record_token)."""
     _state_parent(path)
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | (os.O_CREAT if create else 0) | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "a") as fh:
         fh.write(text)
 

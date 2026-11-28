@@ -49,6 +49,8 @@ _note = ""
 WAITING = ("no Mattermost bot yet: the decision about a Mattermost bot is not taken yet, up to 60 s "
            "after the start (plan B piece 14, RT-6.18 step 13); try again in a minute, bus_info says "
            "when it is taken")
+REGISTERING = ("a Mattermost bot is being registered, try again in a moment (plan B piece 14, RT-6.18 "
+               "step 13)")
 FAILED = ("no Mattermost bot: registering the bot failed ({why}; plan B piece 14, RT-6.18 step 13), so "
           "this session runs over NATS alone: restart the session")
 
@@ -82,6 +84,13 @@ def _set_note(client: Any, text: str) -> None:
     global _note
     _note = text
     _show(client, text)
+
+
+def _set_registering(inner: Any, on: bool) -> None:
+    try:
+        inner.registering = on
+    except AttributeError:  # a fake without the field
+        pass
 
 
 def _show(client: Any, text: str) -> None:
@@ -215,7 +224,7 @@ def record_token(info: Any) -> None:
         return
     user, uid, tok = vals
     try:
-        session_file.append_private(path, (
+        session_file.append_private(path, create=False, text=(
             "# registered by the host process (plan B piece 14a, RT-6.18 step 13)\n"
             f"CB_MM_BOT_USERNAME={user}\nMM_BOT_USERNAME={user}\n"
             f"CB_MM_BOT_USER_ID={uid}\nMM_BOT_USER_ID={uid}\n"
@@ -239,18 +248,23 @@ async def host_decide(client: Any, name: str, display: str, secret: str,
             return "no bot: every channel and piece runs over NATS"
         log.info("registration: a bot is needed (%s): registering %s", why, name)
         inner.reg_secret = secret or None
-        _show(client, "")  # session_start refuses while it is set; bus_info still says WAITING
+        # The routes say "being registered" until the token is in; session_start goes on (registering).
+        _set_note(client, REGISTERING)
+        _set_registering(inner, True)
         try:
             await register_now(client, name, display)
         finally:
             inner.reg_secret = None  # the host process keeps no registration secret (RT-6.18)
+            _set_registering(inner, False)
         _set_note(client, "")
         return f"registered ({why})"
     except asyncio.CancelledError:
         inner.reg_secret = None
+        _set_registering(inner, False)
         raise
     except Exception as exc:  # noqa: BLE001 — the session goes on without a bot, NATS only
         inner.reg_secret = None
+        _set_registering(inner, False)
         _set_note(client, FAILED.format(why=type(exc).__name__))
         log.warning("registration failed: %s: the session goes on without a bot", exc)
         return f"registration failed ({type(exc).__name__})"

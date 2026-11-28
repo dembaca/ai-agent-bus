@@ -533,3 +533,53 @@ async def test_no_session_file_or_a_symlink_records_nothing(tmp_path: Path, monk
     f.unlink()
     nobot.record_token(FakeRegistrar().info)
     assert not f.exists()
+
+
+async def test_record_token_does_not_create_a_file_the_stop_hook_removed(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.18 step 13: the file removed between the check and the append is not created again."""
+    f = _corral_file(tmp_path, monkeypatch)
+    real = Path.is_file
+
+    def removed_after_check(self: Path) -> bool:
+        ok = real(self)
+        if self == f:
+            f.unlink()
+        return ok
+
+    monkeypatch.setattr(Path, "is_file", removed_after_check)
+    nobot.record_token(FakeRegistrar().info)
+    monkeypatch.setattr(Path, "is_file", real)
+    assert not f.exists()
+    from mattermost_ai_agent_bus import session_file
+
+    with pytest.raises(FileNotFoundError):
+        session_file.append_private(f, "x\n", create=False)
+    assert not f.exists()
+    session_file.append_private(f, "x\n")  # the others still create
+    assert f.read_text() == "x\n"
+
+
+async def test_a_route_during_the_registration_says_it_is_being_registered(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.18 step 13: no_bot holds the registering text while the bot is registered, then clears."""
+    bus = Bus()
+    bus.pieces["guest"] = ALL - {5}
+    port, inner, _ = _port(bus)
+    seen: dict[str, Any] = {}
+
+    async def slow(name: str, display_name: str | None = None, *, unique: bool = True) -> Any:
+        seen["no_bot"] = inner.no_bot  # type: ignore[attr-defined]
+        seen["registering"] = inner.registering  # type: ignore[attr-defined]
+        adapter = MattermostAdapter(base_url="https://mm.example")
+        adapter.no_bot = inner.no_bot  # type: ignore[attr-defined]
+        with pytest.raises(RuntimeError, match="a Mattermost bot is being registered, try again in a moment"):
+            adapter._auth_headers()
+        return FakeRegistrar().info
+
+    monkeypatch.setattr(inner.registrar, "session_start", slow)  # type: ignore[attr-defined]
+    out = await nobot.host_decide(port, "host-proj-abc", "", "the-secret", timeout=0)
+    assert out.startswith("registered"), out
+    assert seen["no_bot"] == nobot.REGISTERING and seen["registering"] is True
+    assert inner.no_bot == "" and inner.registering is False  # type: ignore[attr-defined]
+    assert nobot.status() == ""

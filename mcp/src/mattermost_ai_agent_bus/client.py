@@ -407,6 +407,9 @@ class MattermostAdapter:
     # Plan B piece 14a (nobot.py, RT-6.18 step 13): why this session holds no bot, kept for its
     # whole run; what still needs Mattermost fails with it, and nothing registers one later.
     no_bot: str = field(default="", repr=False, init=False)
+    # the host process is registering the bot (nobot.host_decide): no_bot holds the "registering" text
+    # for the routes, and session_start itself goes on
+    registering: bool = field(default=False, repr=False, init=False)
     _client: httpx.AsyncClient | None = field(default=None, repr=False, init=False)
     # (when read, the guest channel ids): the bot's memberships (RT-6.22).
     _guests: tuple[float, frozenset[str]] | None = field(default=None, repr=False, init=False)
@@ -573,7 +576,7 @@ class MattermostAdapter:
         """
         if marker := corral_sandbox():
             raise RuntimeError(sandbox_refusal(marker))
-        if self.no_bot:  # plan B piece 14a: decided at the start, kept (nobot.py)
+        if self.no_bot and not self.registering:  # plan B piece 14a: decided at the start, kept (nobot.py)
             raise RuntimeError(self.no_bot)
         if not self.reg_secret:
             raise RuntimeError("MM_REG_SECRET is required for session_start")
