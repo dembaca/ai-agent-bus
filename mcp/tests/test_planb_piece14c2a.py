@@ -252,6 +252,23 @@ async def test_the_own_owner_check_compares_with_the_key(monkeypatch: pytest.Mon
     assert await port2._owner4(BOT) is None and await port2._owner4(NAME) == ""
 
 
+async def test_an_unknown_own_key_is_nobodys_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #342 (fcae45): `key_now` gives '' where the adapter's bot id could be None, and
+    an empty user id must not equal an own id that is merely unknown: `_owner4` and `_linked_name`
+    guard with `bool(me)`, as `_on_nats` does. Not own: no owner ('') and no linked name ('')."""
+    async def no_circle(user_id: str) -> None:
+        return None
+
+    port, _ = _port(bot=False)  # no bot and no decision: key_now is ''
+    monkeypatch.setattr(port, "_circle4", no_circle)
+    assert identity.key_now(port) == ""
+    assert await port._owner4("") == ""
+    assert await port._linked_name("") == ""
+    port = _bot_less()
+    monkeypatch.setattr(port, "_circle4", no_circle)
+    assert await port._owner4("") == ""  # a known own key does not make '' own either
+
+
 # --- the guard: every users/me read is listed ------------------------------------------------
 
 SRC = Path(identity.__file__).parent

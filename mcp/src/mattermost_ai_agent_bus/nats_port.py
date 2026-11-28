@@ -3449,7 +3449,8 @@ class NatsPort:
         circle = await self._circle4(user_id)
         if circle is not None:
             return circle.owner_name or circle.owner_anchor
-        return None if user_id == identity.key_now(self) else ""
+        me = identity.key_now(self)
+        return None if me and user_id == me else ""  # an unknown own key ('') is nobody's own
 
     async def _circle4(self, user_id: str) -> AttestedCircle | None:
         """Piece 4: the circle of the agent behind `user_id` from the login service's
@@ -3474,7 +3475,7 @@ class NatsPort:
         bus = self._live()
         if bus is None or not user_id:
             return ""
-        if user_id == identity.key_now(self):
+        if (me := identity.key_now(self)) and user_id == me:
             return bus.name
         bots, known = self._known2({user_id})
         if known:
