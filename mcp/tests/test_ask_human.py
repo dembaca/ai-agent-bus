@@ -940,6 +940,21 @@ async def test_a_reaction_names_its_answer_as_chosen(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_an_expired_ask_keeps_no_chosen_word(monkeypatch):
+    """RT-6.11: an answer after 24 h approves nothing, so the record names no chosen word."""
+    c = _Client()
+    monkeypatch.setattr(server, "_get_client", lambda: c)
+    inbox = _inbox(c)
+    monkeypatch.setattr(server, "_get_inbox", lambda: inbox)
+    await server.ask_human(need="Merge?", decision="Merge it", answers=["go", "wait"])
+    late = int((time.time() + 25 * 3600) * 1000)
+    await read_frames(inbox, _reaction_event("white_check_mark", at=late))
+    item = json.loads(await server.wait_for_events(timeout_sec=1))[0]
+    assert item["expired"] is True
+    assert next(r for r in asks.records(BOT) if r[0] == ASK)[6]["chosen"] == ""
+
+
+@pytest.mark.asyncio
 async def test_an_approval_has_two_alternatives_only(monkeypatch):
     """RT-6.11 step 1: three alternatives naming an action with effect: nothing is posted."""
     c = _Client()

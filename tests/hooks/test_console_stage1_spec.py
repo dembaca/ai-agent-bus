@@ -32,6 +32,9 @@ SECTION = "## Over NATS: the console's asks and STATS lines"
 
 RECORD_FIELDS = {"v", "asks", "more", "iat", "exp"}
 ASK_FIELDS = {"mm", "kind", "human", "title", "asked", "answered"}
+# the ask's card (the owner's decision of 2026-11-28): each sent only when the ask has it
+ASK_CARD = {"context": 900, "recommendation": 900, "where": 200, "decision": 400}
+ASK_OPTIONAL = set(ASK_CARD) | {"answers", "chosen"}
 STATS_STRINGS = {
     "v": r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}",
     "sid": r"[0-9a-f]{12}",
@@ -120,7 +123,7 @@ def test_a_duplicate_key_is_refused():
 
 def test_ask_records_carry_exactly_the_fields_of_the_table():
     records, _ = json_blocks()
-    assert field_table() == {"record": RECORD_FIELDS, "ask": ASK_FIELDS}
+    assert field_table() == {"record": RECORD_FIELDS, "ask": ASK_FIELDS | ASK_OPTIONAL}
     assert [len(r["asks"]) for r in records] == [2, 0]
     for record in records:
         assert set(record) == RECORD_FIELDS, record
@@ -129,11 +132,34 @@ def test_ask_records_carry_exactly_the_fields_of_the_table():
         ids = [a["mm"] for a in record["asks"]]
         assert len(ids) == len(set(ids))
         for ask in record["asks"]:
-            assert set(ask) == ASK_FIELDS, ask
+            assert ASK_FIELDS <= set(ask) <= ASK_FIELDS | ASK_OPTIONAL, ask
             assert ask["kind"] in {"approval", "question"}
             assert len(ask["title"]) <= 200
             assert MM_ID.fullmatch(ask["mm"]) and ANCHOR.fullmatch(ask["human"])
             assert isinstance(ask["answered"], bool)
+            for key, bound in ASK_CARD.items():
+                if key in ask:
+                    assert 0 < len(ask[key]) <= bound, key
+                    assert key != "where" or "\n" not in ask[key]
+            if "answers" in ask:
+                assert 2 <= len(ask["answers"]) <= 4
+                assert all(0 < len(a) <= 120 and "\n" not in a for a in ask["answers"])
+            if "chosen" in ask:
+                assert ask["chosen"] in ask["answers"]
+    # the example shows a card, and the bounds stand in the table as the decoder holds them
+    assert any(set(ASK_CARD) <= set(a) for r in records for a in r["asks"])
+    table = section()
+    for key, bound in ASK_CARD.items():
+        assert re.search(rf"\| `{key}` \| ask \| Optional, the card:[^|]*1 to {bound} characters", table), key
+
+
+def test_the_card_bounds_are_the_decoders():
+    """The table's bounds are the MCP server's (natsbus.ASK_*_MAX), which the console's
+    strict decoder holds too."""
+    from mattermost_ai_agent_bus import natsbus
+
+    assert (natsbus.ASK_CONTEXT_MAX, natsbus.ASK_RECOMMENDATION_MAX, natsbus.ASK_WHERE_MAX,
+            natsbus.ASK_DECISION_MAX, natsbus.ASK_ANSWER_MAX) == (*ASK_CARD.values(), 120)
 
 
 def _numbers_only(value: object) -> bool:

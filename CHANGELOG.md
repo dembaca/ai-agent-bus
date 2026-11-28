@@ -544,14 +544,30 @@ before 0.5.0 are described in the git history.
   red count counts replies by others only (never the ask's own post or the operator's
   own); the "for you" chip stays in a narrow window; an ask that is not the operator's
   to answer has no answer box; the thread button is a speech-bubble icon with the number
-  alone. The ask's own answers (and which one was chosen) are not on the ask record, so
-  they are not shown: carrying them takes a change of the ask record on NATS (optional
-  keys, a wider "title, no body" rule, the console server and the agents rolled out
-  together) that the owner decides separately; this release does not make it. Context,
-  recommendation and "where" are not on the bus the console reads either, so they are
-  not shown.
+  alone.
+- **The ask record carries the whole card** (#285, ADR-015, the owner's decision of
+  2026-11-28). Each agent's ask record on NATS may now carry an ask's context,
+  recommendation, where, the decision's wording, its own answers and the one a trusted
+  human's reaction picked, as optional keys sent only when the ask has them, each
+  bounded (context and recommendation 900 characters, decision 400, where 200, two to
+  four answers of 120). The decoders stay strict and drop a record that breaks a bound.
+  The console server hands the card only to the asked human and to the people the
+  asking agent trusts; everyone else sees the title alone. The unfolded ask shows
+  Context, Recommendation and Where, "This counts as your approval of" the decision's
+  wording, the ask's own answers (two side by side, more with the key caps A to D) and
+  "answered: " with the chosen answer. No new right is added and answering stays
+  disabled. Roll out the console server first, then the agents: a console server
+  before this change refuses a whole record with unknown keys, so it would show no
+  asks of an updated agent that has a card until it is updated too.
 
 ### Fixed
+
+- **Until piece 14c the decision about a bot waits for nothing: plan B piece 14a** (#313,
+  RT-6.10 step 8, RT-6.18 step 13). While the crown still needs the bot's identity
+  (`nobot.CROWN_NEEDS_BOT`), `nobot.decide` answers "the crown needs the bot's identity
+  until piece 14c" at once, before any read: a session whose channels `CB_NATS_HOMES` all
+  lists no longer waits up to 60 s for its login and presence replay before it registers
+  as before. With the constant off, as piece 14c will run it, the wait is unchanged.
 
 - **The sweep removes state keyed by a NATS name** (#244 plan B piece 14 gate 8, #253,
   RT-6.1 step 7, RT-6.2 step 9). Since plan B piece 2b a session keeps `last-`,
