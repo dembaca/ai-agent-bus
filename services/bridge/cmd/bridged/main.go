@@ -28,6 +28,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/agentbots"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/commands"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/history"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
@@ -91,21 +92,31 @@ func run(log *slog.Logger) error {
 	var wg sync.WaitGroup
 	// Plan B's switches per channel, as the login service writes them from the
 	// channel directory (RT-6.39 step 5), through the bridge's own consumer
-	// bridge_planb made at every start: the mirror reads piece 6 (asks, RT-6.11),
-	// and piece 4 decides how a person's post binds (inbound.ProofPiece, #266).
+	// Plan B's switches per channel, as the login service writes them from the channel
+	// directory (RT-6.39 step 5), through the bridge's own consumer bridge_planb made at
+	// every start: the mirror reads piece 6 (asks, RT-6.11), piece 4 decides how a person's
+	// post binds (inbound.ProofPiece, #266), and pieces 5, 9 and 12 read them too.
 	planb := &presence.Switches{}
 	// Plan B piece 9 (piece9.go): the agents' bots show their status, and the
 	// crown holder's header line is written with its own bot; nil without
 	// the agents' own bots.
 	p9 := newPiece9(cfg, log, client, bots, snapshot, planb)
 	// The request scaffold (ADR-014 phase 5): requests on <req>.<kind>.<agent>
-	// get this phase's "not built" answer on deliver.<agent>.req.<request id>.
-	// A lost message fails the request; the handler retries a refused
-	// subscription once a minute and only reports why it is not answering, so
-	// an image rolled out before the lab's NATS rights leaves requests
-	// unanswered and never stops the bridge; /healthz names the failure.
+	// get this phase's "not built" answer on deliver.<agent>.req.<request id>
+	// until a piece is wired in; piece 5 answers the history read. A lost
+	// message fails the request; the handler retries a refused subscription
+	// once a minute and only reports why it is not answering, so an image
+	// rolled out before the lab's NATS rights leaves requests unanswered and
+	// never stops the bridge; /healthz names the failure.
 	if cfg.ReqPrefix != "" {
-		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix, Handlers: p9.handlers()}
+		handlers := p9.handlers()
+		hist := &history.Handler{Log: log, Team: cfg.MMTeam, Presence: snapshot,
+			Switches: planb, People: accounts}
+		if bots != nil {
+			hist.Bots = bots
+		}
+		handlers["history"] = hist.Piece
+		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix, Handlers: handlers}
 		h.requests = rq
 		wg.Add(1)
 		go func() {
@@ -123,6 +134,18 @@ func run(log *slog.Logger) error {
 		defer wg.Done()
 		if err := pbr.Run(ctx, nc); err != nil && ctx.Err() == nil {
 			log.Error("bridge: plan B switches stopped", "error", err)
+		}
+	}()
+	// The memberships the history read checks (RT-6.37, RT-6.42 step 11),
+	// through the bridge's own consumer made at every start: the operator's
+	// presence consumer carries only presence.*.*, and a restart must have
+	// every membership the stream still holds.
+	mr := &presence.MembersReader{Log: log, Deliver: cfg.Deliver + ".members", Stream: "PRESENCE", Into: snapshot}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := mr.Run(ctx, nc); err != nil && ctx.Err() == nil {
+			log.Error("bridge: the memberships stopped", "error", err)
 		}
 	}()
 	wg.Add(1)

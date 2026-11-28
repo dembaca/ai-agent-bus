@@ -49,12 +49,13 @@ func (a *Accounts) beats() (heartbeat, inactive time.Duration) {
 }
 
 // Accounts maps a Mattermost account to the person's anchor from the login
-// service's records on `presence.account.mattermost.<user id>.v1`. An account
-// without a record that decodes, or with `anchor` null, is unbound: Anchor
-// answers "", and the bridge carries it under `-` (points 3, 4 and 10). The
-// record's `exp` and `approver` are the MCP server's to judge: a stale record
-// still names the person, it only approves nothing (point 8). Beside each
-// record the login service publishes the binding's proof on
+// service's records on `presence.account.mattermost.<user id>.v1`, and keeps
+// each record itself for the history read (ADR-014 phase 5, piece 5). An
+// account without a record that decodes, or with `anchor` null, is unbound:
+// Anchor answers "", and the bridge carries it under `-` (points 3, 4 and 10).
+// The record's `exp` and `approver` are the reader's to judge: a stale record
+// still names the person, it only approves nothing (point 8). Beside each record
+// the login service publishes the binding's proof on
 // `presence.account.mattermost.<user id>.auth.v1` (#266): Bound binds a post's
 // account only while it still logs in as it was proven.
 //
@@ -78,10 +79,10 @@ type Accounts struct {
 	Heartbeat, Inactive time.Duration
 
 	mu       sync.Mutex
-	anchors  map[string]string // accounts with a record, "" for unbound
-	staging  map[string]string // a new consumer's records until it caught up
-	proofs   map[string]Proof  // accounts with a proof that decodes
-	sproofs  map[string]Proof  // a new consumer's proofs until it caught up
+	records  map[string]Account // every account's newest record; Anchor "" is unbound
+	staging  map[string]Account // a new consumer's records until it caught up
+	proofs   map[string]Proof   // accounts with a proof that decodes
+	sproofs  map[string]Proof   // a new consumer's proofs until it caught up
 	caughtUp bool
 }
 
@@ -98,14 +99,29 @@ func (a *Accounts) Bound(userID, authService, authData string) string {
 	if !ok || authService == "" || authData == "" || p.AuthService != authService || p.AuthData != authData {
 		return ""
 	}
-	return a.anchors[userID]
+	return a.records[userID].Anchor
 }
 
 // Anchor is the anchor bound to a Mattermost user id, "" when unbound.
 func (a *Accounts) Anchor(userID string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.anchors[userID]
+	return a.records[userID].Anchor
+}
+
+// Record is the login service's newest record of a Mattermost account, false
+// when the records are not read yet, when there is none that decodes, or when
+// it binds no anchor (unbound). The record's `exp` and `approver` are the
+// reader's to judge: the history read answers it beside each post, and the
+// session applies RT-6.42's freshness rule as it does to a live person's event.
+func (a *Accounts) Record(userID string) (Account, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	rec, ok := a.records[userID]
+	if !a.caughtUp || !ok || rec.Anchor == "" {
+		return Account{}, false
+	}
+	return rec, true
 }
 
 // Owner is the Mattermost user id whose record binds anchor, the other way
@@ -122,8 +138,8 @@ func (a *Accounts) Owner(anchor string) string {
 		return ""
 	}
 	owner := ""
-	for uid, bound := range a.anchors {
-		if bound != anchor {
+	for uid, rec := range a.records {
+		if rec.Anchor != anchor {
 			continue
 		}
 		if owner != "" {
@@ -188,7 +204,7 @@ func (a *Accounts) consume(ctx context.Context, nc *nats.Conn) error {
 	// replaces the old one once caught up: an account unbound while NATS was
 	// away must not keep its old anchor. Until then no home carries.
 	a.mu.Lock()
-	a.staging, a.sproofs, a.caughtUp = map[string]string{}, map[string]Proof{}, false
+	a.staging, a.sproofs, a.caughtUp = map[string]Account{}, map[string]Proof{}, false
 	a.mu.Unlock()
 	if err := a.create(ctx, nc, name, deliver); err != nil {
 		return err // errStale: Run waits the threshold, unsubscribed
@@ -306,13 +322,15 @@ const errConsumerExists = 10148
 // errStale: a consumer of the bridge's name from an earlier start is there.
 var errStale = errors.New("accounts: a consumer of an earlier start")
 
+// caught commits the new consumer's records over the old ones, once it caught
+// up.
 func (a *Accounts) caught() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.staging != nil {
-		a.anchors, a.staging = a.staging, nil
+		a.records, a.staging = a.staging, nil
 		a.proofs, a.sproofs = a.sproofs, nil
-		a.Log.Info("accounts: the account records are read", "accounts", len(a.anchors), "proofs", len(a.proofs))
+		a.Log.Info("accounts: the account records are read", "accounts", len(a.records), "proofs", len(a.proofs))
 	}
 	a.caughtUp = true
 }
@@ -342,24 +360,24 @@ func (a *Accounts) take(subject string, data []byte) {
 	if err == nil && rec.Account != uid {
 		err = fmt.Errorf("the record names account %q", rec.Account)
 	}
-	a.set(uid, rec.Anchor, err)
+	a.set(uid, rec, err)
 }
 
-// set records an account's anchor; a record that does not decode is unbound
+// set records an account's record; one that does not decode is unbound
 // (step 10). a.mu is held.
-func (a *Accounts) set(uid, anchor string, err error) {
+func (a *Accounts) set(uid string, rec Account, err error) {
 	if err != nil {
-		anchor = ""
+		rec = Account{}
 		a.Log.Warn("accounts: a record that does not decode; unbound", "account", uid, "error", err)
 	}
 	if a.staging != nil {
-		a.staging[uid] = anchor
+		a.staging[uid] = rec
 		return
 	}
-	if a.anchors == nil {
-		a.anchors = map[string]string{}
+	if a.records == nil {
+		a.records = map[string]Account{}
 	}
-	a.anchors[uid] = anchor
+	a.records[uid] = rec
 }
 
 // setProof records an account's proof; one that does not decode is no proof

@@ -1095,6 +1095,36 @@ func TestOwnerIsTheOneAccountWhoseRecordBindsTheAnchor(t *testing.T) {
 	}
 }
 
+// ADR-014 phase 5 piece 5: Record is the record itself, which a history answer
+// carries beside a person's post, and false for an account that is unbound or
+// has none.
+func TestRecordIsTheAccountsNewestRecord(t *testing.T) {
+	const uid = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	rec := []byte(`{"v":1,"account":"` + uid + `","anchor":"alice","name":"Alice",` +
+		`"approver":true,"token_iat":10,"iat":11,"exp":9999999999}`)
+	acc := newAccounts()
+	acc.one("presence.account.mattermost."+uid+".v1", rec)
+	if _, ok := acc.Record(uid); ok {
+		t.Fatal("a record before the consumer caught up")
+	}
+	acc.caught()
+	got, ok := acc.Record(uid)
+	if !ok || got.Anchor != "alice" || got.Name != "Alice" || !got.Approver ||
+		got.TokenIat != 10 || got.Iat != 11 || got.Exp != 9999999999 {
+		t.Fatalf("the record: %+v %v", got, ok)
+	}
+	if _, ok := acc.Record("bbbbbbbbbbbbbbbbbbbbbbbbbb"); ok {
+		t.Fatal("a record for an account without one")
+	}
+	// unbound: the record is no person's any more
+	acc.one("presence.account.mattermost."+uid+".v1",
+		[]byte(`{"v":1,"account":"`+uid+`","anchor":null,"name":"Alice","approver":true,`+
+			`"token_iat":12,"iat":12,"exp":9999999999}`))
+	if _, ok := acc.Record(uid); ok {
+		t.Fatal("an unbound account's record")
+	}
+}
+
 type allOn map[int]bool
 
 func (a allOn) On(piece int, _ string) bool { return a[piece] }

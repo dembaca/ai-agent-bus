@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
@@ -225,6 +227,199 @@ func TestTheMirrorReadsTheStatusOfAFailure(t *testing.T) {
 	}
 	if mirror.Revoked(context.DeadlineExceeded) {
 		t.Error("a timeout counted as a refused token")
+	}
+}
+
+// A thread page asks for its bound and the down direction, keeps the root
+// first and carries the metadata, reactions and has_next: the history read's
+// context.
+func TestThreadPage(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/posts/root1/thread" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		q := r.URL.Query()
+		if got := q.Get("perPage"); got != "200" {
+			t.Errorf("perPage %q, want 200", got)
+		}
+		if got := q.Get("direction"); got != "down" {
+			t.Errorf("direction %q, want down", got)
+		}
+		if got := q.Get("fromPost"); got != "" {
+			t.Errorf("the first page names fromPost %q", got)
+		}
+		_, _ = w.Write([]byte(`{"order":["reply","root1"],"posts":{` +
+			`"reply":{"id":"reply","user_id":"u2","channel_id":"ch7","root_id":"root1","create_at":2000},` +
+			`"root1":{"id":"root1","user_id":"u1","channel_id":"ch7","create_at":1000,` +
+			`"metadata":{"reactions":[{"user_id":"u2","emoji_name":"+1","create_at":5}]}}},"has_next":true}`))
+	})
+	posts, hasNext, err := c.ThreadPage(context.Background(), "root1", "", 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasNext {
+		t.Fatal("has_next dropped")
+	}
+	if len(posts) != 2 || posts[0].ID != "root1" || posts[1].RootID != "root1" {
+		t.Fatalf("the thread: %+v", posts)
+	}
+	if !posts[0].HasMetadata || len(posts[0].Reactions) != 1 ||
+		posts[0].Reactions[0].EmojiName != "+1" {
+		t.Fatalf("the root's reactions: %+v", posts[0])
+	}
+	// a thread Mattermost has no post for is an error, never an empty thread
+	if _, _, err := c.ThreadPage(context.Background(), "gone", "", 0, 0); err == nil {
+		t.Fatal("a missing thread is no error")
+	}
+}
+
+// Given a page of a thread, the next one goes on from the last post of it:
+// fromPost and fromCreateAt, both, as Mattermost asks (ADR-014 phase 5).
+func TestThreadPageGoesOnFromTheCursor(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if got := q.Get("fromPost"); got != "reply9" {
+			t.Errorf("fromPost %q, want reply9", got)
+		}
+		if got := q.Get("fromCreateAt"); got != "1234" {
+			t.Errorf("fromCreateAt %q, want 1234", got)
+		}
+		if got := q.Get("perPage"); got != "20" {
+			t.Errorf("perPage %q, want 20", got)
+		}
+		_, _ = w.Write([]byte(`{"order":["reply10"],"posts":{` +
+			`"reply10":{"id":"reply10","channel_id":"ch7","root_id":"root1","create_at":2000}}}`))
+	})
+	posts, hasNext, err := c.ThreadPage(context.Background(), "root1", "reply9", 1234, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasNext || len(posts) != 1 || posts[0].ID != "reply10" {
+		t.Fatalf("%v %v", posts, hasNext)
+	}
+}
+
+// One page of a channel's posts: page and per_page, no since.
+func TestChannelPage(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/channels/ch7/posts" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		q := r.URL.Query()
+		if got := q.Get("page"); got != "2" {
+			t.Errorf("page %q, want 2", got)
+		}
+		if got := q.Get("per_page"); got != "200" {
+			t.Errorf("per_page %q, want 200", got)
+		}
+		if got := q.Get("since"); got != "" {
+			t.Errorf("the page asked with since %q", got)
+		}
+		_, _ = w.Write([]byte(`{"order":["b","a"],"posts":{` +
+			`"a":{"id":"a","channel_id":"ch7","create_at":1},` +
+			`"b":{"id":"b","channel_id":"ch7","create_at":2}}}`))
+	})
+	posts, err := c.ChannelPage(context.Background(), "ch7", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 2 || posts[0].ID != "a" || posts[1].ID != "b" {
+		t.Fatalf("%+v", posts)
+	}
+}
+
+// PostsFrom pages from the newest post back with page/per_page, never
+// Mattermost's `since` (whose answer is cut at a thousand posts in no set
+// order), keeps the oldest limit posts from since on and says more while they
+// remain: a busy channel's read is whole (ADR-014 phase 5, RT-6.42 step 11).
+func TestPostsFromPages(t *testing.T) {
+	const total, since, limit = 450, 51, 200
+	var (
+		mu    sync.Mutex
+		asked []string
+	)
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/channels/ch7/posts" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		q := r.URL.Query()
+		if got := q.Get("since"); got != "" {
+			t.Errorf("the read asked with since %q", got)
+		}
+		page, _ := strconv.Atoi(q.Get("page"))
+		per, _ := strconv.Atoi(q.Get("per_page"))
+		if per != PageSize {
+			t.Errorf("per_page %d, want %d", per, PageSize)
+		}
+		mu.Lock()
+		asked = append(asked, q.Get("page")+"/"+q.Get("per_page"))
+		mu.Unlock()
+		// newest first, as Mattermost's page is: n from total-page*per down
+		order := []string{}
+		by := map[string]any{}
+		for n := total - page*per; n > total-(page+1)*per && n >= 1; n-- {
+			id := "p" + strconv.Itoa(n)
+			order = append(order, id)
+			by[id] = map[string]any{"id": id, "user_id": "u1", "channel_id": "ch7", "create_at": n}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"order": order, "posts": by})
+	})
+	posts, more, err := c.PostsFrom(context.Background(), "ch7", since, limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != limit || !more {
+		t.Fatalf("%d posts, more %v", len(posts), more)
+	}
+	if posts[0].CreateAt != since || posts[len(posts)-1].CreateAt != since+limit-1 {
+		t.Fatalf("the oldest limit: %d..%d", posts[0].CreateAt, posts[len(posts)-1].CreateAt)
+	}
+	// three pages: the two full ones and the short one at the channel's end,
+	// where the walk stops (the last page's posts are all before since)
+	if got := strings.Join(asked, " "); got != "0/200 1/200 2/200" {
+		t.Fatalf("pages asked %q", got)
+	}
+}
+
+// A channel whose window is smaller than the limit answers it whole, more
+// false, and stops at its oldest page.
+func TestPostsFromAShortWindow(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if page := q.Get("page"); page != "0" {
+			t.Errorf("page %q, want 0: the first page is short", page)
+		}
+		_, _ = w.Write([]byte(`{"order":["p2","p1"],"posts":{` +
+			`"p1":{"id":"p1","channel_id":"ch7","create_at":10},` +
+			`"p2":{"id":"p2","channel_id":"ch7","create_at":20}}}`))
+	})
+	posts, more, err := c.PostsFrom(context.Background(), "ch7", 5, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if more || len(posts) != 2 || posts[0].ID != "p1" || posts[1].ID != "p2" {
+		t.Fatalf("%v %v", posts, more)
+	}
+}
+
+// A window with more posts than one read walks is refused, not answered in
+// part: an answer cut at the newest side would lose the posts between.
+func TestPostsFromRefusesAWindowItCannotWalk(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		order := []string{}
+		by := map[string]any{}
+		for n := 1; n <= PageSize; n++ {
+			id := "p" + strconv.Itoa(n)
+			order = append(order, id)
+			by[id] = map[string]any{"id": id, "channel_id": "ch7", "create_at": 1000}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"order": order, "posts": by})
+	})
+	if _, _, err := c.PostsFrom(context.Background(), "ch7", 1, 200); !errors.Is(err, ErrTooManyPosts) {
+		t.Fatalf("got %v, want ErrTooManyPosts", err)
 	}
 }
 

@@ -149,7 +149,11 @@ func TestAcceptedLines(t *testing.T) {
 		BusHeader + " · tasks here from " + crownMark + " of ~home",
 	} {
 		e := newEnv(t)
-		rep, err := e.w.Piece(context.Background(), "agent-a", req(t, line(l)))
+		reps, err := e.w.Piece(context.Background(), "agent-a", req(t, line(l)))
+		var rep requests.Reply
+		if len(reps) > 0 {
+			rep = reps[0]
+		}
 		if err != nil {
 			t.Errorf("%q: %v", l, err)
 			continue
@@ -201,7 +205,11 @@ func TestRefusals(t *testing.T) {
 		if c.change != nil {
 			c.change(e)
 		}
-		rep, err := e.w.Piece(context.Background(), "agent-a", req(t, c.payload))
+		reps, err := e.w.Piece(context.Background(), "agent-a", req(t, c.payload))
+		var rep requests.Reply
+		if len(reps) > 0 {
+			rep = reps[0]
+		}
 		if err == nil || len(rep.Result) != 0 {
 			t.Errorf("%s: accepted: %s", c.name, rep.Result)
 		}
@@ -215,20 +223,25 @@ func TestTheHeaderKeepsPeoplesTextAndIsWrittenOnce(t *testing.T) {
 	e := newEnv(t)
 	e.bot.header = "people wrote this"
 	l := BusHeader + " · asks → " + crownMark + " first"
-	rep, err := e.w.Piece(context.Background(), "agent-a", req(t, line(l)))
+	reps, err := e.w.Piece(context.Background(), "agent-a", req(t, line(l)))
+	var rep requests.Reply
+	if len(reps) > 0 {
+		rep = reps[0]
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := WithBusHeader("people wrote this", l); e.bot.header != want || !strings.HasPrefix(want, "people wrote this\n\n") {
 		t.Fatalf("header %q", e.bot.header)
 	}
-	if string(rep.Result) != `{"v":1,"changed":true}` || rep.Part != 1 || !rep.Last {
+	if string(rep.Result) != `{"v":1,"changed":true}` {
 		t.Fatalf("reply %+v", rep)
 	}
-	rep, err = e.w.Piece(context.Background(), "agent-a", req(t, line(l)))
+	reps, err = e.w.Piece(context.Background(), "agent-a", req(t, line(l)))
 	if err != nil {
 		t.Fatal(err)
 	}
+	rep = reps[0]
 	if string(rep.Result) != `{"v":1,"changed":false}` || e.bot.writes != 1 {
 		t.Fatalf("result %s, writes %d", rep.Result, e.bot.writes)
 	}
