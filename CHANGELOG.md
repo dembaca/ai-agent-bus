@@ -7,6 +7,22 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **Every kept state file keyed by the NATS name: plan B piece 14c-1** (#244, RT-6.2
+  step 9, ADR-014). Behind piece 2's switch (`planb.on(2, home)`, off by default; no new
+  switch), the asks, the read watermark, reminders, the gate, the stall and release-notice
+  state, the ask mode, presence, the crown lease, the channel confirmation, the counters
+  (`stats-`), the crown log and the permission log follow `last-`, `threads-` and
+  `unanswered-` to the session's NATS name, and so do the scripts' files (`turn-`,
+  `listen-`, `update-`; `mm_state_key` in `bin/mm-agent-lib.sh`, from `CB_STATE_KEY` in
+  the endpoint file or `state_key` in `/v1/me`). Once the bus has the name the server
+  takes `key-<name>.lock` for its run, copies every kind once (counters too, so the
+  session's last part counts them once; never a lock), writes `copied-<name>.env` even
+  without a bot and only then switches the key; a second process with the same name keeps
+  the bot id's key and `bus_info` says why. While a bot id exists the server also keeps
+  `coord-` and `channel-` under it, for a hook of the plugin before. A session without a
+  bot id now keeps state under the name. Session end keeps the marker, so the sweep's day
+  rule removes the name's other files. Switch off: every file name is as before.
+
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads
   `GET <address>/register/v1/release` from the bridge (`https`, or `http` only to a

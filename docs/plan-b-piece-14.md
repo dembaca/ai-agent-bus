@@ -35,7 +35,7 @@ removal release and the shutdown release.
 |---|---|---|
 | 14a, the decision | A session whose home, guest channels, lobby and stats channel all run over NATS with every piece on registers no bot and holds no Mattermost token; any channel off: registers as today | the decision release |
 | 14b, the release notice | The MCP server reads the release record the bridge signs (`GET …/register/v1/release`, already routed in `services/bridge/cmd/bridged/main.go`) and tells its human; no host release check | the decision release |
-| 14c, identity and state | The session's own identity is its NATS name, not the bot's Mattermost id (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`); the state files still keyed by the bot id move to the name; the login approval loses its DM and its ask (`login_notice.py`) | the decision release |
+| 14c, identity and state | The session's own identity is its NATS name, not the bot's Mattermost id (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`); the state files still keyed by the bot id move to the name (built in 14c-1, behind piece 2's switch, RT-6.2 step 9: every per-bot file of the MCP server and the scripts, copied once at the latch, one process per name by `key-<name>.lock`; left for 14c-2: the identity, `bus_info` naming the refused latch beyond its warning; 14c-3: the login approval); the login approval loses its DM and its ask (`login_notice.py`) | the decision release |
 | 14d, the host side goes | Once every home runs every piece: corral's hooks, the host process, the relay, the signed host copy and its updater are removed | the removal release |
 | Shutdown (phase 6) | The registrar retires on #151's conditions; the registration code leaves the MCP server | the shutdown release |
 
@@ -53,7 +53,7 @@ removal release and the shutdown release.
 | the channel join in the host hook | `bin/mm-agent-channels.sh` (piece 13 left it, it runs before a server exists) | 14d | channels from the directory (piece 1); the bridge's bot is joined by the bridge (RT-6.44) |
 | the login approval's DM and ask (RT-6.34) | `login_notice.py` (`DMNotifier`, the ask and its settling) | 14c | the approval at this machine only: browser, MCP log and the terminal through the harness's hooks (#198, decided 2026-11-27) |
 | the bot's identity in the session | `_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py` | 14c | the NATS name (the roster, piece 2) |
-| state files keyed by the bot id | `listen-`, `update-`, `presence-`, `coord-`, `turn-`, the asks, watermark, reminders, gate, stats, crown log (ADR-014 piece 2b "left keyed by the bot id") | 14c | the NATS name; copied once, the source left for the way back, as piece 2b did |
+| state files keyed by the bot id | `listen-`, `update-`, `presence-`, `coord-`, `turn-`, the asks, watermark, reminders, gate, stats, crown log (ADR-014 piece 2b "left keyed by the bot id") | 14c | the NATS name; copied once, the source left for the way back, as piece 2b did (built in 14c-1: `nonce-` stays keyed by the bot id, the name is made from it; `listen-`, `update-`, `turn-` follow the key uncopied) |
 | the shell clients of registration | `bin/mm-agent-register.sh`, `-unregister.sh`, `-registrar-keys.sh`, the stop hook's unregistration | 14d | nothing: gone |
 | the host sweep of the registrar's bots | `bin/mm-agent-sweep.sh` | shutdown | the bridge's sweep (RT-6.44 step 8) |
 | the mandate's unsigned fallback, the pinned post | `pinned_posts` in `mandate.py` | 14a (needs the signed records from the bridge) | the signed records the bridge serves (#151 step 3) |

@@ -326,9 +326,19 @@ def keyed_path(prefix: str) -> Path:
 _BOT_ID_RE = re.compile(r"[a-z0-9]{26}")
 # The session's NATS name and the home it is the name in, once the bus has it (use_nats_name).
 _nats_name: tuple[str, str] | None = None
-# The kinds of kept state the MCP server alone reads: copied to the new key once. Files the
-# bash scripts read (listen, update, presence, coord) stay keyed by the bot id until piece 14.
-STATE_KINDS = ("last", "threads", "unanswered")
+# The kinds of kept state the MCP server reads, copied to the new key once (piece 2b: last,
+# threads, unanswered; piece 14c-1: the rest). A bare kind is <kind>-<key>.env, one with a dot
+# names its extension. Not copied: the locks (a lock belongs to its process), channel- (this
+# process's channel confirmation, moved by latch), nonce- (an input of the name itself, so it
+# stays keyed by the bot id) and the files of one turn the hooks keep (listen-, update-, turn-).
+STATE_KINDS = ("last", "threads", "unanswered", "asks", "read", "remind", "gate", "stall", "notice",
+               "askmode", "presence", "coord", "stats.jsonl", "crown.log", "permission.log")
+
+
+def _kind_file(kind: str, key: str) -> str:
+    """The file name of a STATE_KINDS entry under `key`."""
+    base, dot, ext = kind.partition(".")
+    return f"{base}-{key}.{ext}" if dot else f"{kind}-{key}.env"
 
 
 def use_nats_name(name: str, home: str) -> None:
@@ -356,11 +366,9 @@ def key_ok(key: str) -> bool:
 def state_key(uid: str, nats_name: str | None = None, home: str | None = None) -> str:
     """The key of the session's kept state (RT-6.2 step 9): the NATS name when use_nats_name
     latched it (plan B piece 2 was on at the start), else `uid`, the bot's Mattermost id.
-    An empty `uid` stays empty (no bot, no state). `nats_name` is the session's own, unless
-    named (tests); `home` is unused then."""
-    if not uid:
-        return uid
-    name = nats_name if nats_name is not None else (_nats_name[0] if _nats_name else None)
+    An empty `uid` (no bot) is the latched name too, else empty: no key, no state (piece 14c-1).
+    `nats_name` is the session's own, unless named (tests); `home` is unused then."""
+    name =nats_name if nats_name is not None else (_nats_name[0] if _nats_name else None)
     if name is not None and key_ok(name):
         return name
     return uid
@@ -386,7 +394,7 @@ def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS) -
         marked_at = None
     done: list[str] = []
     for kind in kinds:
-        src, dst = d / f"{kind}-{uid}.env", d / f"{kind}-{name}.env"
+        src, dst = d / _kind_file(kind, uid), d / _kind_file(kind, name)
         try:
             if dst.is_symlink() or src.is_symlink() or not src.is_file():
                 continue
@@ -406,6 +414,81 @@ def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS) -
         except OSError:
             pass
     return done
+
+
+# --- the latch: one holder per name (plan B piece 14c-1, RT-6.2 step 9) ---------------
+
+# The open lock file key-<name>.lock this process holds for its whole run, so no second
+# process keys its state by the same name; and why the latch was refused, for bus_info.
+_key_fds: dict[str, int] = {}
+_refused = ""
+
+
+def _hold_key(name: str) -> str:
+    """Take key-<name>.lock (flock, never waits) for the rest of the process. "" when held,
+    else why not: another live process holds it, or the lock cannot be made (fail-safe:
+    a key no process can lock is no key)."""
+    if name in _key_fds:
+        return ""
+    path = state_dir() / f"key-{name}.lock"
+    try:
+        _state_parent(path)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        return f"the lock key-{name}.lock cannot be made ({type(exc).__name__})"
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+            return "another running MCP server keys its state by the same NATS name"
+        return f"the lock key-{name}.lock cannot be taken ({type(exc).__name__})"
+    _key_fds[name] = fd
+    return ""
+
+
+def latch(name: str, home: str, uid: str) -> list[str]:
+    """The bus has the session's NATS name `name` in `home` (RT-6.2 step 9): with plan B piece 2
+    on there, take the name's lock, copy the state the bot `uid` kept (copy_state_once), write
+    the marker even without a bot (so mm-agent-sweep.sh's day rule applies to the name's files),
+    move this process's channel confirmation, and only then latch the key (use_nats_name): a
+    hook that learns the key appends to a file that already holds the copy. A second process
+    with the same name refuses: its key stays the bot id (or none) and latch_refused() says
+    why. Returns the kinds copied."""
+    from . import planb
+
+    global _refused
+    if not (name and key_ok(name) and planb.on(2, home)):
+        return []
+    if why := _hold_key(name):
+        _refused = why
+        logging.getLogger(__name__).warning("session: the kept state stays keyed by the bot id: %s", why)
+        return []
+    copied = copy_state_once(uid, name) if uid else []
+    d = state_dir()
+    marker = d / f"copied-{name}.env"
+    try:
+        if not marker.exists() and not marker.is_symlink():
+            write_private(marker, "")
+    except OSError:
+        pass
+    # channel-<key>.env says this process confirmed the channel (RT-6.12): an earlier process
+    # of the name left nothing that counts, and a confirmation made under the bot id moves.
+    src, dst = d / f"channel-{uid}.env", d / f"channel-{name}.env"
+    try:
+        if not dst.is_symlink():
+            dst.unlink(missing_ok=True)
+            if _BOT_ID_RE.fullmatch(uid) and src.is_file() and not src.is_symlink():
+                write_private(dst, src.read_text())
+    except OSError:
+        pass
+    use_nats_name(name, home)
+    return copied
+
+
+def latch_refused() -> str:
+    """Why this process keys its state by the bot id although piece 2 is on ("" when not)."""
+    return _refused
 
 
 def _marker_ids(marker: Path) -> list[str]:

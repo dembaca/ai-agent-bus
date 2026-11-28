@@ -343,7 +343,7 @@ async def reply_text(client: ChatPort, author: str, *, dm: bool, guest: str = ""
 
 
 def _path(uid: str) -> Path:
-    return session_file.state_dir() / f"gate-{uid}.env"
+    return session_file.state_dir() / f"gate-{session_file.state_key(uid)}.env"
 
 
 def _read(uid: str) -> dict[str, dict[str, float]]:

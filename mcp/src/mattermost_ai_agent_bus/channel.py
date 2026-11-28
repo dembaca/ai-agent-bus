@@ -158,9 +158,33 @@ def digest_sec() -> float:
         return 1800.0
 
 
+_BOT = re.compile(r"[a-z0-9]{26}")  # a Mattermost bot id
+
+
 def confirmed_file(user_id: str) -> Path:
-    """Exists while this bot's session confirmed the channel (the hooks read it)."""
-    return session_file.state_dir() / f"channel-{user_id}.env"
+    """Exists while this bot's session confirmed the channel (the hooks read it), under the
+    session's state key (RT-6.2 step 9: the NATS name with plan B piece 2 on)."""
+    return session_file.state_dir() / f"channel-{session_file.state_key(user_id)}.env"
+
+
+def confirmed(user_id: str) -> bool:
+    """Whether the session confirmed the channel (confirmed_file exists). While the key is the
+    NATS name and the bot `user_id` exists, channel-<bot id>.env follows it, so a hook from
+    before piece 14c-1 still reads the confirmation (mixed versions, RT-6.2 step 9)."""
+    f = confirmed_file(user_id)
+    yes = f.is_file()
+    if _BOT.fullmatch(user_id) and f.name != f"channel-{user_id}.env":
+        bot = f.with_name(f"channel-{user_id}.env")
+        try:
+            if bot.is_symlink():
+                pass
+            elif yes and not bot.exists():
+                session_file.write_private(bot, f.read_text())
+            elif not yes:
+                bot.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return yes
 
 
 def check(code: str) -> dict[str, Any]:

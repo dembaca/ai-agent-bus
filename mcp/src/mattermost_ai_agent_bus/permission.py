@@ -73,8 +73,8 @@ LOG_KEEP = 400
 
 def log_path() -> Path | None:
     """`permission-<uid>.log` in the state directory, None without a bot id."""
-    uid = stats.bot_id()
-    return session_file.state_dir() / f"permission-{uid}.log" if uid else None
+    key = session_file.state_key(stats.bot_id())
+    return session_file.state_dir() / f"permission-{key}.log" if key else None
 
 
 def _clean(text: object, pattern: str, limit: int) -> str:

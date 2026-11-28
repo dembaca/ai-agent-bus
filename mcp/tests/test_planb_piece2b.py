@@ -42,7 +42,7 @@ def test_state_key_switch_off_is_the_bot_id(state: Path) -> None:
 def test_state_key_switch_on(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
     assert session_file.state_key(UID) == NAME
-    assert session_file.state_key("") == ""
+    assert session_file.state_key("") == NAME  # piece 14c-1: a session without a bot keeps state too
     assert session_file.state_key(UID, "agent-other", HOME) == "agent-other"
 
 
@@ -134,13 +134,15 @@ def test_remove_forgets_both_keys(state: Path, monkeypatch: pytest.MonkeyPatch) 
     assert [p.name for p in state.iterdir()] == []
 
 
-def test_remove_also_forgets_the_copy_marker(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_remove_keeps_the_copy_marker_for_the_sweep(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Piece 14c-1: the marker ties the name's other files to the (now gone) bot, so the sweep's
+    # day rule removes them (RT-6.1 step 7); without it they would be left untied.
     (state / f"last-{UID}.env").write_text("MSG=x\n")
     session_file.copy_state_once(UID, NAME)
     assert (state / f"copied-{NAME}.env").exists()
     _on(monkeypatch)
     ownpost.remove(UID)
-    assert not (state / f"copied-{NAME}.env").exists()
+    assert (state / f"copied-{NAME}.env").exists()
 
 
 def test_the_key_survives_the_switch_going_away(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:

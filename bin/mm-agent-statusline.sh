@@ -99,7 +99,8 @@ if [[ "$uid" =~ ^[a-z0-9]{26}$ ]]; then
       until_="$(jq -r '.crown_until // 0' <<<"$CB_BUS_BODY" 2>/dev/null)"
     fi
   else
-    until_="$(sed -n 's/^CROWN_UNTIL=//p' "${STATE}/coord-${uid}.env" 2>/dev/null | head -1)"
+    coord="$(mm_bot_state_file coord "$(mm_state_key "$uid")" 2>/dev/null)" || coord=/dev/null
+    until_="$(sed -n 's/^CROWN_UNTIL=//p' "$coord" 2>/dev/null | head -1)"
   fi
   [[ "$until_" =~ ^[0-9]+$ ]] && (( until_ > $(date +%s) )) && crown="$CB_CROWN "
 fi

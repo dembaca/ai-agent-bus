@@ -104,10 +104,10 @@ def bot_id() -> str:
 
 
 def _path() -> Path | None:
-    uid = _me()
-    if not uid:
+    key = session_file.state_key(_me())
+    if not key:
         return None
-    return session_file.state_dir() / f"stats-{uid}.jsonl"
+    return session_file.state_dir() / f"stats-{key}.jsonl"
 
 
 def record(kind: str, /, **values: Any) -> None:
@@ -712,7 +712,7 @@ def cut(version: str, fixed: overhead.Fixed | None = None, now: float | None = N
 
 def _lock(uid: str) -> int | None:
     """stats-<uid>.lock, so two servers of one bot cut a part once."""
-    path = session_file.state_dir() / f"stats-{uid}.lock"
+    path = session_file.state_dir() / f"stats-{session_file.state_key(uid)}.lock"
     try:
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     except OSError:
@@ -1155,7 +1155,7 @@ def post_sync(client: ChatPort, data: dict[str, Any]) -> str:
         f = _path()
         if f is not None:
             f.unlink(missing_ok=True)
-            (f.parent / f"stats-{_me()}.lock").unlink(missing_ok=True)
+            (f.parent / f"stats-{session_file.state_key(_me())}.lock").unlink(missing_ok=True)
 
 
 # --- the report: what bin/mm-agent-stats.sh report --json computes in jq -----

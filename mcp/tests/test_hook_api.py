@@ -109,6 +109,17 @@ async def test_me_names_the_bot_its_project_and_crown(api, tmp_path, monkeypatch
     assert (await h.get("/v1/me")).json()["project"] is True
 
 
+async def test_me_names_the_state_key_once_it_is_the_nats_name(api, monkeypatch):
+    """RT-6.2 step 9, plan B piece 14c-1: the hooks' files follow the kept state's key; with
+    the switch off the answer has no state_key (the bot id is the key, as before)."""
+    _, h = await api(FakeClient())
+    assert "state_key" not in (await h.get("/v1/me")).json()
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    name = "a2c4e6g7" * 3 + "h"
+    session_file.latch(name, "work", UID)
+    assert (await h.get("/v1/me")).json()["state_key"] == name
+
+
 async def test_pending_counts_and_details_when_asked(api, monkeypatch):
     """RT-6.17, RT-6.2 step 1: the count over all channels (unread.py, with
     the server's token); per channel with fyi counts only when asked."""

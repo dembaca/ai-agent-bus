@@ -4301,6 +4301,11 @@ which each piece reads for itself.
        watermark, reminders, the gate, stats and the crown log, until piece
        14; the sweep (`mm-agent-sweep.sh`) does not yet clean name-keyed
        files.
+     - Built (piece 14c-1, after 0.104.0, same switch): every per-bot file
+       of the MCP server and the scripts follows the key, copied once at the
+       latch (`session_file.latch`), the counters and logs too; one process
+       per name (`key-<name>.lock`); the scripts take the key from
+       `mm_state_key` (RT-6.2 step 9).
      - Test: roster, link and names without a Mattermost read; `testrig`:
        nobody told as gone during a cut. Lab: each agent shows once, a
        mention of a gone agent is answered.

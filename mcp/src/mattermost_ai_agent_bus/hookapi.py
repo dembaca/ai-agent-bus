@@ -5,7 +5,7 @@ The hooks (hooks/*.sh) and the scripts an agent runs (bin/mm-agent-listen.sh,
 -post, -poll, -status) hold no bot token. They call this small HTTP API
 instead, served next to the WebSocket inbox in the server's event loop:
 
-    GET  /v1/me             {user_id, username, project, crown_until, channel, relay?}
+    GET  /v1/me             {user_id, username, project, crown_until, channel, state_key?, relay?}
     GET  /v1/pending        {count[, stall: 1][, channels: [{id, type, pending, fyi}]]}
                             (?detail=1: up to 5 channels, with fyi counts)
     GET  /v1/last-post      {at, message, signed_off[, release][, unanswered]}: the own latest
@@ -663,7 +663,10 @@ async def me(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]
     relay = hosted.relay_warning()
     return 200, {"user_id": uid, "username": who.username,
                  "project": project, "crown_until": lease.crown_until(uid),
-                 "channel": bool(_UID.fullmatch(uid)) and channel.confirmed_file(uid).exists(),
+                 "channel": bool(_UID.fullmatch(uid)) and channel.confirmed(uid),
+                 # The key of the kept state when it is not the bot id (RT-6.2 step 9): the NATS
+                 # name with plan B piece 2 on; the hooks' files follow it (mm_state_key).
+                 **({"state_key": key} if (key := session_file.state_key(uid)) != uid else {}),
                  **({"relay": relay} if relay else {})}
 
 

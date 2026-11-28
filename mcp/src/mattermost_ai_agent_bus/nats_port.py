@@ -447,9 +447,9 @@ def read_props(wire: Mapping[str, natsbus.Prop], prefix: str, asks: bool = False
 
 
 def _notice_file(uid: str) -> Path:
-    from .session_file import state_dir
+    from .session_file import state_dir, state_key
 
-    return state_dir() / f"notice-{uid}.env"
+    return state_dir() / f"notice-{state_key(uid)}.env"
 
 
 def _since_from_read_mark(uid: str, channels: set[str]) -> dict[str, tuple[int, int]]:
