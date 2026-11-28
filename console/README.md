@@ -14,7 +14,5 @@ stage 1, **reading only**:
   answered) and serves the API of ADR-015 point 10
   (`/v1/fleet` streamed over SSE, `/v1/me`, `/v1/asks`, `/v1/groups` (the
   agents list's groups and the panel's numbers, counted on the server, #283),
-  `/v1/graph` (no longer drawn by the app), `/v1/stats`, `/v1/agent-stats` (own or trusted agents only), `/v1/threads/<id>`), plus the built browser app. A card
-  names its `home` and its `guests`; the graph draws the home and the
-  guest channels apart and marks the operator's own person node `you`
-  (#147).
+  `/v1/stats`, `/v1/agent-stats` (own or trusted agents only), `/v1/threads/<id>`), plus the built browser app. A card
+  names its `home` and its `guests` (#147).

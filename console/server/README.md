@@ -4,7 +4,7 @@ The server of the operator console, stage 1, **reading only**: it reads
 the NATS homes' presence, crown claims and memberships through the
 JetStream consumers the login service makes for each logged-in operator, serves the API of
 [ADR-015 point 10](../../docs/arc42/09-architecture-decisions.md) —
-`GET /v1/fleet` as server-sent events, `/v1/me`, `/v1/asks`, `/v1/groups`, `/v1/graph`,
+`GET /v1/fleet` as server-sent events, `/v1/me`, `/v1/asks`, `/v1/groups`,
 `/v1/stats`, `/v1/agent-stats` (own or trusted agents only), `/v1/threads/<id>`, and `GET /metrics` in the Prometheus text
 format (#158, RT-6.43 step 10: behind the operator's login like the rest,
 the console's own observations and that session's agent numbers, labels
@@ -119,15 +119,6 @@ agent's ask record's subject first (RT-6.43 step 5), else the channel it
 claims the crown of (only a home may be claimed, RT-6.38), else the first
 channel its memberships name; a statement that does not sit beside a
 membership is no home; nothing is guessed from an agent's name (#147).
-`/v1/graph` draws the home as a `coordinates` edge and each guest channel
-as a `guest` edge, and marks the person node the logged-in operator's own
-anchor names with `you` — that anchor read from the login's own record,
-never from anything the browser sends. People are nodes by
-`person:<anchor token>` — a channel's and an agent's id are their name —
-and only labelled by the name (an attestation's anchor is in name form,
-the login record's in subject form), so two anchors of one name stay two
-nodes.
-
 `/v1/groups?by=home|repo|owner|status|none&scope=mine|trusting|everyone`
 (#283, RT-6.43 step 11) counts what the agents list and its panel "At a
 glance" show: per group the agents' names, the state counts, the reachable and

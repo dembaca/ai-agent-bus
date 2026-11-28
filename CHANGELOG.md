@@ -74,28 +74,31 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
-- **PA retried ask no longer spends its mention twice, and an Bundecodable lookup answer
-  is no longer retriece 5'sd follow-upsr ever** (#24487, RT-6.42 step 11). AIn unknown Mattermost post
-  id is asked of the bridge's mirror of an ask,
-  which runs witoh every iplan eachB switched- onff for a home over NATS, the sender's limit of
+- **A retried ask no longer spends its mention twice, and an undecodable lookup answer
+  is no longer retried for ever** (#287, RT-6.11). In the bridge's mirror of an ask,
+  which runs with every plan B switch off for a home over NATS, the sender's limit of
   20 kept mentions an hour was taken before the copy was created, so a create that
   failed and was tried again used a second unit; the same message now counts once.
-  A 200 answer of Mattermost;'s username lonly
-okup  twhose briodgy doe's explicit `the thread is not idecode was taken ~<channel>`s
- falls back, any other failure
-  raises. A thread answer drops a repltry, whoseich Mattermost root is notpped the thromead's mirroot
-  (and a root that is; itself a reply), and after a restart a post by the session's own
-  bot naming an open ask's sequence still counts as no person and
+  A 200 answer of Mattermost's username lookup whose body does not decode was taken as
+  a failure to retry, which stopped the home's mirror; it now counts as no person and
   the mention is plain. Only an answer that cannot be decoded is no person (the same
   holds for the lookup of a post and its author before an agent's reply or reaction);
   a body cut short or a read that fails mid-answer is retried, as no answer is.
-- **The bridge' refuses ca histopy, anry other
-  uwinkndown sequence not. A post the agclient' could never read** (#278, RT-6.43).
-  With piece 5 (history) own, bota mchay notnel read whose one `create_at` holds posts adding up
-  to more than the 4 MiB the MCP cllient (takes DMof one answer was answered over that cap,
-  and pthe client refused evermissiony prompet)ry. is tThe bridge' now answers a `thoo large thread is not in ~<channel>` erron the first
-  page, and a plogst the session saw on Mattermost outside a switched home is known with
-  it. This changes nel,othing so with skpips thece bridge5 off.
+- **The bridge refuses a history window the client could never read** (#278, RT-6.43).
+  With piece 5 (history) on, a channel read whose one `create_at` holds posts adding up
+  to more than the 4 MiB the MCP client takes of one answer was answered over that cap,
+  and the client refused every retry. The bridge now answers a `too large` error and logs
+  it. This changes nothing with piece 5 off.
+- **Plan B piece 5's follow-ups** (#244, RT-6.42 step 11). An unknown Mattermost post
+  id is asked of the bridge's history in each switched-on home before Mattermost; only
+  the bridge's explicit `the thread is not in ~<channel>` falls back, any other failure
+  raises. A thread answer drops a reply whose Mattermost root is not the thread's root
+  (and a root that is itself a reply), and after a restart a post by the session's own
+  bot naming an open ask's sequence still counts as the bridge's copy, any other
+  unknown sequence not. A post the agent's own bot may not read at all (a DM answer,
+  a permission prompt) is the bridge's `the thread is not in ~<channel>` on the first
+  page, and a post the session saw on Mattermost outside a switched home is known with
+  its channel, so it skips the bridge.
 
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
   RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
@@ -112,6 +115,12 @@ okup  twhose briodgy doe's explicit `the thread is not idecode was taken ~<chann
 
 
 ### Breaking
+
+- **`GET /v1/graph` is removed from the console server** (#283, ADR-015 point 7
+  withdrawn). The agents list replaced the Graph view and nothing draws the
+  graph any more; the route answers like any unknown path (404, after the
+  login) and no longer counts under its own bucket in `/metrics`. Anything that
+  read the endpoint reads `/v1/groups` or `/v1/fleet` instead.
 
 - **NATS names lose the `agent-` prefix** (#274, RT-6.36 step 8). An agent's NATS
   name is now its hash alone: 25 characters of lower-case base32 (125 bits of the
@@ -643,7 +652,7 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
   agents whose numbers the operator may see (own or trusted) and that state a
   count, and says "· 6 of 7 agents" only when it leaves agents out. The answer's
   `glance` gains `asks` (`forYou`, `mayAnswer`, `open`). Fields the API does not carry yet are left out of the rows. `GET
-  /v1/graph` stays on the server, unused by the console. Open, the owner's
+  /v1/graph` is removed from the server (see Breaking). Open, the owner's
   decision: who sees which homes, and a cost in money beside tokens.
 - **A Mattermost account is bound to its Keycloak identity by proof, once,
   and a trusted human's answer on Mattermost approves without the approver

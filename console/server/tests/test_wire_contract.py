@@ -84,21 +84,6 @@ def test_the_card_the_fixture_states(fleet_scenario) -> None:
     assert fleet_scenario.cards("someone-else")[0]["lastPostAt"] is None
 
 
-def test_the_graph_marks_the_operators_own_node_and_guest_channels(fleet_scenario) -> None:
-    """ADR-015 point 7, #147: the person node the login's own record's anchor names is
-    marked `you`, and a membership beside the agent's home is a `guest` edge — the graph
-    never takes either from the browser (RT-6.43 step 2)."""
-    graph = fleet_scenario.graph(anchor="dembaca")
-    people = [n for n in graph["nodes"] if n["kind"] == "person"]
-    assert people == [{"id": "person:dembaca", "kind": "person", "label": "dembaca",
-                       "you": True}]
-    homes = {e["to"] for e in graph["edges"] if e["kind"] == "coordinates"}
-    guests = {e["to"] for e in graph["edges"] if e["kind"] == "guest"}
-    assert (homes, guests) == ({"dev"}, {"bgl-infra"})
-    for anchor in (None, "", "someone-else"):
-        assert not any(n.get("you") for n in fleet_scenario.graph(anchor)["nodes"])
-
-
 def test_a_guest_channel_is_no_home(fleet_scenario) -> None:
     """#147: the home is what the bus itself states — the ask record's subject first
     (RT-6.43 step 5), then a crown claim (only a home may be claimed, RT-6.38) — and

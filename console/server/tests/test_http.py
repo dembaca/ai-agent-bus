@@ -133,12 +133,6 @@ async def test_threads_answer_an_empty_page(console: Console) -> None:
     assert json.loads(body) == {"posts": [], "next": None}
 
 
-async def test_graph_of_an_empty_fleet(console: Console) -> None:
-    status, _headers, body = await get(console, "/v1/graph")
-    assert status == 200
-    assert json.loads(body) == {"nodes": [], "edges": [], "cutDepth": None}
-
-
 async def test_fleet_streams_sse(console: Console) -> None:
     reader, writer = await client(console)
     writer.write(b"GET /v1/fleet HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -192,7 +186,7 @@ async def test_every_v1_route_answers_401_without_a_session() -> None:
         return c.endpoints  # type: ignore[return-value]
     await c.start(discover=fake_discover)
     try:
-        for path in ("/v1/me", "/v1/asks", "/v1/stats", "/v1/agent-stats", "/v1/groups", "/v1/graph",
+        for path in ("/v1/me", "/v1/asks", "/v1/stats", "/v1/agent-stats", "/v1/groups",
                      "/v1/threads/x"):
             status, headers, _b = await get(c, path)
             assert status == 401, path

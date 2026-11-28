@@ -5390,7 +5390,9 @@ The console is the operators' view of the bus itself.
      tune with real numbers: groups up to about eight homes, beyond that a
      filter by home.
 
-7. **Graph.** Nodes: people (the owners and trusted humans the roster
+7. **Graph (withdrawn by #283).** *The Graph view is gone with the new start
+   page and `GET /v1/graph` is removed from the console server; the text of
+   this point stays as the decision's history.* Nodes: people (the owners and trusted humans the roster
    names), channels (homes), agents. An agent node is an agent's name on
    NATS, which the login service derives from its owner's anchor (equal to
    the owner's name for today's identities, ADR-016) and its host's key
@@ -5504,7 +5506,7 @@ The console is the operators' view of the bus itself.
     | `GET /v1/me` | the logged-in operator: username, display name, groups | the browser session; the server's own login (point 4) |
     | `GET /v1/asks` | open asks, `for_me` and `may_answer` marked | the ask rows of `coordinator("tasks")` |
     | `GET /v1/groups?by=…&scope=…` | the agents list's groups with their counts and the panel's numbers (#283) | point 6; the scopes as the per-agent rows below |
-    | `GET /v1/graph` | nodes and edges; no longer drawn by the app since #283 | point 7 |
+    | ~~`GET /v1/graph`~~ | withdrawn by #283: the endpoint is removed | point 7 (withdrawn) |
     | `GET /v1/stats` | the reports, filtered | `stats_report` |
     | `GET /v1/threads/<post id>` | one thread from the server's memory, paged, when the detail opens | the bus's thread of that post |
     | `POST /v1/asks/<post id>/answer` | the operator's reaction or reply, published on NATS under that person's name; refused for a post that is no open ask | RT-6.11 step 3 |
@@ -6147,7 +6149,8 @@ asks in view (`glance.asks`: for you, may answer, open), whoever owns the
 asking agent. Without the operator's anchor nothing is "mine" and no ask is
 "for you". "Mine" counts the agents whose fresh attestation names the
 operator as owner; "Trusting me" those plus the others' agents that name the
-operator as trusted; "Everyone" all the operator may see. `GET /v1/graph` stays on the server, unused by the app.
+operator as trusted; "Everyone" all the operator may see. `GET /v1/graph` and with it
+point 7 (the graph) are withdrawn: the endpoint is removed from the server.
 Still open, the owner's decision: who sees which homes (today every logged-in
 person sees every card with task and branch) and the cost in money beside
 tokens (no agent reports it); the console builds without both.
