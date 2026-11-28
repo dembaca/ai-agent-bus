@@ -4,6 +4,7 @@ import { mockApi } from "../api/mock"
 import type { Ask } from "../api/types"
 import { answeredText, answersOf, Asks, NewBadge, Unfolded } from "./Asks"
 import css from "./Asks.css?raw"
+import { PostRow } from "./Detail"
 import { ANSWER_DISABLED, ThreadDrawer } from "./ThreadDrawer"
 
 const base: Ask = {
@@ -106,5 +107,26 @@ describe("Asks (#285)", () => {
   it("keeps every write disabled: buttons and reply field", () => {
     const html = unfolded({ ...base, answers: three })
     expect(html.match(/<button type="button" disabled/g)?.length).toBe(3)
+  })
+})
+
+describe("the mock's threads match its asks (#285, owner review)", () => {
+  it("every mock ask's thread id has sample posts, the root first", async () => {
+    const api = mockApi()
+    for (const ask of await api.asks()) {
+      const page = await api.thread(ask.threadId)
+      expect(page.posts.length, ask.threadId).toBeGreaterThan(0)
+      expect(page.posts[0].id).toBe(ask.threadId)
+      expect(page.posts[0].rootId).toBeNull()
+    }
+  })
+
+  it("the drawer's rows for the first mock ask show its posts", async () => {
+    const api = mockApi()
+    const [first] = await api.asks()
+    const page = await api.thread(first.threadId)
+    const html = renderToStaticMarkup(<>{page.posts.map((p) => <PostRow key={p.id} post={p} />)}</>)
+    expect(html).toContain("documented")
+    expect(html).toContain(page.posts[0].author)
   })
 })
