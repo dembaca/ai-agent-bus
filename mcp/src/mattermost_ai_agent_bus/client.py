@@ -1037,6 +1037,10 @@ class MattermostAdapter:
 
     async def session_end(self, name: str | None = None) -> None:
         """DELETE registrar agent. Uses reg secret or bot token."""
+        if self.no_bot and self.session is None and not self.token:
+            # plan B piece 14a: no bot by decision, not decided yet, or its registration failed
+            # (nobot.py): say that, not "call session_start first".
+            raise RuntimeError(self.no_bot)
         short = name or (self.session.name if self.session else os.environ.get("MM_REG_BOT_NAME"))
         if not short:
             raise RuntimeError("no agent name; pass name or call session_start first")

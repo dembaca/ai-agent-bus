@@ -24,7 +24,7 @@ before 0.5.0 are described in the git history.
   within 60 s, no NATS side, a stale or missing record) the session registers as
   before. It is kept for the session: a switch turned off later leaves the session
   without Mattermost, and what needs Mattermost fails with a message that says to
-  restart. With the switches off, as everywhere today, and for every session whose
+  restart (`session_end` too, instead of "call session_start first"). With the switches off, as everywhere today, and for every session whose
   channels `CB_NATS_HOMES` does not all list, nothing changes. Until the host process
   has decided (up to 60 s) and after a failed registration, `bus_info` (`no_bot`) and
   what needs Mattermost say so, instead of naming a tool the sandbox does not have. A

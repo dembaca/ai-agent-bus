@@ -622,3 +622,19 @@ async def test_a_bot_not_recorded_in_the_session_file_is_unregistered_at_once(
     assert inner.session is None and inner.reg_secret is None  # type: ignore[attr-defined]
     assert "registering the bot failed" in nobot.status() and inner.no_bot == nobot.status()  # type: ignore[attr-defined]
     assert nobot.record_token(FakeRegistrar().info) is False
+
+
+@pytest.mark.parametrize("state", ["held", "waiting", "failed"])
+async def test_session_end_without_a_bot_says_why(mcp: Any, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    """RT-6.18 step 13, RT-6.10 step 8: session_end of a session without a bot answers with the
+    no_bot text, not "call session_start first", also with the bot's name in the environment."""
+    monkeypatch.setenv("MM_REG_BOT_NAME", "host-proj-abc")
+    adapter = MattermostAdapter(base_url="https://mm.example")
+    if state == "held":
+        nobot.hold(adapter)
+    else:
+        nobot._set_note(adapter, nobot.WAITING if state == "waiting" else nobot.FAILED.format(why="X"))
+    monkeypatch.setattr(server, "_get_client", lambda: adapter)
+    with pytest.raises(RuntimeError) as err:
+        await server.session_end()
+    assert str(err.value) == nobot.status() and "session_start first" not in str(err.value)
