@@ -211,7 +211,18 @@ func TestTheStatsFillIsWatched(t *testing.T) {
 		}
 		return pct
 	}
+	// Put publishes on core NATS and flushes: the flush proves the server has
+	// the line, not that the stream has stored it, so the stream's byte count
+	// trails the publishes on a busy host. Wait for it (bounded) instead of
+	// reading it once.
+	await := func(least int) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); fill() < least && time.Now().Before(deadline); {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	put(0, 7)
+	await(60)
 	if pct := fill(); pct < 60 || pct >= StatsWarnPercent {
 		t.Fatalf("fill %d %%", pct)
 	}
@@ -220,6 +231,7 @@ func TestTheStatsFillIsWatched(t *testing.T) {
 		t.Fatalf("warned: %v", rec.msgs)
 	}
 	put(7, 9)
+	await(StatsWarnPercent)
 	if pct := fill(); pct < StatsWarnPercent {
 		t.Fatalf("fill %d %%", pct)
 	}
