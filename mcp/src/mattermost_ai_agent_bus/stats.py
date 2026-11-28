@@ -408,7 +408,8 @@ def _traffic(counted: list[dict[str, Any]], posts: list[dict[str, Any]],
         w = p.get("w")
         word = w if w in POST_WORDS else "other"
         _add(words, word, p.get("chars"))
-        # #290: the same posts by the UTC hour they were made in, counts only.
+        # #290: the same posts by the UTC hour they were made in, counts only; a post
+        # without a time counts in post_words but in no hour.
         if _t(p) > 0:
             hour = hours.setdefault(str(_t(p) // 3600), {})
             hour[word] = hour.get(word, 0) + 1
