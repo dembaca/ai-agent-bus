@@ -7,6 +7,43 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **Every kept state file keyed by the NATS name: plan B piece 14c-1** (#244, RT-6.2
+  step 9, ADR-014). Behind piece 2's switch (`planb.on(2, home)`, off by default; no new
+  switch), the asks, the read watermark, reminders, the gate, the stall and release-notice
+  state, the ask mode, presence, the crown lease, the channel confirmation, the counters
+  (`stats-`), the crown log and the permission log follow `last-`, `threads-` and
+  `unanswered-` to the session's NATS name, and so do the scripts' files (`turn-`,
+  `listen-`, `update-`; `mm_state_key` in `bin/mm-agent-lib.sh`, from `CB_STATE_KEY` in
+  the endpoint file or `state_key` in `/v1/me`). Once the bus has the name the server
+  takes `key-<name>.lock` for its run, copies every kind once and moves the counters
+  (`stats-`, so the session's last part counts them once; never a lock), writes `copied-<name>.env` even
+  without a bot and only then switches the key; a second process with the same name keeps
+  the bot id's key and `bus_info` says why. While a bot id exists the server also keeps
+  `coord-` and `channel-` under it, for a hook of the plugin before. A session without a
+  bot id now keeps state under the name. Session end keeps the marker, so the sweep's day
+  rule removes the name's other files. The latch also writes the key into the endpoint
+  file (`CB_STATE_KEY`), so every hook reads the same one. The locks for one sender per bot
+  (`asks-`, `remind-`, `stats-<bot id>.lock`) stay on the bot id; the server touches a
+  bot-id mirror only while it is its own. Once piece 2 is on, hooks and server must be the
+  same version: an older hook's `presence-<bot id>.env` is not read and its
+  `stats-<bot id>.jsonl` not published, and it may miss the channel confirmation for one
+  turn. Across a restart (every start a new name, `CB_LOGIN_NKEY` stays `ephemeral`) a new
+  name takes over the state of its session's predecessor once that one's lock shows it
+  gone: the marker names the session as `CB_TIE` (Claude Code's, OpenCode's or pi's
+  session id, else the workspace, hashed as the endpoint file's name is) and, with a bot,
+  only a name of the same bot counts; the newest gone one is taken, under its lock, so two
+  starts never both take it; without a bot on the workspace tie this relies on one MCP
+  server per workspace. The predecessor's marker gets `CB_TAKEN_BY`, and the sweep then
+  removes its files by the day rule; a name whose lock is held is never swept. The pi
+  extension passes pi's session id to the server as `PI_SESSION_ID`, which corral's relay
+  carries to the host process; it does not count as the relay's identity, a pi relay is
+  still told apart by its workspace. The counters (`stats-`) are moved, not copied, also
+  on the way back.
+  No nonce, endpoint or session file moves, so no session gets a new name by this.
+  Switch off: every file name is as before. What differs: pi's server is passed
+  `PI_SESSION_ID` (blank without one), and the scripts take a state key in the same two forms
+  as the server (a bot id of 26 `[a-z0-9]`, or a NATS name of 25 `[a-z2-7]`).
+
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads
   `GET <address>/register/v1/release` from the bridge (`https`, or `http` only to a

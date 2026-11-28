@@ -776,6 +776,9 @@ mm_bus_me() {
   [[ "${uid:-}" =~ ^[a-z0-9]{26}$ ]] || return 1
   mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID "$uid"
   mm_env_set CB_MM_BOT_USERNAME MM_BOT_USERNAME "${name:-}"
+  # The kept state's key when it is not the bot id (RT-6.2 step 9): for mm_state_key. A
+  # variable of this process only, never one inherited from the environment.
+  mm_state_key_me="$(jq -r '.state_key // ""' <<<"$CB_BUS_BODY" 2>/dev/null)" || mm_state_key_me=""
   CB_BUS_PROJECT="${project:-0}"
   CB_BUS_CHANNEL="${channel:-0}"
   CB_CROWN_UNTIL="${crown:-0}"
@@ -783,26 +786,48 @@ mm_bus_me() {
   return 0
 }
 
+# The key of this session's kept state (RT-6.2 step 9, plan B piece 14c-1): the NATS
+# name once the MCP server keys its state by it (plan B piece 2 on), as its endpoint
+# file says (CB_STATE_KEY), else its /v1/me answer (state_key, kept by mm_bus_me in
+# mm_state_key_me; an inherited CB_STATE_KEY variable is never read);
+# else the bot id, $1 or CB_MM_BOT_USER_ID. Fails without a key. The one place the
+# scripts take a per-bot state file's key from (tests/hooks/test_state_key_shell.py):
+# with the switch off it is the bot id, as before.
+mm_state_key_me=""
+# The two forms a state key takes, as session_file.key_ok checks them: a bot id
+# (26 [a-z0-9]) or a NATS name (25 lower-case base32). The key names files, so
+# nothing looser: no capitals, no dot, slash, underscore or dash.
+mm_state_key_re='^([a-z0-9]{26}|[a-z2-7]{25})$'
+mm_state_key() {
+  local key="" f
+  if f="$(mm_bus_file 2>/dev/null)"; then key="$(mm_kv "$f" CB_STATE_KEY)"; fi
+  [[ -n "$key" ]] || key="${mm_state_key_me:-}"
+  [[ "$key" =~ $mm_state_key_re ]] || key="${1:-${CB_MM_BOT_USER_ID:-}}"
+  [[ "$key" =~ $mm_state_key_re ]] || return 1
+  printf '%s' "$key"
+}
+
 # Per-turn state of the Stop hook (which checks already ran, the listen window),
-# keyed on the bot so concurrent sessions never share one. The UserPromptSubmit
-# hook removes it: every new turn starts from scratch. Fails when the bot's id is
-# not known — the Stop hook then falls back to its stateless behaviour.
+# keyed on the session's state key (mm_state_key) so concurrent sessions never
+# share one. The UserPromptSubmit hook removes it: every new turn starts from
+# scratch. Fails when no key is known — the Stop hook then falls back to its
+# stateless behaviour.
 mm_turn_state_file() {
-  local uid="${CB_MM_BOT_USER_ID:-}"
-  [[ "$uid" =~ ^[a-z0-9]{26}$ ]] || return 1
-  printf '%s' "$(mm_state_dir)/turn-${uid}.env"
+  mm_bot_state_file turn
 }
 
 # Local state of the presence lease (RT-6.6, kept by the MCP server's lease.py),
-# keyed on the bot like the turn state: presence-<uid>.env (last state and
-# label reported) and coord-<uid>.env (crown lease, pending take, yield after a
-# release).
+# keyed like the turn state (mm_state_key): presence-<key>.env (last state and
+# label reported) and coord-<key>.env (crown lease, pending take, yield after a
+# release); listen-, update- and channel- alike. $2 is a key, a bot id or a
+# NATS name; without it, the session's (mm_state_key).
 mm_bot_state_file() {
-  local kind="$1" uid="${2:-${CB_MM_BOT_USER_ID:-}}"
-  # A bot id, or a NATS name (natsbus.AGENT_RE, the key of the kept state since plan B
-  # piece 2b, RT-6.2); the name's pattern holds the bot id's too. No capitals (two names that
-  # differ in case would share a file on macOS), no dot, no slash.
-  [[ "$uid" =~ ^[a-z0-9][a-z0-9_-]{0,127}$ ]] || return 1
+  local kind="$1" uid="${2:-}"
+  [[ -n "$uid" ]] || uid="$(mm_state_key)" || return 1
+  # A bot id, or a NATS name (the key of the kept state since plan B piece 2b, RT-6.2):
+  # mm_state_key_re. No capitals (two names that differ in case would share a file on
+  # macOS), no dot, no slash.
+  [[ "$uid" =~ $mm_state_key_re ]] || return 1
   printf '%s' "$(mm_state_dir)/${kind}-${uid}.env"
 }
 
@@ -829,8 +854,8 @@ mm_stat() {
   local kind="$1" f kv
   shift || true
   mm_stats_off && return 0
-  [[ "${CB_MM_BOT_USER_ID:-}" =~ ^[a-z0-9]{26}$ ]] || return 0
-  f="$(mm_state_dir)/stats-${CB_MM_BOT_USER_ID}.jsonl"
+  f="$(mm_state_key)" || return 0
+  f="$(mm_state_dir)/stats-${f}.jsonl"
   command -v jq >/dev/null 2>&1 || return 0
   kv="$(printf '%s\n' "$@" | jq -cRn --arg k "$kind" --argjson t "$(date +%s)" '
     [inputs | select(contains("=")) | capture("^(?<k>[^=]+)=(?<v>.*)$")
@@ -1552,7 +1577,7 @@ mm_channel_push() {
     [[ "${CB_BUS_CHANNEL:-0}" == 1 ]]
     return
   fi
-  f="$(mm_bot_state_file channel "${1:-}")" && [[ -f "$f" ]]
+  f="$(mm_bot_state_file channel "$(mm_state_key "${1:-}")")" && [[ -f "$f" ]]
 }
 
 # Lines for eval. With credentials from an fd (the corral host hooks) the token

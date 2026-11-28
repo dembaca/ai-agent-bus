@@ -62,7 +62,7 @@ if ! mm_bus_me; then
   exit 0
 fi
 ME="$CB_MM_BOT_USER_ID"
-LF="$(mm_bot_state_file listen "$ME")" || exit 0
+LF="$(mm_bot_state_file listen "$(mm_state_key "$ME")")" || exit 0
 
 POLL="${CB_LISTEN_POLL_SEC:-15}"
 [[ "$POLL" =~ ^[0-9]+$ && "$POLL" -gt 0 ]] || POLL=15

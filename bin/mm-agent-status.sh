@@ -91,8 +91,9 @@ if [[ -z "$UID_" ]]; then
   UID_="$(jq -r '.id' <<<"$CB_MM_API_BODY")"
 fi
 
-PRES="$(mm_bot_state_file presence "$UID_" 2>/dev/null)" || PRES=""
-COORD="$(mm_bot_state_file coord "$UID_" 2>/dev/null)" || COORD=""
+KEY_="$(mm_state_key "$UID_" 2>/dev/null)" || KEY_=""
+PRES="$(mm_bot_state_file presence "$KEY_" 2>/dev/null)" || PRES=""
+COORD="$(mm_bot_state_file coord "$KEY_" 2>/dev/null)" || COORD=""
 NOW="$(date +%s)"
 UNTIL=$((NOW + $(mm_lease_sec)))
 case "$STATE" in

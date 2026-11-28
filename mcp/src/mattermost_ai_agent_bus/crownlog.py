@@ -39,8 +39,8 @@ _explained = True  # the last loss has its line; a gain arms the next one
 
 def log_path() -> Path | None:
     """`crown-<uid>.log` in the state directory, None without a bot id."""
-    uid = stats.bot_id()
-    return session_file.state_dir() / f"crown-{uid}.log" if uid else None
+    key = session_file.state_key(stats.bot_id())
+    return session_file.state_dir() / f"crown-{key}.log" if key else None
 
 
 def _iso(epoch: float) -> str:

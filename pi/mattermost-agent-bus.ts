@@ -682,14 +682,17 @@ export function secretCommand(env: Env): string | null {
 // looks (RT-6.27 step 1, as RT-6.20 step 2). No channel push: Claude Code's.
 // Its Python environment in the user's cache (venvDir). Its tools are declared
 // to the model ("direct"), not left to codemode.
-export function mcpConfig(root: string, workspace: string, env: Env = {}) {
+// session: the pi session's id (ctx.sessionManager.getSessionId()), as PI_SESSION_ID: the
+// server ties its kept state to it across a restart (RT-6.2 step 9); blank without one, so
+// an inherited value never names another session. It keys no file (RT-6.27 step 1).
+export function mcpConfig(root: string, workspace: string, env: Env = {}, session = "") {
   const secret = secretCommand(env)
   return {
     command: "uv",
     args: ["run", "--locked", "--project", join(root, "mcp"), "mattermost-ai-agent-bus-mcp"],
     // The two settings go under both names, so a child of either version reads
     // them (#169); the server reads CB_ first.
-    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "",
+    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", PI_SESSION_ID: session,
            CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0",
            CB_WORKSPACE: workspace, MM_WORKSPACE: workspace,
            UV_PROJECT_ENVIRONMENT: venvDir(env, root), ...(secret ? { MM_REG_SECRET: secret } : {}) },
@@ -697,6 +700,16 @@ export function mcpConfig(root: string, workspace: string, env: Env = {}) {
     exposure: "direct" as const,
     timeout: MCP_TIMEOUT_SEC,
     description: "AI agent bus: post, reply, wait for events, ask a human (skill ai-agent-bus)",
+  }
+}
+
+// The pi session's id, "" when the context has none (an older pi, a test).
+function sessionId(c: any): string {
+  try {
+    const id = c?.sessionManager?.getSessionId?.()
+    return typeof id === "string" ? id.trim().slice(0, 256) : ""
+  } catch {
+    return ""
   }
 }
 
@@ -968,7 +981,7 @@ export function create(pi: ExtensionAPI, deps: Deps = {}) {
     instructions = ""
     if (root) {
       try {
-        pi.registerMcpServer(SERVER, mcpConfig(root, dir, env))
+        pi.registerMcpServer(SERVER, mcpConfig(root, dir, env, sessionId(c)))
       } catch (e) {
         notify(`${SERVER}: MCP server not registered: ${e instanceof Error ? e.message : String(e)}`)
       }

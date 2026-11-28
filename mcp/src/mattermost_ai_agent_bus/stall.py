@@ -262,7 +262,7 @@ _KEYS = ("QUIET", "WAKES", "NEXT", "FROM")
 
 
 def _path(uid: str) -> Path:
-    return session_file.state_dir() / f"stall-{uid}.env"
+    return session_file.state_dir() / f"stall-{session_file.state_key(uid)}.env"
 
 
 def _raw(uid: str) -> dict[str, str]:
