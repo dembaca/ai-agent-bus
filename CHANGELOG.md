@@ -146,6 +146,29 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **Plan B piece 5b: a session reads people's history through the bridge**
+  (#244, ADR-014 phase 5, RT-6.42 step 11). With piece 5 switched on for a home
+  over NATS, `channel_posts`, `list_recent`, `posts_after`, a person's `thread`
+  and `reactions` read that channel's people from the bridge's history answer
+  (`<req>.history.<agent>`) instead of Mattermost. A person's post keeps its
+  Mattermost id and is authored `hu:<anchor>`, with the account record the
+  bridge answers beside it; a stale record still names the person but approves
+  nothing, as a live event's would. An answer's `bot` posts are the Mattermost
+  ones (an ask), its reactions carry their senders' anchors and records, and
+  `more`/`next` pages the read forward, with the posts deduped by id;
+  `posts_after` honours the caller's `max_pages`, a read still `more` at the cap
+  logs that it carries the oldest window, and a cursor older than the bridge's
+  14 days is clamped to its bound. A newest-N read without a cursor starts one
+  day back and widens to three, then fourteen, only while it has too few, so a
+  busy home's newest posts are not served as the oldest window. The unread
+  watermark's copy pass reads the same history answer, so its mark can pass the
+  bridge's copies. Only a bot post whose author check passes is a copy, so a
+  forged `<prefix>nats_id` re-roots nothing, and a checked copy's reactions count
+  on the NATS post. History only adds to `unapproved`, never lifts a live
+  judgement; a person's file read makes no Mattermost call for a switched
+  channel. A failed request reads nothing and never falls back to Mattermost;
+  off, nothing changes. The NATS memory is merged as before.
+
 - **Plan B piece 11: people's events where no bridge signal is fresh, from NATS
   alone, behind a switch that is off** (#244, ADR-014 phase 5, RT-6.42 step 12).
   With the channel's switch `planb.on(11, channel)` on, a session takes the
