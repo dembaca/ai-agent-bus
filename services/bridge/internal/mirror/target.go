@@ -1,6 +1,6 @@
 package mirror
 
-// Plan B piece 7 (RT-6.42 step 11, ADR-014 phase 5): an agent's reply in a
+// Plan B piece 7 (RT-6.42 step 12, ADR-014 phase 5): an agent's reply in a
 // person's Mattermost thread, or its reaction on a Mattermost post, that it
 // sent over NATS naming the post by its Mattermost id (`mm_root`, `mm_ref`).
 // With the piece switched on for the home, the bridge reads the post with

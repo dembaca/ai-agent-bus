@@ -11,7 +11,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/message"
 )
 
-// RT-6.42 step 11, plan B piece 7: an agent's reply in a person's Mattermost
+// RT-6.42 step 12, plan B piece 7: an agent's reply in a person's Mattermost
 // thread and its reaction on a Mattermost post, named by the post's id, are
 // written only after the bridge read the post and found it in the home.
 

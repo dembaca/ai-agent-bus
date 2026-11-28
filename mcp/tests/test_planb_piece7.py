@@ -1,4 +1,4 @@
-"""RT-6.42 step 11 (ADR-014 phase 5, plan B piece 7): in a channel over NATS a reply in a person's
+"""RT-6.42 step 12 (ADR-014 phase 5, plan B piece 7): in a channel over NATS a reply in a person's
 Mattermost thread and a reaction on a Mattermost post go over NATS, naming the post by its
 Mattermost id (`mm_root`, `mm_ref`); the central bridge checks the post is in that channel and
 writes the reply or reaction there (services/bridge/internal/mirror/target.go). The session

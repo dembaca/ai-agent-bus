@@ -107,8 +107,9 @@ type Bridge struct {
 	}
 	// Switches are plan B's per channel (presence.Switches): in which homes
 	// piece 4 is on (nil: in none, and every home carries by the account record
-	// alone, as before #266), and which pieces the signal names, so far piece 6
-	// (asks, RT-6.11 step 7, the mirror's ask.go; nil names none).
+	// alone, as before #266), and which pieces the signal names: piece 6
+	// (asks, RT-6.11 step 7, ask.go) and piece 7 (replies and reactions to a
+	// person's post, RT-6.42 step 12, target.go); nil names none.
 	Switches Switches
 	NATS     Publisher
 	Store    Store
@@ -308,7 +309,7 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 
 // pieces are the plan B pieces whose bridge half runs for the home, each
 // while its switch is on there: piece 6 (asks, RT-6.11 step 7) and piece 7
-// (replies and reactions to a person's post, RT-6.42 step 11).
+// (replies and reactions to a person's post, RT-6.42 step 12).
 func (b *Bridge) pieces(home string) []int {
 	if b.Switches == nil {
 		return nil

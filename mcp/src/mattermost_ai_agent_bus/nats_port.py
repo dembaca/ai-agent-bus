@@ -26,7 +26,7 @@ piece 6 on in the home (`planb.on(6, home)`, RT-6.11) the ask goes over NATS too
 alternatives and mentioned username as the flat props `ask_card`, `ask_answers` and `ask_to`
 (ask_wire), and the bridge posts it for people with that one mention; its reminders carry
 `ask_to` alike, and people's answers come back as their events (RT-6.42). With plan B
-piece 7 on in a channel (`planb.on(7, channel)`, RT-6.42 step 11) a reply in a person's
+piece 7 on in a channel (`planb.on(7, channel)`, RT-6.42 step 12) a reply in a person's
 Mattermost thread and a reaction on a Mattermost post go over NATS too, naming the post by its
 Mattermost id (`mm_root`, `mm_ref`), only while the bridge's fresh signal names piece 7; the
 bridge checks the post is in that channel and writes the reply or reaction there. The
@@ -161,7 +161,7 @@ COPY_READ_CAP = 1000  # Mattermost's most posts in one read after a time: a read
 COPY_SETTLE_SEC = 5.0  # a copy younger than this is not passed by the count (a replica may lag)
 ASK_AT_SLACK_SEC = 2.0  # an open ask's time against its post's in the memory (plan B piece 6)
 ASK_PIECE = 6  # plan B's piece of asks to humans and their answers (RT-6.11 step 7)
-REPLY_PIECE = 7  # plan B's piece of replies and reactions to a person's post (RT-6.42 step 11)
+REPLY_PIECE = 7  # plan B's piece of replies and reactions to a person's post (RT-6.42 step 12)
 MM_WHERE_MAX = 10_000  # Mattermost posts whose channel the session remembers (plan B piece 7)
 MM_REACTORS_MAX = 1000  # senders per channel of reactions on Mattermost posts (plan B piece 7)
 PERSON = "hu:"  # the author id of a person over NATS: PERSON + anchor (RT-6.42)
@@ -1458,7 +1458,7 @@ class NatsPort:
                                          root_id=root_id, props=props, file_ids=file_ids)
         kind = a2a.kind_of({"props": props or {}, "message": message})
         if root_id and parse_post_id(root_id) is None and not file_ids and self._piece7(name):
-            # Plan B piece 7 (RT-6.42 step 11): the reply goes over NATS naming the Mattermost
+            # Plan B piece 7 (RT-6.42 step 12): the reply goes over NATS naming the Mattermost
             # post, and the bridge posts it in that thread. Over NATS or not at all.
             return await self._reply_mm(name, message, root_id, kind, props)
         if root_id and parse_post_id(root_id) is None:
@@ -1497,7 +1497,7 @@ class NatsPort:
 
     async def _reply_mm(self, name: str, message: str, root_id: str, kind: str | None,
                         props: dict[str, Any] | None) -> Post:
-        """Plan B piece 7 (RT-6.42 step 11): a reply in the thread of the Mattermost post
+        """Plan B piece 7 (RT-6.42 step 12): a reply in the thread of the Mattermost post
         `root_id` (a person's, or this session's own ask from before the switch) as a NATS post
         with `mm_root`. Only to a bridge whose fresh signal names piece 7 for the channel; the
         bridge checks the post is in that channel and makes every mention plain but a reminder's
@@ -1646,7 +1646,7 @@ class NatsPort:
                                     "answer the agent with a DM (post_message to=); nothing sent")
             ch = self._mm_channel(post_id)
             if self._piece7(ch):
-                # Plan B piece 7 (RT-6.42 step 11): over NATS naming the Mattermost post; the
+                # Plan B piece 7 (RT-6.42 step 12): over NATS naming the Mattermost post; the
                 # bridge puts it on there. Over NATS or not at all.
                 await self._react_mm(ch, post_id, emoji)
                 return
@@ -1661,7 +1661,7 @@ class NatsPort:
         """The NATS channel a Mattermost post is in, as far as the session saw it (a person's post
         over NATS, a post from Mattermost); "" for a channel not over NATS; the home when the
         session never saw it (its own ask from before the switch is there). The bridge checks the
-        post is in the channel the reaction names, and refuses it otherwise (RT-6.42 step 11)."""
+        post is in the channel the reaction names, and refuses it otherwise (RT-6.42 step 12)."""
         return self._mm_where.get(post_id, self._s.home)
 
     def _saw_mm(self, post_id: str, channel: str) -> None:
@@ -1681,7 +1681,7 @@ class NatsPort:
 
     async def remove_reaction(self, post_id: str, emoji: str) -> None:
         """Take the bot's reaction off a NATS post (an unreaction: only its own); with plan B
-        piece 7 on, also off a Mattermost post (RT-6.42 step 11)."""
+        piece 7 on, also off a Mattermost post (RT-6.42 step 12)."""
         got = parse_post_id(post_id)
         if got is None:
             if parse_dm_id(post_id) is not None:
@@ -1760,7 +1760,7 @@ class NatsPort:
             else:
                 root = post_id(ch, m.root)
         elif m.mm_root is not None and ch != DM_SINCE and self._piece7(ch):
-            # Plan B piece 7 (RT-6.42 step 11): an agent's reply in a person's Mattermost thread;
+            # Plan B piece 7 (RT-6.42 step 12): an agent's reply in a person's Mattermost thread;
             # with the piece off it reads as before, top-level.
             root = m.mm_root
         prefix = self._s.props_prefix
@@ -1844,7 +1844,7 @@ class NatsPort:
                      emoji_name=m.emoji, create_at=ms), channel_id))
 
     def _on_mm_reaction(self, ev: Event, channel_id: str) -> None:
-        """Plan B piece 7 (RT-6.42 step 11): an agent's reaction on a Mattermost post (a
+        """Plan B piece 7 (RT-6.42 step 12): an agent's reaction on a Mattermost post (a
         person's), as the reaction event it was on Mattermost, by the sender's NATS name. Not kept
         for the reads (Mattermost has the bridge's copy of it); dropped with the piece off and on a
         direct message, as a reaction without `ref` was before."""
@@ -2520,7 +2520,7 @@ class NatsPort:
 
     def _piece7(self, channel: str) -> bool:
         """Whether replies to and reactions on people's posts in `channel`, one of this session's
-        NATS channels, go over NATS (plan B piece 7, RT-6.42 step 11): `planb.on(7, channel)`. A
+        NATS channels, go over NATS (plan B piece 7, RT-6.42 step 12): `planb.on(7, channel)`. A
         switch that cannot be read counts as off: the old path."""
         try:
             return bool(channel) and channel in self._channels() and bool(planb.on(REPLY_PIECE, channel))
@@ -2835,9 +2835,9 @@ class NatsPort:
         not answer, NatsPortError without a bus."""
         from . import requests  # only piece 9 asks the bridge from here
 
-        answer = await requests.request(self._require(), "header",  # type: ignore[arg-type]
+        result = await requests.request(self._require(), "header",  # type: ignore[arg-type]
                                         {"channel": home, "line": line})
-        result = answer.get("result")
+        # request() returns the answer's result (one part), not the envelope
         return isinstance(result, dict) and result.get("changed") is True
 
     async def whereabouts(self, channel_id: str, name: str) -> str | None:

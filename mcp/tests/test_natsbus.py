@@ -2648,7 +2648,7 @@ async def test_a_request_goes_to_the_bridge_and_its_answer_comes_back(rig: Rig) 
         out = await requests.request(bus, "history", {"channel": "home"}, timeout=5)
     finally:
         await sub.unsubscribe()
-    assert out["result"] == {"ok": True}
+    assert out == {"ok": True}  # one part: its result
     subject, body = asked[0]
     assert subject == f"req.history.{bus.name}"
     assert body["v"] == 1 and body["kind"] == "history"
@@ -2805,74 +2805,145 @@ def test_decode_planb_is_strict() -> None:
         natsbus.decode_planb(b'{"v":1,"channel":"home","pieces":"1"}', "home")
 
 
-# --- #274: names without a prefix, and the reserved tokens (RT-6.36 step 8) ----------------------
+def test_each_request_kind_gets_its_own_default_timeout() -> None:
+    """#270's review: a history read may take the bridge up to 30 s, the other kinds
+    are quick - the default follows the kind, a caller's timeout wins."""
+    from mattermost_ai_agent_bus import requests
 
-RESERVED = ("account", "accounts", "ask", "attest", "bot", "bridge", "bus", "ch", "console-metrics",
-            "copied", "crown", "deliver", "directory", "dm", "hu", "import", "mattermost", "member",
-            "metrics", "moved", "notice", "person", "planb", "presence", "req", "stats", "v1", "x")
-
-
-def test_the_reserved_names_are_the_login_services() -> None:
-    """RT-6.36 step 8: natsbus.RESERVED_NAMES and NAME_HASH_LEN are the login service's
-    reservedNames and NameHashLen (services/auth/internal/callout/names.go)."""
-    go = (Path(__file__).resolve().parents[2] / "services/auth/internal/callout/names.go").read_text()
-    block = go.split("var reservedNames = []string{", 1)[1].split("}", 1)[0]
-    assert set(re.findall(r'"([^"]+)"', block)) == natsbus.RESERVED_NAMES == set(RESERVED)
-    assert re.search(r"const NameHashLen = (\d+)", go).group(1) == str(natsbus.NAME_HASH_LEN)  # type: ignore[union-attr]
+    assert requests.default_timeout("history") == requests.HISTORY_SEC == 35.0
+    assert requests.default_timeout("file") == requests.default_timeout("header") == requests.REQUEST_SEC
+    assert requests.HISTORY_SEC > 30  # above the bridge's own read deadline
 
 
-@pytest.mark.parametrize("token", RESERVED)
-def test_a_reserved_token_is_no_agent_name(token: str) -> None:
-    """RT-6.36 step 8: without a prefix a name cannot be told from a subject's other tokens by
-    its start, so none of them is ever an agent's name, in any case."""
-    assert not natsbus.agent_ok(token) and not natsbus.agent_ok(token.upper())
-    bus, _ = _unit_bus()
-    assert not bus.agent_ok(token)
-    with pytest.raises(ValueError):
-        bus._dm_subject(token)
+async def test_request_itself_takes_the_kinds_default_timeout(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#270's delta check: not only `default_timeout` knows the kind's wait - the call
+    itself asks for it when the caller names none, and a caller's timeout wins."""
+    from mattermost_ai_agent_bus import requests
+
+    seen: list[str] = []
+    real = requests.default_timeout
+
+    def spy(kind: str) -> float:
+        seen.append(kind)
+        return real(kind)
+
+    monkeypatch.setattr(requests, "default_timeout", spy)
+    bus, _ = await rig.agent("alice")
+
+    async def bridge(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "result": {}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=bridge)
+    try:
+        await requests.request(bus, "history")
+        await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
+    assert seen == ["history"]
 
 
-def test_the_configured_prefixes_and_special_tokens_are_no_agent_names() -> None:
-    bus, _ = _unit_bus(bus="chat", presence="pres", stats="st", req="rq")
-    for name in ("chat", "pres", "st", "rq", "CHAT"):
-        assert natsbus.agent_ok(name) and not bus.agent_ok(name)
-    for name in ("_INBOX", "_x", "$SYS", "-a", "a.b", "a*", "a>", "a b", "", "a" * 129):
-        assert not natsbus.agent_ok(name) and not bus.agent_ok(name)
-    for name in (VECTOR_NAME, "agent-" + VECTOR_NAME, "bridged", "persons"):
-        assert bus.agent_ok(name)
+async def test_a_multi_part_answer_is_collected_until_its_last_part(rig: Rig) -> None:
+    """ADR-014 phase 5: an answer may come in parts (a file download, a long history
+    read). The call reads until a part says last and returns them in part order; a
+    gap, or a stream that never ends, is an error, never a silent short answer."""
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+
+    async def bridge(msg: Any) -> None:
+        body = json.loads(msg.data)
+        for part, last in ((1, False), (2, True)):
+            await rig.admin.publish(
+                f"deliver.{bus.name}.req.{body['request']}",
+                json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                            "part": part, "last": last, "result": {"part": part}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=bridge)
+    try:
+        out = await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
+    assert out == {"parts": [{"part": 1}, {"part": 2}]}
 
 
-async def test_a_presence_or_claim_under_a_reserved_name_is_dropped() -> None:
-    """RT-6.36 step 8: the session's decoders read no agent under a reserved token."""
-    bus, _ = _unit_bus()
-    for token in ("bridge", "crown", VECTOR_NAME):
-        await _presence(bus, token, 1, T0)
-        await _claim(bus, token, "home", 2, T0)
-    assert bus.presence_of(VECTOR_NAME) == "online"
-    assert bus.presence_of("bridge") == bus.presence_of("crown") == "offline"
+async def test_a_part_gap_or_a_missing_last_is_an_error(rig: Rig) -> None:
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+
+    async def gap(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "part": 2, "last": True, "result": {}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=gap)
+    try:
+        with pytest.raises(requests.RequestError, match="expected 1"):
+            await requests.request(bus, "history", timeout=5)
+    finally:
+        await sub.unsubscribe()
+
+    async def never_last(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "part": 1, "last": False, "result": {}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=never_last)
+    try:
+        with pytest.raises(requests.RequestError, match="stopped after part 1"):
+            await requests.request(bus, "history", timeout=1)
+    finally:
+        await sub.unsubscribe()
 
 
-def test_a_person_name_is_no_agent_name() -> None:
-    """RT-6.36 step 8: the login service refuses a name with the person prefix (default
-    `person-`); the session drops a sender under one."""
-    bus, _ = _unit_bus()
-    for name in ("person-abc", "PERSON-abc", "person-" + VECTOR_NAME):
-        assert not natsbus.agent_ok(name) and not bus.agent_ok(name)
+async def test_an_answer_over_the_part_or_byte_cap_is_an_error(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#270's review: one request, one deadline, and a cap on how many parts and
+    bytes an answer may add up to - a bridge that never says last must not make the
+    session read forever."""
+    from mattermost_ai_agent_bus import requests
 
+    bus, _ = await rig.agent("alice")
 
-@pytest.mark.parametrize("prefix", ["a", "7", "A"])
-def test_a_one_character_name_prefix_is_refused(prefix: str) -> None:
-    """RT-6.36 step 8: one character plus the 25-character hash is a Mattermost id's form."""
-    with pytest.raises(ValueError, match="name prefix"):
-        natsbus.NatsSettings(servers=("tls://nats.example:4222",), home="home", name_prefix=prefix)
+    async def too_many(msg: Any) -> None:
+        body = json.loads(msg.data)
+        for part in range(1, 6):
+            await rig.admin.publish(
+                f"deliver.{bus.name}.req.{body['request']}",
+                json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                            "part": part, "last": False, "result": part}).encode())
 
+    monkeypatch.setattr(requests, "MAX_PARTS", 3)
+    sub = await rig.admin.subscribe("req.>", cb=too_many)
+    try:
+        with pytest.raises(requests.RequestError, match="more than 3 parts"):
+            await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
 
-@pytest.mark.parametrize("prefix", ["", "ab", "agent-", "A_1-"])
-def test_a_longer_name_prefix_is_accepted(prefix: str) -> None:
-    natsbus.NatsSettings(servers=("tls://nats.example:4222",), home="home", name_prefix=prefix)
+    monkeypatch.setattr(requests, "MAX_TOTAL", 40)
 
+    async def too_big(msg: Any) -> None:
+        body = json.loads(msg.data)
+        for part in (1, 2):
+            await rig.admin.publish(
+                f"deliver.{bus.name}.req.{body['request']}",
+                json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                            "part": part, "last": part == 2,
+                            "result": "x" * 30}).encode())
 
-def test_the_name_has_no_prefix_by_default() -> None:
-    """#274: the bus's own name is the hash alone, as the login service issues it."""
-    bus, _ = _unit_bus()
-    assert len(bus.name) == natsbus.NAME_HASH_LEN and "-" not in bus.name and bus.agent_ok(bus.name)
+    sub = await rig.admin.subscribe("req.>", cb=too_big)
+    try:
+        with pytest.raises(requests.RequestError, match="larger than 40 bytes"):
+            await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()

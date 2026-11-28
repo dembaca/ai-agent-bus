@@ -42,7 +42,7 @@ type Msg struct {
 	Ref   *uint64 // reaction: the stream sequence of the post
 	Emoji string  // reaction
 	Props map[string]any
-	// Plan B piece 7 (RT-6.42 step 11): a Mattermost post named by its id
+	// Plan B piece 7 (RT-6.42 step 12): a Mattermost post named by its id
 	// instead of a sequence, never beside Root or Ref.
 	MMRoot string // post: the Mattermost post it replies to
 	MMRef  string // reaction: the Mattermost post it reacts to

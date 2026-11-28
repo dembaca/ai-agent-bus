@@ -47,7 +47,7 @@ func TestSenderIsTheLastToken(t *testing.T) {
 	}
 }
 
-// RT-6.42 step 11, plan B piece 7: a post may name a Mattermost post as its
+// RT-6.42 step 12, plan B piece 7: a post may name a Mattermost post as its
 // root and a reaction the Mattermost post it reacts to, never beside a
 // sequence, and only by a Mattermost id.
 func TestDecodeAMattermostPostNamedByItsId(t *testing.T) {

@@ -1,6 +1,7 @@
 // Package mm is the bridge's Mattermost client: one bot, the pilot's account,
-// posts what came over NATS into a home and reacts there. It never reads posts
-// for the mirror (one way, NATS to Mattermost).
+// posts what came over NATS into a home and reacts there. The mirror never
+// reads posts (one way, NATS to Mattermost); the history read does, with the
+// agent's own bot.
 package mm
 
 import (
@@ -235,7 +236,7 @@ func (c *Client) Member(ctx context.Context, channelID, userID string) (bool, er
 }
 
 // Target reads one post by id and its author, for plan B piece 7 (RT-6.42
-// step 11, mirror.Targets): the bridge checks it before an agent's reply or
+// step 12, mirror.Targets): the bridge checks it before an agent's reply or
 // reaction naming it is written. A refusal keeps its status (StatusError); an
 // answer that does not decode, or names no post or author, counts as no
 // such post (404), so it is skipped rather than retried for ever.
@@ -322,6 +323,52 @@ type postJSON struct {
 	} `json:"metadata"`
 }
 
+// postList is Mattermost's PostList on the wire: the order and the posts by
+// id, as PostsSince and ThreadPage read it; has_next says a thread page is not
+// the thread's end.
+type postList struct {
+	Order   []string            `json:"order"`
+	Posts   map[string]postJSON `json:"posts"`
+	HasNext bool                `json:"has_next"`
+}
+
+// posts gives the list's posts sorted by create_at ascending, the metadata,
+// the props and the files as Mattermost sent them.
+func (l postList) posts() []Post {
+	out := make([]Post, 0, len(l.Order))
+	for _, id := range l.Order {
+		raw, ok := l.Posts[id]
+		if !ok {
+			continue
+		}
+		var reactions []Reaction
+		if raw.Metadata != nil {
+			for _, re := range raw.Metadata.Reactions {
+				reactions = append(reactions, Reaction{UserID: re.UserID,
+					EmojiName: re.EmojiName, CreateAt: re.CreateAt})
+			}
+		}
+		out = append(out, Post{
+			Reactions:   reactions,
+			HasMetadata: raw.Metadata != nil,
+			ID:          raw.ID,
+			UserID:      raw.UserID,
+			ChannelID:   raw.ChannelID,
+			RootID:      raw.RootID,
+			Type:        raw.Type,
+			Props:       raw.Props,
+			FileCount:   len(raw.FileIDs),
+			CreateAt:    raw.CreateAt,
+			UpdateAt:    raw.UpdateAt,
+			EditAt:      raw.EditAt,
+			DeleteAt:    raw.DeleteAt,
+			Message:     raw.Message,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreateAt < out[j].CreateAt })
+	return out
+}
+
 // PostsSince reads a channel's posts from since on, for the catch-up
 // after a WebSocket drop: mmws.Reconnected's hint goes here. Mattermost's
 // `since` answers by update_at alone (sqlstore getPostsSince: no paging,
@@ -334,44 +381,13 @@ type postJSON struct {
 // deleted post is never carried again. The posts come sorted by
 // create_at ascending.
 func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) ([]Post, error) {
-	var list struct {
-		Order []string            `json:"order"`
-		Posts map[string]postJSON `json:"posts"`
-	}
+	var list postList
 	path := "/api/v4/channels/" + url.PathEscape(channelID) +
 		"/posts?since=" + strconv.FormatInt(since, 10)
 	if err := c.doLimit(ctx, "GET", path, nil, &list, catchUpCap); err != nil {
 		return nil, fmt.Errorf("mattermost: channel %q: %w", channelID, err)
 	}
-	out := make([]Post, 0, len(list.Order))
-	for _, id := range list.Order {
-		if raw, ok := list.Posts[id]; ok {
-			var reactions []Reaction
-			if raw.Metadata != nil {
-				for _, re := range raw.Metadata.Reactions {
-					reactions = append(reactions, Reaction{UserID: re.UserID,
-						EmojiName: re.EmojiName, CreateAt: re.CreateAt})
-				}
-			}
-			out = append(out, Post{
-				Reactions:   reactions,
-				HasMetadata: raw.Metadata != nil,
-				ID:          raw.ID,
-				UserID:      raw.UserID,
-				ChannelID:   raw.ChannelID,
-				RootID:      raw.RootID,
-				Type:        raw.Type,
-				Props:       raw.Props,
-				FileCount:   len(raw.FileIDs),
-				CreateAt:    raw.CreateAt,
-				UpdateAt:    raw.UpdateAt,
-				EditAt:      raw.EditAt,
-				DeleteAt:    raw.DeleteAt,
-				Message:     raw.Message,
-			})
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].CreateAt < out[j].CreateAt })
+	out := list.posts()
 	if len(out) >= maxSincePosts {
 		// The read cannot say whether it was cut at the limit, and the
 		// server's LIMIT has no ORDER BY, so which posts sat behind the
@@ -387,6 +403,124 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 // maxSincePosts is Mattermost's own page cap for getPostsSince: the read
 // is silently cut there, so the count names the cut.
 const maxSincePosts = 1000
+
+// PageSize is one page of a channel read: Mattermost's own cap for a page.
+const PageSize = 200
+
+// maxReadPages bounds one channel read: 100 pages of 200 posts.
+const maxReadPages = 100
+
+// MaxReadPosts is the most posts one channel read walks. A window with more is
+// refused, never answered in part: an answer cut at the newest side would lose
+// the posts between.
+const MaxReadPosts = PageSize * maxReadPages
+
+// ErrTooManyPosts says a channel read walked its page bound without reaching
+// the since it was given: the caller asks from a later since.
+var ErrTooManyPosts = errors.New("mattermost: the channel has more posts in that time than one read walks")
+
+// ChannelPage reads one page of a channel's posts, newest first, page counted
+// from 0, at most perPage posts (PageSize at most). The posts come sorted by
+// create_at ascending, with the same fields PostsSince carries. It filters
+// nothing: the history read walks the pages and decides (PostsFrom).
+func (c *Client) ChannelPage(ctx context.Context, channelID string, page, perPage int) ([]Post, error) {
+	if perPage <= 0 || perPage > PageSize {
+		perPage = PageSize
+	}
+	if page < 0 {
+		page = 0
+	}
+	var list postList
+	path := "/api/v4/channels/" + url.PathEscape(channelID) + "/posts?page=" + strconv.Itoa(page) +
+		"&per_page=" + strconv.Itoa(perPage)
+	if err := c.doLimit(ctx, "GET", path, nil, &list, catchUpCap); err != nil {
+		return nil, fmt.Errorf("mattermost: channel %q: %w", channelID, err)
+	}
+	return list.posts(), nil
+}
+
+// PostsFrom reads a channel's posts created at or after since, oldest first,
+// at most limit of them; more says posts at or after since remain past those.
+// A run of posts with one create_at is carried whole, over the limit, so the
+// caller's cursor (the last post's create_at plus one, exclusive) never splits
+// a run and walks it twice. It pages with
+// page/per_page from the newest post back, never with `since` alone: that
+// answer is cut at a thousand posts in no set order (sqlstore getPostsSince:
+// no paging, LIMIT 1000), so a busy channel lost its newest. The walk ends at
+// the first page that holds a post before since, or at the channel's oldest
+// post; only the oldest limit posts from since on are kept meanwhile (each page
+// is newer than the one after it), so the answer's cursor walks forward. A
+// window with more posts than MaxReadPosts is ErrTooManyPosts.
+func (c *Client) PostsFrom(ctx context.Context, channelID string, since int64, limit int) ([]Post, bool, error) {
+	if limit <= 0 {
+		limit = PageSize
+	}
+	var (
+		oldest []Post // ascending, at most limit: the oldest posts from since on
+		more   bool
+	)
+	for page := 0; page < maxReadPages; page++ {
+		posts, err := c.ChannelPage(ctx, channelID, page, PageSize)
+		if err != nil {
+			return nil, false, err
+		}
+		reached := len(posts) < PageSize
+		keep := make([]Post, 0, len(posts))
+		for _, post := range posts { // ascending within the page
+			if post.CreateAt < since {
+				reached = true
+				continue // the page's older part: nothing of the window
+			}
+			keep = append(keep, post)
+		}
+		if len(keep) > 0 {
+			oldest = append(keep, oldest...) // the page is older than what came before
+			if len(oldest) > limit {
+				// Never cut inside a run of equal create_at: the cursor goes on
+				// from the last post read, and a run a cut split would be read
+				// again from the same create_at for ever (Fable's review of #270).
+				end := limit
+				for end < len(oldest) && oldest[end].CreateAt == oldest[limit-1].CreateAt {
+					end++
+				}
+				oldest, more = oldest[:end], true
+			}
+		}
+		if reached {
+			return oldest, more, nil
+		}
+	}
+	return nil, false, fmt.Errorf("%w: %d pages of %d", ErrTooManyPosts, maxReadPages, PageSize)
+}
+
+// ThreadCap is the most posts one thread page asks for: Mattermost's own page
+// cap for a post list.
+const ThreadCap = 200
+
+// ThreadPage reads one page of a post's thread: the root and its replies,
+// oldest first, at most perPage posts (ThreadCap at most). fromPost and
+// fromCreateAt (both or neither) go on from the last post of an earlier page,
+// the posts newer than that one; hasNext says the thread goes on past the page.
+// The fields are PostsSince's: metadata and the reactions it holds, the props,
+// the files, the create, update, edit and delete marks. It never filters: the
+// caller decides what of the thread it answers.
+func (c *Client) ThreadPage(ctx context.Context, postID, fromPost string, fromCreateAt int64,
+	perPage int) ([]Post, bool, error) {
+	if perPage <= 0 || perPage > ThreadCap {
+		perPage = ThreadCap
+	}
+	var list postList
+	path := "/api/v4/posts/" + url.PathEscape(postID) + "/thread?perPage=" + strconv.Itoa(perPage) +
+		"&direction=down"
+	if fromPost != "" {
+		path += "&fromPost=" + url.PathEscape(fromPost) +
+			"&fromCreateAt=" + strconv.FormatInt(fromCreateAt, 10)
+	}
+	if err := c.doLimit(ctx, "GET", path, nil, &list, catchUpCap); err != nil {
+		return nil, false, fmt.Errorf("mattermost: thread of %q: %w", postID, err)
+	}
+	return list.posts(), list.HasNext, nil
+}
 
 // Create posts text in channelID, as a reply to rootID when that is set.
 func (c *Client) Create(ctx context.Context, channelID, text, rootID string,

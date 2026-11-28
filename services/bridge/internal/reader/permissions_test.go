@@ -461,12 +461,14 @@ func documentedBridgeRights(t *testing.T, home string) (publish, subscribe []str
 			list[j] = strings.ReplaceAll(list[j], "<HOME>", home)
 		}
 	}
-	// and it stays narrow: no consumer API of its own but the create of its
-	// account records' consumer (its filter fixed), no direct get, no whole-stream publish, no bus subscribe.
+	// and it stays narrow: no consumer API of its own but the create of its own
+	// consumers (each filter fixed), no direct get, no whole-stream publish, no
+	// bus subscribe.
 	for _, subject := range publish {
 		if strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE") &&
 			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+inbound.AccountsConsumer+"."+inbound.AccountsFilter &&
 			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+presence.PlanBConsumer+"."+presence.PlanBFilter &&
+			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+presence.MembersConsumer+"."+presence.MembersFilter &&
 			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+presence.ClaimsConsumer+"."+presence.ClaimsFilter {
 			t.Errorf("the bridge may create consumers by %s", subject)
 		}

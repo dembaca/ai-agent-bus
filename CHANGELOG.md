@@ -122,7 +122,7 @@ before 0.5.0 are described in the git history.
   members, standing, holder and why nobody stands.
 
 - **Plan B piece 7: replies and reactions to a person's post over NATS, behind a
-  switch that is off** (#244, ADR-014 phase 5, RT-6.42 step 11). With the piece's
+  switch that is off** (#244, ADR-014 phase 5, RT-6.42 step 12). With the piece's
   switch on for a channel over NATS (`planb.on(7, channel)`, off by default), a
   reply in a person's Mattermost thread and a reaction on a Mattermost post, or its
   removal, go over NATS naming the post by its Mattermost id (the new optional keys
@@ -228,7 +228,10 @@ before 0.5.0 are described in the git history.
   marker, off its receive loop, under a per-kind size limit and a per-agent rate
   limit, with every logged value truncated. The MCP server gets
   `requests.request(kind, payload, timeout)` in a module of its own, with its prefix
-  as a setting beside the bus's, presence's and STATS's. The bridge user's NATS
+  as a setting beside the bus's, presence's and STATS's; it reads an answer in parts
+  (`part`, `last`) until the last one under one deadline, so a file download or a
+  long history read arrives whole, with caps on the parts and bytes an answer may
+  add up to; a history read waits 35 s, above the bridge's 30 s. The bridge user's NATS
   rights (subscribe `<req>.>`, publish `deliver.*.req.*`) are in the example
   configuration and pinned by its test; an image rolled out before the lab's
   configuration grants them keeps running - people's posts still go onto NATS,
@@ -237,21 +240,50 @@ before 0.5.0 are described in the git history.
   subscribe once a minute with one Error line, naming it in `/healthz` as
   `requests: <error>` (the probe stays 200). No stream covers either subject,
   so nothing is kept: a lost message fails the request, and the caller gets an
-  error, never a silent success. Nothing of the pieces is built; the scaffold
+  error, never a silent success. The pieces are built one by one; the scaffold
   and the rights on both sides run against a real nats-server.
 
-- **The hello's home in the login service's attestation** (#255, RT-6.41). The
-  record now states `home`: the hello's home as the grant took it - a channel
+- **Plan B piecThe 5a: phellople's history, the bridge's side** (#244, ADR-014 phase 5,
+  RT-6.42 step 11). A session asks on `<req>.history.<agent>` for what people wrote
+  while it was away: `{"channel": "<channel token>", "since": <epoch ms>}` or a
+  Mattermost root as `"thread"`, with an optional `limit` of 1 to 200 posts. The
+  bridge answers from Mattermost with that agent's own bridge bot, never the bridge
+  bot, only in a channel the agent announced a membership of within 7 h (just over
+  the 6 h renewal, so a revoked membership opens no read for longer; a tombstone at
+  a revocation is a later login-service piece; else `not a channel of that agent`)
+  and only where piece 5 is switched on (else `piece 5 is off in <channel>`), never
+  reading another agent's channel. It never joins the bot to the channel: one that
+  is not a member there answers `the agent's bot is not in <channel>`. One read per
+  agent runs at a time; a second meanwhile answers `busy: a history read for this
+  agent is already running, ask again`. A `since` older than 14 days is refused, so
+  no read walks the whole channel. The channel read pages Mattermost's posts with
+  `page`/`per_page` (200 a page) from the newest back to `since`, never with `since`
+  alone, whose answer Mattermost cuts at a thousand posts in no set order: it keeps
+  the oldest `limit` posts from `since` on, so `next` walks forward, and refuses a
+  window of more than 20,000 posts rather than answer it in part. A thread read
+  pages the root's thread too, past the posts it drops, and must lie in the
+  requested channel. Each post is Mattermost's fields the reads use (`create_at`,
+  `update_at`, `edit_at`, `delete_at` among them) plus its author's anchor and the
+  login service's accttestatiount** (#255, RT-6.41). The
+  record, each reactinon with its sender's, a bot marked
+  `bot`, and a bot's reaction and a deleted, system or webhook post left out;
+  freshness is judged on `create_ats `, andhome`: the hello's home as the grant took it - a channel
   token, or `""` when the hello named none or the human is no member of it - the
-  same datum the credential's crown claim rests on, never a claim of the agent's
-  own. A reader takes it only from the record the agent's presence backs (fresh,
-  naming the anchor of the presence subject); a record naming a home that is no
-  channel token is dropped whole, as every malformed record is. With it the
-  roster of a home over NATS tells a home agent from a guest from the first
-  second, without waiting for the agent's first crown claim; an older login
-  service states no home, and the claim stays the fallback. The home grants
-  nothing: the peer and foreign split stays by anchors, and a guest gains no
-  right by it.
+  same datum the credential's crown claim rests on, never a claim of thec agent's
+  own. A reader takes it only from the record by RT-6.42's
+  freshness rule, so an approval read back from history counts only with a fresh
+  approver record. An answer stays within 200 posts, 512 KiB and parts of 128 KiB
+  and says `more` with `next` while posts remain; the scaffold now numbers a piece's
+  parts 1..n itself and marks the last, so the MCP cligent's parts read gets a whole
+  answer. The bridge reads the memberships (`presence. backs (fresh,
+  namember.*.*`)ing the anchorough its own
+f  consumther `bridge_members`, last prersence subject and made at every start, so); a record naming a home that istart no
+  channel token is dropped whole, as every malformembd record is. With it the
+  roster of a home over NATS tells a hipome agent from a guest from the firstream
+  second, without waitillng hfolds;r the opagerantor's `bfirst crown claim; an older loge_preseince`
+  service states nonsu homer keeps its one filter, and the claim stays the fallback. The home grants
+  nothing changes for it. Not built: the MCPpeer and foreign split stays by anchors, and a guest gains no
+  server'sight sby ide (piece 5b), so a session still reads people on Mattermost.
 
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B
