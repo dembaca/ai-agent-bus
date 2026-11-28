@@ -10,7 +10,8 @@ instead, served next to the WebSocket inbox in the server's event loop:
                             (?detail=1: up to 5 channels, with fyi counts)
     GET  /v1/last-post      {at, message, signed_off[, release][, unanswered]}: the own latest
                             post in the work channel; release {newest, line}: the notice of a
-                            release the host's check passed, for the turn-end banner (RT-6.30);
+                            release the host's check passed (or, with CB_RECORDS_URL, the
+                            bridge's signed record names), for the turn-end banner (RT-6.30);
                             ?unanswered=1: unanswered [{post_id, root_id, channel, author}],
                             the posts that wait for an answer in their thread and were not
                             reminded of yet; reading marks nothing (RT-6.2 step 2)
@@ -720,10 +721,21 @@ async def last_post(client: ChatPort, query: Mapping[str, str], body: Mapping[st
 def _release() -> dict[str, Any]:
     """The release notice for the turn-end banner (RT-6.30, RT-6.2 step 8),
     riding on the read the Stop hook makes every turn end: the host's check
-    is the server's to read, in a keyless session too. Before the first check,
-    the self-update line alone (RT-6.32), named by the version it names.
+    is the server's to read, in a keyless session too, or the bridge's signed
+    record when CB_RECORDS_URL is set (plan B piece 14b: then never the
+    file, and no self-update line). Before the first check, the self-update
+    line alone (RT-6.32), named by the version it names.
     older: the newest is older than this server's version, decided where the
-    line is, so the hook names no installer for it (RT-6.30 step 6)."""
+    line is, so the hook names no installer for it (RT-6.30 step 6).
+    source: "record" when the bridge's record gave the line, so the hook names
+    the marketplace rather than the host's installer (RT-6.30 step 8)."""
+    if release.records_configured():
+        state, _why = release.cached_record()
+        text = release.record_line(state=state)
+        if not (state and text):
+            return {}
+        return {"release": {"newest": state.newest, "line": text, "source": "record",
+                            **({"older": True} if release.older(state) else {})}}
     state = release.read_state()
     text = release.line(state=state)
     newest = state.newest if state else release.target_version(release.read_auto().get("TARGET", ""))

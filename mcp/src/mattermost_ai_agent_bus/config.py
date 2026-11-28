@@ -81,6 +81,9 @@ RENAMED: dict[str, tuple[str, ...]] = {
     "CB_WORKSPACE": ("MM_WORKSPACE",),
     "CB_RELEASE_SIGNERS": ("MM_RELEASE_SIGNERS",),
     "CB_RELEASE_URL": ("MM_RELEASE_URL",),
+    # Plan B piece 14b: new, no old spelling (ADR-014, the owner's decision of
+    # 2026-11-27; docs/env-names.md, "Goes with the registrar"). Unset: off.
+    "CB_RECORDS_URL": (),
     # Hooks and scripts (the ones this package reads or passes on).
     "CB_AGENT_SESSION_FILE": ("MM_AGENT_SESSION_FILE",),
     "CB_MM_BOT_TOKEN_FD": ("MM_BOT_TOKEN_FD",),
