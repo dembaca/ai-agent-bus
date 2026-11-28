@@ -2109,7 +2109,7 @@ on the merge commit (CLAUDE.md, "Releasing"); agents never sign. The keys are
 the owner's SSH Ed25519 key and an offline backup key; each host pins both
 public keys in `CB_RELEASE_SIGNERS`. As built (RT-6.29): the installer writes
 them into an allowed-signers file of its own under one fixed principal,
-`mm-release`, with `namespaces="git"`; the tag is fetched into `src.git`
+`cb-release`, with `namespaces="git"`; the tag is fetched into `src.git`
 without `+`, so git refuses a tag that moved; git runs with `LC_ALL=C`, no
 system or global config, no hook or credential helper, only the `https` and
 `file` protocols (a local path serves as a mirror and for the tests) and with

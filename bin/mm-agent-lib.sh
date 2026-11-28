@@ -1016,7 +1016,7 @@ mm_release_kind() {
 
 # The pinned keys (decisions (3) and (4) of 2026-11-12) → CB_REL_ENFORCE (1
 # with keys: the check is opt-in), CB_REL_ALLOWED, an allowed-signers file's
-# text (Ed25519 keys under one fixed principal, mm-release, namespaces="git"),
+# text (Ed25519 keys under one fixed principal, cb-release, namespaces="git"),
 # CB_REL_KEYS (one `<type> <base64>` per line, the keys in use), CB_REL_PINNED
 # (the same of release-signers, "" without it), CB_REL_FROM (env, file or
 # none) and CB_REL_FROM_TEXT (CB_RELEASE_SIGNERS or the file's path).
@@ -1099,7 +1099,7 @@ mm_release_signers() {
   fi
   CB_REL_ENFORCE=1
   while IFS= read -r k; do
-    [[ -z "$k" ]] || CB_REL_ALLOWED+="mm-release namespaces=\"git\" $k"$'\n'
+    [[ -z "$k" ]] || CB_REL_ALLOWED+="cb-release namespaces=\"git\" $k"$'\n'
   done <<<"$CB_REL_KEYS"
 }
 
@@ -1225,7 +1225,7 @@ mm_rgit() {
 # mm_release_tag <tag> <tag object id>: RT-6.29 steps 4–5 on a fetched tag. An
 # annotated tag in both modes; with keys (CB_REL_ENFORCE=1, CB_REL_ALLOWED) an
 # SSH signature, no PGP or X.509 one, that `git verify-tag` accepts for the one
-# principal mm-release; its own name the one asked for; it tags a commit. Sets
+# principal cb-release; its own name the one asked for; it tags a commit. Sets
 # CB_REL_SIGNER (the key's SHA256 fingerprint, with keys) and CB_REL_COMMIT.
 # shellcheck disable=SC2034 # MM_REL_* are read by the caller
 mm_release_tag() {
@@ -1253,7 +1253,7 @@ mm_release_tag() {
     fi
     # SSH signatures: verify-tag's exit code with allowedSignersFile set, and
     # the one principal written above, nothing else.
-    CB_REL_SIGNER="$(sed -n 's/^Good "git" signature for mm-release with [A-Z0-9-]* key \(SHA256:[A-Za-z0-9+/]*\)$/\1/p' <<<"$vout" | head -n1)"
+    CB_REL_SIGNER="$(sed -n 's/^Good "git" signature for cb-release with [A-Z0-9-]* key \(SHA256:[A-Za-z0-9+/]*\)$/\1/p' <<<"$vout" | head -n1)"
     if [[ "$vrc" -ne 0 || -z "$CB_REL_SIGNER" ]]; then
       CB_REL_SIGNER=""
       if [[ "$vout" == *"No principal matched"* ]]; then
