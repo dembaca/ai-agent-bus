@@ -17,7 +17,7 @@ from dataclasses import InitVar, dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-from . import (a2a, askroute, asks, compose, departed, gate, lease, mandate, ownpost, receipt,
+from . import (a2a, askroute, asks, compose, departed, gate, identity, lease, mandate, ownpost, receipt,
                stats, unread, watermark)
 from .compose import BusClient
 from .events import ChatEvent, EventSource, MembershipEvent, PostEvent, ReactionEvent
@@ -227,7 +227,8 @@ class WebSocketInbox:
         return self._source is not None and self._source.connected
 
     async def ensure_identity(self) -> None:
-        me = await self.client.get_me()
+        # The bot, without one the NATS name and the name it is mentioned by (piece 14c-2a).
+        me = await identity.self_me(self.client)
         self._bot_user_id = me.id
         self._bot_username = me.username
         if not self.watched_channel_ids or self._derived:
