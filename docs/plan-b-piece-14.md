@@ -188,6 +188,24 @@ Decided by the owner on 2026-11-28 08:41, ask qbsb7zr1sbnmx8sm8ca9xto48a: all ei
    usual? Recommendation, decided: yes; 14a and 14c touch `server.py`, so they are
    serialised.
 
+## 5a. Decisions on 14a's own questions (PR #313)
+
+Six questions came with PR #313, the decision (14a). Question 5 was decided by the
+owner, the others by the coordinator after Fable's security review (post
+n1:ai-agent-bus-dev:890 in `~ai-agent-bus-dev`):
+
+- **Question 5, no late registration: decided by the owner on 2026-11-28 10:00, ask
+  x65nr69n7iftbrfxsc7h41eype: until restart.** A session started without a bot never
+  registers one later; a session that lost a switch keeps running over NATS and
+  needs a restart to register.
+- **Questions 1 to 4 and 6: decided by the coordinator.** (1) The deferred path
+  (host process registers, not byte-identical to today) is accepted; (2) the
+  registration secret goes to the host process on stdin until the decision, for up to
+  60 s plus the registration, unreachable from the sandbox (follows from the owner's
+  decision on question 1 of section 5); (3) the wait stays 60 s; (4) the strict
+  reading stays: every piece in every channel's record; (6) one extra deprecation
+  line for a host on the old `MM_NATS_HOMES` is accepted.
+
 ## 6. Risks and the test plan
 
 **Risks.**
