@@ -115,7 +115,16 @@ is_state_file() { [[ "$(basename "$1")" =~ $STATE_RE ]]; }
 # pattern (natsbus.NAME_HASH_LEN characters of lower-case base32, no prefix since #274),
 # so the kinds that move to the name later are covered without a list. A file holding
 # a bot's token or registration name is a session, whatever its name.
-NAME_STATE_RE='^[a-z]+-[a-z2-7]{25}\.(env|jsonl|log|lock)$'
+# A counter move a crash interrupted leaves <kind>-<name>.jsonl.moving-<pid> (RT-6.2 step 9):
+# the name's file too.
+NAME_STATE_RE='^[a-z]+-[a-z2-7]{25}\.(env|jsonl|log|lock)(\.moving-[0-9]+)?$'
+# Whether a process holds the flock on $1 (macOS has no flock(1): perl's flock, the same
+# BSD lock the MCP server takes). Without perl a lock file counts as held: kept.
+lock_held() {
+  [[ -f "$1" && ! -L "$1" ]] || return 1
+  command -v perl >/dev/null 2>&1 || return 0
+  perl -e 'use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 1 : 0)' "$1"
+}
 is_name_state_file() {
   [[ "$(basename "$1")" =~ $NAME_STATE_RE ]] || return 1
   ! grep -Eq '^(export )?(CB_MM_BOT_TOKEN|MM_BOT_TOKEN|MM_REG_BOT_NAME|MM_BOT_NAME)=' "$1" 2>/dev/null
@@ -304,7 +313,8 @@ fi
 # the name to a session: its files stay, unless --force.
 shopt -s nullglob
 NAMES=" "
-for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/*-*.jsonl "$STATE_DIR"/*-*.log "$STATE_DIR"/*-*.lock; do
+for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/*-*.jsonl "$STATE_DIR"/*-*.log "$STATE_DIR"/*-*.lock \
+         "$STATE_DIR"/*-*.jsonl.moving-*; do
   is_name_state_file "$f" || continue
   n="$(basename "$f")"; n="${n#*-}"; n="${n%%.*}"
   [[ "$NAMES" == *" $n "* ]] || NAMES+="$n "
@@ -313,8 +323,12 @@ named=0
 untied=0
 for n in $NAMES; do
   [[ "$KEEP_NAMES" == *" $n "* ]] && continue
+  # A process that holds the name's lock (key-<name>.lock, RT-6.2 step 9) runs: its name
+  # is in use, whatever its endpoint file says.
+  lock_held "$STATE_DIR/key-$n.lock" && continue
   files=()
-  for f in "$STATE_DIR"/*-"$n".env "$STATE_DIR"/*-"$n".jsonl "$STATE_DIR"/*-"$n".log "$STATE_DIR"/*-"$n".lock; do
+  for f in "$STATE_DIR"/*-"$n".env "$STATE_DIR"/*-"$n".jsonl "$STATE_DIR"/*-"$n".log "$STATE_DIR"/*-"$n".lock \
+           "$STATE_DIR"/*-"$n".jsonl.moving-*; do
     is_name_state_file "$f" && files+=("$f")
   done
   (( ${#files[@]} )) || continue   # bash 3.2 with set -u: no empty "${files[@]}"
