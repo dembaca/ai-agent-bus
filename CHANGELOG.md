@@ -21,6 +21,13 @@ before 0.5.0 are described in the git history.
   the flip (14c-2c) follow. The docs no longer say the crown claim carries the bot's id:
   it is `{"v":1}` under the session's NATS name.
 
+### Fixed
+
+- The bridge no longer panics at start (`assignment to entry in nil map`) when it runs
+  without the agents' own bots and with `CB_BRIDGE_REQ_PREFIX` set (seen in the lab on
+  0.105.0): piece 9's request handlers came back as a nil map without bots, and the
+  permission, history and file pieces were added to it. It is now an empty map.
+
 ### Docs
 
 - Plan B piece 14 becomes a cutover (the owner's decision of 2026-11-28, #244): the flip of the crown without a bot (14c-2c) and the removal of the host side (14d) in one release, every piece switched on in the lab first with a smoke test, the registrar one day as the way back, then the shutdown; the plan's last six gates (the measured acceptance, the console's signature check and the offline token's lifetime among them) give way to a cutover checklist after release 0.105.0 (`docs/plan-b-piece-14.md`, ADR-014 item 14).
