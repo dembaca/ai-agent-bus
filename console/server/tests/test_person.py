@@ -169,12 +169,12 @@ async def test_the_reader_subscribes_by_the_login_and_learns_its_name() -> None:
         await st(SimpleNamespace(subject="stats.agent-a", data=b"{}",
                                  reply=ack("other", 2).replace("PRESENCE", "STATS")))
         assert view.stats_lines == 1             # no reply, another consumer: dropped
-        assert fields(view.stats.reports()[0])["lines"] == 1   # "{}": a line, all fields absent
+        assert fields(view.stats.reports()[1])["lines"] == 1   # "{}": a line, all fields absent
         # a line within the rules reaches the session's reports (RT-6.43 steps 7 and 8)
         await st(SimpleNamespace(subject=f"stats.{A}", data=stats.nats_body(LINE),
                                  reply=ack("svc-stats", 7).replace("PRESENCE", "STATS")))
         assert view.stats_lines == 2
-        assert fields(view.stats.reports()[0])["lines"] == 2
+        assert fields(view.stats.reports()[1])["lines"] == 2
         # the asks compare the anchor of the login's own record (RT-6.43 step 6)
         with mock.patch.object(view.fleet, "asks", return_value=[]) as asks:
             assert view.asks() == []
@@ -510,7 +510,7 @@ async def test_asks_and_stats_are_each_sessions_own(console: Console) -> None:
     async def lines(cookie: str) -> Any:
         status, _h, b = await get(console, "/v1/stats", cookie=cookie)
         assert status == 200
-        return fields(json.loads(b)[0])["lines"]
+        return fields(json.loads(b)[1])["lines"]
 
     for i, (cookie, _view, _anchor) in enumerate(sessions, 1):
         rows = await asks(cookie)

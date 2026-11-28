@@ -402,7 +402,7 @@ before 0.5.0 are described in the git history.
   error, never a silent success. The pieces are built one by one; the scaffold
   and the rights on both sides run against a real nats-server.
 
-- **Plan B piecThe 5a: phellople's history, the bridge's side** (#244, ADR-014 phase 5,
+- **Plan B piece 5a: people's history, the bridge's side** (#244, ADR-014 phase 5,
   RT-6.42 step 11). A session asks on `<req>.history.<agent>` for what people wrote
   while it was away: `{"channel": "<channel token>", "since": <epoch ms>}` or a
   Mattermost root as `"thread"`, with an optional `limit` of 1 to 200 posts. The
@@ -423,26 +423,31 @@ before 0.5.0 are described in the git history.
   pages the root's thread too, past the posts it drops, and must lie in the
   requested channel. Each post is Mattermost's fields the reads use (`create_at`,
   `update_at`, `edit_at`, `delete_at` among them) plus its author's anchor and the
-  login service's accttestatiount** (#255, RT-6.41). The
-  record, each reactinon with its sender's, a bot marked
+  login service's account record, each reaction with its sender's, a bot marked
   `bot`, and a bot's reaction and a deleted, system or webhook post left out;
-  freshness is judged on `create_ats `, andhome`: the hello's home as the grant took it - a channel
-  token, or `""` when the hello named none or the human is no member of it - the
-  same datum the credential's crown claim rests on, never a claim of thec agent's
-  own. A reader takes it only from the record by RT-6.42's
+  freshness is judged on `create_at`, and the session checks the record by RT-6.42's
   freshness rule, so an approval read back from history counts only with a fresh
   approver record. An answer stays within 200 posts, 512 KiB and parts of 128 KiB
   and says `more` with `next` while posts remain; the scaffold now numbers a piece's
-  parts 1..n itself and marks the last, so the MCP cligent's parts read gets a whole
-  answer. The bridge reads the memberships (`presence. backs (fresh,
-  namember.*.*`)ing the anchorough its own
-f  consumther `bridge_members`, last prersence subject and made at every start, so); a record naming a home that istart no
-  channel token is dropped whole, as every malformembd record is. With it the
-  roster of a home over NATS tells a hipome agent from a guest from the firstream
-  second, without waitillng hfolds;r the opagerantor's `bfirst crown claim; an older loge_preseince`
-  service states nonsu homer keeps its one filter, and the claim stays the fallback. The home grants
-  nothing changes for it. Not built: the MCPpeer and foreign split stays by anchors, and a guest gains no
-  server'sight sby ide (piece 5b), so a session still reads people on Mattermost.
+  parts 1..n itself and marks the last, so the MCP client's parts read gets a whole
+  answer. The bridge reads the memberships (`presence.member.*.*`) through its own
+  consumer `bridge_members`, last per subject and made at every start, so a restart
+  has every membership the stream still holds; the operator's `bridge_presence`
+  consumer keeps its one filter and nothing changes for it. Not built: the MCP
+  server's side (piece 5b), so a session still reads people on Mattermost.
+
+- **The hello's home in the login service's attestation** (#255, RT-6.41). The
+  record now states `home`: the hello's home as the grant took it - a channel
+  token, or `""` when the hello named none or the human is no member of it - the
+  same datum the credential's crown claim rests on, never a claim of the agent's
+  own. A reader takes it only from the record the agent's presence backs (fresh,
+  naming the anchor of the presence subject); a record naming a home that is no
+  channel token is dropped whole, as every malformed record is. With it the
+  roster of a home over NATS tells a home agent from a guest from the first
+  second, without waiting for the agent's first crown claim; an older login
+  service states no home, and the claim stays the fallback. The home grants
+  nothing: the peer and foreign split stays by anchors, and a guest gains no
+  right by it.
 
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B
@@ -624,6 +629,41 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
   published".
 
 ### Changed
+
+- **Stats has a time range and an activity chart** (#284, ADR-015 addition of
+  2026-11-28, RT-6.43 step 8). A switch at the top right, 24 h, 7 days, 30 days,
+  90 days or 12 months, sets the range of every card, the per-version cards
+  included, and the line under the heading names it. "Asks to humans" shows the
+  range and the range before it. A new first card, "Activity · what the agents
+  posted", draws stacked bars of the agents' own posts: one bar per day (7 and 30
+  days), per week (90 days) or per month (12 months), in four groups, working on
+  it, finished something, asking a human and organising, with the exact bus words
+  on hovering a bar; people's posts are not in it. The console now reads the
+  whole STATS history: the login service's stats consumer of each login starts
+  365 days back instead of 7. "24 h" shows the hourly bars of the lines that carry
+  hours (`post_hours`, #290) and says under the chart how many lines carried hours
+  and that running sessions are still to come (their hours arrive with their next
+  daily part); with no such line it says "no hourly data yet" with the reason that
+  hourly figures need agents that publish hourly (n/a, never 0). The card of the range before stays for every
+  range; where the stream does not hold it (12 months: 24 months back) or it starts
+  before the oldest line held, every figure is n/a with a short reason, never 0. The
+  console remembers the range per person in the browser, like the panel
+  preferences, 7 days by default. Each console login now replays up to the stream's
+  1 GiB of STATS lines (a year, since #310), and until the login service is deployed with the
+  change (only the console person's start time, no new right, no `Needs:` line) the
+  console shows 7 days. The counting of a range runs in a worker thread and is kept
+  for a minute. Each login keeps its own copy of the lines (about 170 MB per 100,000
+  lines, at most 100,000 held) and the copies are not shared between logins: every
+  session reads with its own credentials, and a shared copy would mix what two
+  credentials delivered.
+  The five cards below the chart follow the same look: the bus overhead share per
+  version as thin bars (full width 20 %), one "asks to humans" table with a row for
+  the range and a muted one for the range before, the bus traffic by category as
+  bars relative to the largest, and the tokens by category as stacked bars with an
+  "estimated" chip and a switch between input-token equivalents and raw tokens;
+  every missing figure shows n/a with its reason. The Stats styles carry their own
+  `stats-` prefix, so they leave the Asks page and the app-wide chips alone; the asks
+  table stacks into one block per row on a phone.
 
 - **STATS stream: 1 GiB, so a year fits at 300 to 500 agents** (#310, RT-6.45 step 1). The login service raises the stream from 64 MiB to 1 GiB in place at its next start (a larger size an operator set is kept); the NATS server needs that much more JetStream file storage (`max_file_store`). The import's own memory bound stays 64 MiB.
 

@@ -278,17 +278,47 @@ export interface ReportStack {
   raw: ReportSegment[]
 }
 
+/** The time range of the Stats page (#284): `GET /v1/stats?range=`. */
+export type RangeKey = "24h" | "7d" | "30d" | "90d" | "12m"
+
+/** One bar of the activity chart: the agents' own posts of one bucket, in the four
+ * groups and by every bus word (for the hover). `start` is the bucket's first second
+ * (UTC, epoch seconds). */
+export interface ActivityBar {
+  start: number
+  groups: Record<string, number>
+  words: Record<string, number>
+}
+
+/** The first card (#284): one bar per hour, day, week or month. `unavailable` says
+ * why there are no bars (24 h and no line carries hours). */
+export interface Activity {
+  bucket: "hour" | "day" | "week" | "month"
+  groups: { id: string; label: string }[]
+  bars: ActivityBar[]
+  unavailable?: string
+  /** "24 h": how many of the lines held carried hours (`lines` of `of`); running sessions' hours come with their next daily part. */
+  hours?: { lines: number; of: number }
+  /** The short reason behind `unavailable` ("hourly figures need agents that publish hourly"). */
+  reason?: string
+}
+
 export interface Report {
   id: string
   title: string
-  window: "live" | "24 h" | "7 d" | "90 d"
+  /** The range's label ("24 h", "7 d", "30 d", "90 d", "12 mo"), or "the 7 d before". */
+  window: string
   /** Which export: when a value should draw attention. */
   warn?: string
   /** One line on how the numbers come about (an estimate's method). */
   note?: string
+  /** Set when the whole card is n/a, and why (a range the stream does not hold); its
+   * fields are then all n/a, never 0. */
+  unavailable?: string
   fields: ReportField[]
   bars?: ReportBar[]
   stacks?: ReportStack[]
+  activity?: Activity
 }
 
 /** One agent's token sums of a window (#201): `all` and the split by type
@@ -338,7 +368,7 @@ export interface ConsoleApi {
   asks(): Promise<Ask[]>
   /** `GET /v1/groups`: the groups of the list and the panel's numbers (#283). */
   groups(by: GroupBy, scope: Scope): Promise<GroupsAnswer>
-  stats(): Promise<Report[]>
+  stats(range: RangeKey): Promise<Report[]>
   agentStats(): Promise<AgentStatsRow[]>
   thread(rootId: string, next?: string | null): Promise<ThreadPage>
 }

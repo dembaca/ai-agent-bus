@@ -30,8 +30,9 @@ const PersonInactiveThreshold = 15 * time.Minute
 // a renewal of one of them still passes.
 var ErrTooManyLogins = errors.New("consumers: too many logins of this person")
 
-// PersonStatsHistory is how far back the stats consumer starts.
-const PersonStatsHistory = 7 * 24 * time.Hour
+// PersonStatsHistory is how far back the stats consumer starts: the whole STATS
+// history (StatsMaxAge), for the console's time range up to 12 months (#284).
+const PersonStatsHistory = StatsMaxAge
 
 // Metadata keys of a person's consumers.
 const (
