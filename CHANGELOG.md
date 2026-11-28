@@ -86,6 +86,7 @@ before 0.5.0 are described in the git history.
   connection after a restart on at once. The old client's subscription tasks, which
   nats-py's skipped cleanup left pending, are cancelled with it.
 
+- **STATS: a refused size raise warns instead of stopping the login service** (#310, RT-6.45). A NATS server whose `max_file_store` has no room for the 1 GiB refused the stream update, and the login service did not start, so every NATS login failed. The size is now raised in a request of its own after the age and the cap; if the server refuses it, the service logs `consumers: stats stream size not raised` and keeps the old size. Raise `max_file_store` before the rollout.
 - **A retried ask no longer spends its mention twice, and an undecodable lookup answer
   is no longer retried for ever** (#287, RT-6.11). In the bridge's mirror of an ask,
   which runs with every plan B switch off for a home over NATS, the sender's limit of
