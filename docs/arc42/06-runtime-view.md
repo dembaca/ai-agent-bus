@@ -935,6 +935,7 @@ Everything the server writes in its state directory goes through one helper: a n
 | 13 | The host process's registration fails | Logged in the host log; the session goes on without a bot, over NATS alone; `bus_info` (`no_bot`) and what needs Mattermost say "registering the bot failed … restart the session" |
 | 13 | The exit's unregister of the bot the host process registered fails (registrar unreachable, the process killed after 10 s) | The token is in the session file (`nobot.record_token`): `postEnd` unregisters with it, or keeps the file for `mm-agent-sweep.sh` |
 | 13 | The token of the bot the host process just registered cannot go into the session file (a write error, a symlink, the file gone, a malformed registrar answer) | The host process unregisters the bot at once (`nobot.register_now`) and the registration counts as failed ("registering the bot failed … restart the session"): `postEnd` would read no token and remove the file, and nothing could unregister it later |
+| 13 | The host process is stopped (SIGTERM) after the registrar answered but before the bot is recorded | `nobot.host_decide` records the bot in the session file before it ends, so `postEnd` or the sweep still unregisters it |
 | 13 | A session whose bot the host process registered ends, then `claude --continue` | Not kept: `postEnd` keeps no bot of a session file marked `DEFERRED=1` (step 9); the next start decides again |
 
 ---

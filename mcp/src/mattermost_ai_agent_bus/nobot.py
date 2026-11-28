@@ -283,6 +283,12 @@ async def host_decide(client: Any, name: str, display: str, secret: str,
     except asyncio.CancelledError:
         inner.reg_secret = None
         _set_registering(inner, False)
+        # Cancelled after the registrar answered but before register_now recorded the bot (in
+        # session_start, between _take and the profile check): record it now, so the stop hook
+        # or the sweep can still unregister it.
+        session = getattr(inner, "session", None)
+        if session is not None:
+            record_token(session)
         raise
     except Exception as exc:  # noqa: BLE001 — the session goes on without a bot, NATS only
         inner.reg_secret = None

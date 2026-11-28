@@ -638,3 +638,29 @@ async def test_session_end_without_a_bot_says_why(mcp: Any, monkeypatch: pytest.
     with pytest.raises(RuntimeError) as err:
         await server.session_end()
     assert str(err.value) == nobot.status() and "session_start first" not in str(err.value)
+
+
+async def test_a_cancel_after_the_registrar_answered_still_records_the_bot(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.18 step 13: a SIGTERM between the registrar's answer and register_now's record (in
+    session_start, between _take and the profile check) still leaves the token in the session
+    file, for the stop hook and the sweep."""
+    f = _corral_file(tmp_path, monkeypatch)
+    bus = Bus()
+    bus.pieces["guest"] = ALL - {6}
+    port, inner, _ = _port(bus)
+    started = asyncio.Event()
+
+    async def taken(name: str, display_name: str | None = None, *, unique: bool = True) -> Any:
+        inner.registrar.session = inner.registrar.info  # as _take does
+        started.set()
+        await asyncio.sleep(30)  # the profile check
+
+    monkeypatch.setattr(inner.registrar, "session_start", taken)
+    task = asyncio.create_task(nobot.host_decide(port, "host-proj-abc", "", "the-secret", timeout=0))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    token = inner.registrar.info.bot_token
+    assert [ln for ln in f.read_text().splitlines() if ln.startswith("CB_MM_BOT_TOKEN=")][-1] == f"CB_MM_BOT_TOKEN={token}"
+    assert inner.reg_secret is None  # type: ignore[attr-defined]
