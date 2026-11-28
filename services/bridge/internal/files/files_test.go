@@ -82,6 +82,7 @@ type fakeMM struct {
 	users    map[string]map[string]any
 	uploads  []upload
 	nextFile int
+	delay    map[string]time.Duration // a route prefix -> how long it answers
 }
 
 // upload is one upload the fake took, with the bot that made it.
@@ -96,7 +97,8 @@ func newFakeMM(t *testing.T) *fakeMM {
 	t.Helper()
 	f := &fakeMM{team: "team", channels: map[string]string{},
 		posts: map[string]map[string]any{}, infos: map[string]map[string]any{},
-		data: map[string][]byte{}, previews: map[string][]byte{}, users: map[string]map[string]any{}}
+		data: map[string][]byte{}, previews: map[string][]byte{}, users: map[string]map[string]any{},
+		delay: map[string]time.Duration{}}
 	f.users["u-alice"] = map[string]any{"id": "u-alice", "username": "alice", "is_bot": false}
 	f.users["u-carol"] = map[string]any{"id": "u-carol", "username": "carol", "is_bot": false}
 	f.users["u-bot"] = map[string]any{"id": "u-bot", "username": "bridge-agent-alice", "is_bot": true}
@@ -135,7 +137,16 @@ func (f *fakeMM) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path+" as "+who)
+	wait := time.Duration(0)
+	for prefix, d := range f.delay {
+		if strings.HasPrefix(r.URL.Path, prefix) && d > wait {
+			wait = d
+		}
+	}
 	f.mu.Unlock()
+	if wait > 0 {
+		time.Sleep(wait)
+	}
 	out := func(v any) { _ = json.NewEncoder(w).Encode(v) }
 	path := r.URL.Path
 	switch {
@@ -730,6 +741,54 @@ func TestTheSeventeenthOpenTransferIsBusy(t *testing.T) {
 	}
 }
 
+// The last part's upload takes its own, longer deadline: it posts up to
+// 10 MB to Mattermost, which builds image previews in that call, so a slow
+// upload outlives the checks' short one — which still holds for everything
+// up to it (round 2 of the review of #286).
+func TestTheUploadsOwnDeadline(t *testing.T) {
+	r := newRig(t, Piece)
+	r.h.RequestTimeout = 10 * time.Millisecond
+	r.h.UploadTimeout = time.Second
+	r.mm.delay["/api/v4/files"] = 50 * time.Millisecond // past the checks' deadline
+	whole := png(50)
+	if _, err := r.ask(t, part(whole, "chart.png", channel, sum(whole), 1, false, whole[:20])); err != nil {
+		t.Fatal(err)
+	}
+	replies, err := r.ask(t, part(whole, "chart.png", channel, sum(whole), 2, true, whole[20:]))
+	if err != nil {
+		t.Fatalf("the last part's upload: %v", err)
+	}
+	if m := one(t, replies, err); m["size"] != float64(len(whole)) {
+		t.Fatalf("the uploaded whole: %v", m)
+	}
+	if took := r.mm.took(); len(took) != 1 || string(took[0].data) != string(whole) {
+		t.Fatalf("the upload: %+v", took)
+	}
+	// a one-part file takes the same path
+	replies, err = r.ask(t, putAll("one.png", channel, png(9)))
+	if err != nil {
+		t.Fatalf("a one-part file's upload: %v", err)
+	}
+	if m := one(t, replies, err); m["name"] != "one.png" {
+		t.Fatalf("a one-part file: %v", m)
+	}
+
+	// a non-last part's work is the checks alone: the short deadline holds,
+	// and the upload's longer one does not stretch it
+	r2 := newRig(t, Piece)
+	r2.h.RequestTimeout = 10 * time.Millisecond
+	r2.h.UploadTimeout = time.Second
+	r2.mm.delay["/api/v4/teams/"] = 50 * time.Millisecond // part 1's channel lookup
+	whole = png(50)
+	if _, err := r2.ask(t, part(whole, "chart.png", channel, sum(whole), 1, false, whole[:20])); err == nil ||
+		!strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("a non-last part under the short deadline: %v", err)
+	}
+	if took := r2.mm.took(); len(took) != 0 {
+		t.Fatalf("nothing was uploaded: %+v", took)
+	}
+}
+
 // RT-6.23 step 2 over the bridge: a text file's metadata with its author's
 // anchor and record, then its bytes; the reader checks length and hash.
 func TestGetATextFile(t *testing.T) {
@@ -859,6 +918,24 @@ func TestGetAnImage(t *testing.T) {
 	}
 	if len(replies) != 1 || asJSON(t, replies[0].Result)["kind"] != "image" {
 		t.Fatalf("a bmp: %v", replies)
+	}
+	// a preview over 5 MB: no bytes — the metadata alone, its length 0 and
+	// the empty sum, never a truncated picture that reads as a good one
+	// (round 2 of the review of #286)
+	r5 := newRig(t, Piece)
+	r5.mm.file(t, fileID, "photo.png", "png", "image/png", 4, true, original)
+	r5.mm.previews[fileID] = []byte(strings.Repeat("p", ImageMax+1))
+	replies, err = r5.ask(t, get(fileID, channel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replies) != 1 {
+		t.Fatalf("an over-limit preview answered %d parts", len(replies))
+	}
+	meta = asJSON(t, replies[0].Result)
+	if meta["kind"] != "image" || meta["preview"] != true ||
+		meta["length"] != float64(0) || meta["sha256"] != sum(nil) {
+		t.Fatalf("the over-limit preview: %v", meta)
 	}
 }
 

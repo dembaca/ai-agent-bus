@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from . import files
 from .model import FileInfo
-from .requests import RequestError, request
+from .requests import HISTORY_SEC, RequestError, request
 
 if TYPE_CHECKING:
     from .natsbus import NatsBus
@@ -96,10 +96,14 @@ async def upload(bus: NatsBus, channel: str, name: str, data: bytes) -> FileInfo
     for part in range(1, (length + PART_MAX - 1) // PART_MAX + 1):
         last = part * PART_MAX >= length
         chunk = data[(part - 1) * PART_MAX:part * PART_MAX]
+        # The last part carries the bridge's Mattermost upload of the whole, which takes
+        # its time with multi-MB images (previews built in the call): the history read's
+        # headroom, not the 5 s a plain request waits (HISTORY_SEC, as #286 round 2).
         answer = await request(bus, "file", {
             "op": "put", "name": name, "channel": channel, "length": length,
             "sha256": digest, "part": part, "last": last,
-            "data": base64.b64encode(chunk).decode("ascii")})
+            "data": base64.b64encode(chunk).decode("ascii")},
+            timeout=HISTORY_SEC if last else None)
         if last:
             file_id = str(answer.get("file_id") or "")
             out_name = str(answer.get("name") or name)
@@ -186,7 +190,11 @@ async def fetch(bus: NatsBus, file_id: str, channel: str,
         elif len(data) > files.IMAGE_MAX:
             meta_out["note"] = f"image over {files.IMAGE_MAX // 2**20} MB: not shown"
         elif not data:
-            raise RequestError("the bridge's file answer has no image")
+            if want_len == 0:
+                # the bridge served none on purpose: over its own image limit
+                meta_out["note"] = f"image over {files.IMAGE_MAX // 2**20} MB: not shown"
+            else:
+                raise RequestError("the bridge's file answer has no image")
         else:
             out.image, out.image_format = data, fmt
             meta_out["shown"] = "preview" if info.has_preview_image else "original"
@@ -197,8 +205,8 @@ async def fetch(bus: NatsBus, file_id: str, channel: str,
             meta_out["note"] = "binary content: not shown"
             out.meta = meta_out
             return out
-        text = data[:files.TEXT_MAX * 4].decode("utf-8", errors="replace")
-        if len(text) > files.TEXT_MAX or len(data) > files.TEXT_MAX * 4:
+        text = data.decode("utf-8", errors="replace")
+        if len(text) > files.TEXT_MAX or info.size > len(data):
             text = text[:files.TEXT_MAX]
             meta_out["note"] = (f"cut after {files.TEXT_MAX} characters; "
                                 f"the file has {info.size or 'more'} bytes")

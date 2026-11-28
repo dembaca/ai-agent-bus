@@ -107,10 +107,16 @@ const (
 	// textBytes is how much of a text file is served: the MCP side's
 	// files.TEXT_MAX*4, cut there by its reader again.
 	textBytes = 20_000 * 4
-	// requestTimeout bounds one request's Mattermost work: the MCP side waits
-	// 5 s for an answer of the kind "file" (requests.REQUEST_SEC), so the
-	// bridge gives up before its caller does.
+	// requestTimeout bounds one request's checks and kept parts: the MCP side
+	// waits 5 s for an answer of the kind "file" (requests.REQUEST_SEC), so
+	// the bridge gives up before its caller does.
 	requestTimeout = 4 * time.Second
+	// uploadTimeout bounds the last part's upload alone: it posts up to
+	// 10 MB to Mattermost, which builds image previews in that call, so it
+	// takes longer than the checks ever do. The MCP side gives the last
+	// part the history read's own headroom (requests.HISTORY_SEC, 35 s);
+	// the bridge's own deadline stays under it.
+	uploadTimeout = 30 * time.Second
 	// userCacheMax bounds the accounts read between answers.
 	userCacheMax = 4096
 )
@@ -176,10 +182,31 @@ type Handler struct {
 	Switches Switches
 	People   People
 	Now      func() time.Time // nil: time.Now
+	// RequestTimeout and UploadTimeout override their constants in the
+	// tests, which run them short; zero keeps each constant.
+	RequestTimeout time.Duration
+	UploadTimeout  time.Duration
 
 	mu    sync.Mutex
 	open  map[string]*transfer // the open uploads, by agent
 	users map[string]mm.User   // Mattermost accounts read, by user id
+}
+
+// requestDeadline is the checks' and the kept parts' own short deadline.
+func (h *Handler) requestDeadline() time.Duration {
+	if h.RequestTimeout > 0 {
+		return h.RequestTimeout
+	}
+	return requestTimeout
+}
+
+// uploadDeadline is the last part's upload deadline, longer than the checks':
+// a multi-MB upload outlives them.
+func (h *Handler) uploadDeadline() time.Duration {
+	if h.UploadTimeout > 0 {
+		return h.UploadTimeout
+	}
+	return uploadTimeout
 }
 
 // transfer is one agent's upload in progress: the whole the first part
@@ -213,11 +240,15 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 }
 
 // put is the upload: the checks of part 1 before any part is kept, then the
-// parts in order, the last one assembled, checked and uploaded. The whole op
-// runs under its own deadline, a later part's Mattermost work too: no part
-// holds a worker of the scaffold's pool (the review of #286).
+// parts in order, the last one assembled, checked and uploaded. The checks
+// and the kept parts run under the short deadline; the last part's upload
+// takes its own, longer one, so no part holds a worker of the scaffold's
+// pool and a multi-MB upload still ends within its caller's wait.
 func (h *Handler) put(ctx context.Context, agent string, p payload) ([]requests.Reply, error) {
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	// brief is the checks' and the kept parts' own short deadline; the last
+	// part's upload — whole() below — wraps the request's context itself,
+	// not this one, so the short deadline never caps it.
+	brief, cancel := context.WithTimeout(ctx, h.requestDeadline())
 	defer cancel()
 	// The sweep of the open transfers runs on both ops' entries, so no
 	// ticker is needed: a stale transfer is gone before its next part.
@@ -231,7 +262,7 @@ func (h *Handler) put(ctx context.Context, agent string, p payload) ([]requests.
 		return nil, fmt.Errorf("piece 8 is off in %s", p.Channel)
 	}
 	if p.Part == 1 {
-		return h.firstPart(ctx, agent, p)
+		return h.firstPart(brief, ctx, agent, p)
 	}
 	h.mu.Lock()
 	tr := h.open[agent]
@@ -290,8 +321,10 @@ func (h *Handler) put(ctx context.Context, agent string, p payload) ([]requests.
 
 // firstPart checks the file rules and the bot on part 1, before any part is
 // kept, and opens the transfer — replacing the agent's open one, and never a
-// 17th across the agents.
-func (h *Handler) firstPart(ctx context.Context, agent string, p payload) ([]requests.Reply, error) {
+// 17th across the agents. brief is the checks' own short deadline; ctx is
+// the request's context, whose own longer deadline the one-part file's
+// upload takes in whole().
+func (h *Handler) firstPart(brief, ctx context.Context, agent string, p payload) ([]requests.Reply, error) {
 	data, name, err := h.check(p)
 	if err != nil {
 		return nil, err
@@ -299,7 +332,7 @@ func (h *Handler) firstPart(ctx context.Context, agent string, p payload) ([]req
 	if h.Bots == nil {
 		return nil, errors.New("the bridge has no bots for the agents; an upload needs the agent's own")
 	}
-	bot, err := h.Bots.Client(ctx, agent, p.Channel)
+	bot, err := h.Bots.Client(brief, agent, p.Channel)
 	if err != nil {
 		// The bot's absence from the channel is the upload's own answer, in
 		// its own words; any other failure says whose bot it was.
@@ -309,7 +342,7 @@ func (h *Handler) firstPart(ctx context.Context, agent string, p payload) ([]req
 		}
 		return nil, fmt.Errorf("the agent's bot: %w", err)
 	}
-	cid, err := bot.ChannelIDByName(ctx, h.Team, p.Channel)
+	cid, err := bot.ChannelIDByName(brief, h.Team, p.Channel)
 	if err != nil {
 		return nil, fmt.Errorf("the channel ~%s: %w", p.Channel, err)
 	}
@@ -344,7 +377,12 @@ func (h *Handler) firstPart(ctx context.Context, agent string, p payload) ([]req
 // whole-buffer sniff that part 1 could only run on its own — and only a whole
 // that matches is uploaded; a mismatch is its own answer, and the transfer
 // is gone (the review of #286: a text first part with other bytes behind it).
+// The upload takes its own deadline here, where it begins: it posts up to
+// 10 MB and Mattermost builds image previews in that call, longer than the
+// checks ever take (round 2 of the review of #286).
 func (h *Handler) whole(ctx context.Context, agent string, tr *transfer) ([]requests.Reply, error) {
+	ctx, cancel := context.WithTimeout(ctx, h.uploadDeadline())
+	defer cancel()
 	if int64(len(tr.buf)) != tr.length {
 		return nil, errHash
 	}
@@ -473,7 +511,7 @@ func (h *Handler) get(ctx context.Context, agent string, p payload) ([]requests.
 	if h.People == nil || !h.People.CaughtUp() {
 		return nil, errors.New("the bridge's account records are not read yet; ask again")
 	}
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, h.requestDeadline())
 	defer cancel()
 	bot, err := h.Bots.Client(ctx, agent, p.Channel)
 	if err != nil {
@@ -517,10 +555,17 @@ func (h *Handler) get(ctx context.Context, agent string, p payload) ([]requests.
 		// Mirroring the MCP side's fetch: a preview whenever there is one,
 		// else the original in a format shown as a picture, up to 5 MB —
 		// anything else the reader notes from the metadata alone. The read
-		// itself takes no more than the 5 MB it may serve.
+		// takes one byte more than the limit, so an image past it (a preview
+		// can be) is served as no bytes — the metadata alone, never a
+		// truncated picture that reads as a good one (round 2 of the
+		// review of #286).
 		if imageFormat(info) != "" && (info.HasPreviewImage || info.Size <= ImageMax) {
-			if data, err = bot.FileBytes(ctx, fid, info.HasPreviewImage, ImageMax); err != nil {
-				return nil, fmt.Errorf("the file's bytes: %w", err)
+			raw, rerr := bot.FileBytes(ctx, fid, info.HasPreviewImage, ImageMax+1)
+			if rerr != nil {
+				return nil, fmt.Errorf("the file's bytes: %w", rerr)
+			}
+			if int64(len(raw)) <= ImageMax {
+				data = raw
 			}
 		}
 	case "text":

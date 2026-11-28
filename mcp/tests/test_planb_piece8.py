@@ -25,7 +25,7 @@ from mattermost_ai_agent_bus import attach, files, natsfiles, planb
 from mattermost_ai_agent_bus.model import FileInfo, Post
 from mattermost_ai_agent_bus.nats_port import NatsPort
 from mattermost_ai_agent_bus.natsbus import NatsBus, NatsSettings
-from mattermost_ai_agent_bus.requests import RequestError, request
+from mattermost_ai_agent_bus.requests import HISTORY_SEC, RequestError, request
 
 PART = natsfiles.PART_MAX
 FILE_ID = "f" * 26
@@ -57,10 +57,12 @@ class Script:
     def __init__(self, *answers: Any) -> None:
         self.answers = list(answers)
         self.asked: list[tuple[str, dict[str, Any]]] = []
+        self.timeouts: list[float | None] = []
 
     async def __call__(self, bus: Any, kind: str, payload: dict[str, Any] | None = None,
                        *, timeout: float | None = None, prefix: str | None = None) -> Any:
         self.asked.append((kind, dict(payload or {})))
+        self.timeouts.append(timeout)
         if not self.answers:
             raise RequestError("the bridge did not answer")
         answer = self.answers.pop(0)
@@ -103,6 +105,17 @@ async def test_upload_sends_the_file_in_parts_and_waits_for_every_ack(
     assert base64.b64decode(third["data"]) == data[2 * PART:]
     for _, payload in script.asked:  # the envelope of a part stays under the scaffold's bound
         assert len(json.dumps({"payload": payload})) < 1024 * 1024
+    assert script.timeouts == [None, None, HISTORY_SEC]  # the last part's upload gets headroom
+
+
+async def test_the_last_part_s_upload_waits_longer_than_a_plain_request(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bridge uploads the whole on the last part, which takes its time with
+    multi-MB images: that part alone asks with HISTORY_SEC (round 2's finding)."""
+    script = Script({"ok": True, "part": 1}, {"file_id": FILE_ID, "name": "a.md", "size": 3})
+    monkeypatch.setattr(natsfiles, "request", script)
+    await natsfiles.upload(DummyBus(), "home", "a.md", b"ab" * (PART // 2 + 1))  # 2 parts
+    assert script.timeouts == [None, HISTORY_SEC]
 
 
 async def test_upload_of_one_part_sends_one_request(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,13 +162,28 @@ async def test_fetch_serves_a_text_file_checked_by_length_and_hash(
 
 async def test_fetch_cuts_a_long_text_and_names_the_file(monkeypatch: pytest.MonkeyPatch) -> None:
     data = "x" * (files.TEXT_MAX + 10)
-    body = data.encode()[:files.TEXT_MAX * 4]
+    body = data.encode()
     meta = _meta(size=len(data), length=len(body), sha256=hashlib.sha256(body).hexdigest())
     script = Script({"parts": [meta, {"data": base64.b64encode(body).decode("ascii")}]})
     monkeypatch.setattr(natsfiles, "request", script)
     got = await natsfiles.fetch(DummyBus(), FILE_ID, "home")  # type: ignore[arg-type]
     assert len(got.meta["text"]) == files.TEXT_MAX
     assert got.meta["note"].startswith(f"cut after {files.TEXT_MAX} characters")
+
+
+async def test_fetch_names_the_bridge_s_cut_by_the_file_s_own_size(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A text file the bridge cut to its 80 KB (the file itself larger) gets the
+    note by the file's size, not by the character count that arrived (round 2)."""
+    body = "ü" * 15_000  # 30 000 bytes as utf-8, 15 000 characters: no character cut
+    data = body.encode()
+    meta = _meta(size=200_000, length=len(data), sha256=hashlib.sha256(data).hexdigest())
+    script = Script({"parts": [meta, {"data": base64.b64encode(data).decode("ascii")}]})
+    monkeypatch.setattr(natsfiles, "request", script)
+    got = await natsfiles.fetch(DummyBus(), FILE_ID, "home")  # type: ignore[arg-type]
+    assert len(got.meta["text"]) == 15_000  # the characters all fit: the note names the file
+    assert got.meta["note"] == (f"cut after {files.TEXT_MAX} characters; "
+                                f"the file has 200000 bytes")
 
 
 async def test_fetch_refuses_bytes_that_fail_the_hash(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -177,6 +205,19 @@ async def test_fetch_serves_an_image_from_its_preview(monkeypatch: pytest.Monkey
     got = await natsfiles.fetch(DummyBus(), FILE_ID, "home")  # type: ignore[arg-type]
     assert got.image == data and got.image_format == "jpeg"
     assert got.meta["shown"] == "preview" and got.meta["width"] == 640 and got.meta["height"] == 480
+
+
+async def test_fetch_notes_an_image_the_bridge_would_not_serve(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A preview over the bridge's own limit is not cut to a broken JPEG: the bridge
+    serves no bytes (length 0, the empty sum) and the reader notes it, not errors."""
+    meta = _meta(name="shot.png", extension="png", mime_type="image/png", size=9 << 20,
+                 preview=True, kind="image", length=0,
+                 sha256=hashlib.sha256(b"").hexdigest())
+    script = Script({"parts": [meta]})
+    monkeypatch.setattr(natsfiles, "request", script)
+    got = await natsfiles.fetch(DummyBus(), FILE_ID, "home")  # type: ignore[arg-type]
+    assert got.image == b"" and got.meta["note"] == "image over 5 MB: not shown"
 
 
 async def test_fetch_serves_metadata_only_for_an_unsupported_type(
