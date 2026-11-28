@@ -364,6 +364,23 @@ def test_the_opencode_session_id_is_a_name_the_relay_sends_and_the_host_applies(
     assert hosted.identity(checked)["OPENCODE_SESSION_ID"] == "ses_a"  # an id, not a path
 
 
+def test_the_pi_session_id_is_a_name_the_relay_sends_and_the_host_applies():
+    """RT-6.18 steps 3-4, RT-6.27 step 1, RT-6.2 step 9: PI_SESSION_ID goes from the relay's
+    environment into the handshake and becomes the host server's, which ties its kept state
+    to it (session_file.session_tie); it names the agent like OpenCode's id."""
+    values = hosted.session_values({"PI_SESSION_ID": "pi_a", "CB_WORKSPACE": "/p"}, cwd="/p")
+    checked = hosted.check_session(values)
+    assert checked["PI_SESSION_ID"] == "pi_a"
+    env: dict[str, str] = {"PI_SESSION_ID": "stale"}
+    hosted.apply_session(checked, environ=env)
+    assert env["PI_SESSION_ID"] == "pi_a"
+    env = {"PI_SESSION_ID": "stale"}
+    hosted.apply_session({"cwd": "/p"}, environ=env)
+    assert "PI_SESSION_ID" not in env
+    assert hosted.identity(checked)["PI_SESSION_ID"] == "pi_a"
+    assert hosted.identity_mismatch(checked, {**checked, "PI_SESSION_ID": "pi_b"})
+
+
 async def test_a_workspace_named_after_a_plugin_update_is_taken(tmp_path):
     """RT-6.18 step 6 (#119): a first relay of an older plugin sent no
     CB_WORKSPACE; a later one that names it is served and its workspace taken,
