@@ -6,7 +6,7 @@ runs over NATS with every plan B piece on registers no Mattermost bot and holds 
 token. With any channel or piece off it registers as before. The answer comes from the login
 service's records alone, as this session's NATS bus read them (`NatsPort.bot_needed`): never
 from the environment, CB_PLANB_TEST included. Until piece 14c the predicate always names a
-reason (CROWN_NEEDS_BOT, RT-6.6 step 13): the crown still needs the bot's identity.
+reason (CROWN_NEEDS_BOT, RT-6.6 step 13): the crown still needs the bot's token.
 
 Who decides: the host process of a corral session that preStart started without a bot (it
 registers one only when its own NATS read, on the login the relay passes it, shows a channel or
@@ -43,9 +43,10 @@ DECIDE_SEC = 60.0
 POLL_SEC = 0.1
 
 # Fail closed toward registering until plan B piece 14c: the crown (RT-6.6, RT-6.38) still needs
-# the bot's identity - the lease heartbeat and its NATS beat run only with a token, the crown
-# claim carries the bot's user id - so a session without a bot would publish no crown claim and
-# a fully switched home would have no coordinator. While this is True, `NatsPort.bot_needed`
+# the bot - the lease heartbeat and its NATS beat run only with a token (piece 14c-2b; the claim
+# itself names no bot, and the identity is the NATS name without one since 14c-2a, identity.py) -
+# so a session without a bot would publish no crown claim and a fully switched home would have
+# no coordinator. While this is True, `NatsPort.bot_needed`
 # names CROWN_REASON even when every channel and piece runs over NATS: the decision logic is
 # built and tested, but every session still registers, and `decide` answers CROWN_REASON at once
 # instead of waiting up to DECIDE_SEC for a read whose answer is known. Piece 14c (the identity on
@@ -194,6 +195,12 @@ def hold(client: Any) -> None:
              "it started (plan B piece 14, RT-6.18 step 13, RT-6.10 step 8); this needs Mattermost, "
              "so a switch went off or its record went stale since: restart the session to register one")
     _show(client, _held)
+    from . import identity, stats
+
+    # The counters and the presence card's asks are keyed by the session's own key: the NATS
+    # name now (identity.self_key, plan B piece 14c-2a), as a bot's id was set at its registration.
+    if identity.bot_less(client) and (name := identity.nats_name(client)):
+        stats.set_user(name)
     log.info("registration: no Mattermost bot for this session, every channel and piece runs over NATS")
 
 
