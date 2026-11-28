@@ -141,7 +141,8 @@ Both reach a session through the login's own consumers, never one of the
 console's: the presence consumer the login service makes delivers the ask
 records of every channel the person may see with the presence lines, on
 `deliver.person.<login>.presence`; the stats consumer delivers the
-`STATS` stream from 7 days back on `deliver.person.<login>.stats`. Each
+`STATS` stream from 365 days back (the whole history, for the Stats
+page's time range up to 12 months) on `deliver.person.<login>.stats`. Each
 session keeps its own fleet and its own reports.
 
 The fleet decodes an ask record strictly (`natsbus.decode_ask_record`: a
@@ -152,11 +153,15 @@ when its presence is not fresh. "For me" and "may answer" compare the
 operator's anchor from the login's own record with the asked human's
 anchor, never a login name (point 4 of the console decision's addition of
 2026-11-25); until that record came they are `null` (`n/a`) and mark
-nothing. Read-only: no answer, no thread text. `/v1/stats` answers the
-reports (the bus overhead share of all tokens per version over 7 days,
-estimated; the asks over 24 h and 7 days; the bus traffic by category
-over 7 days, exact counts of bus overhead and coordination; the tokens by
-category over 7 days, an estimate marked so, as stacked bars in `stacks`
+nothing. Read-only: no answer, no thread text. `/v1/stats?range=24h|7d|30d|90d|12m` (7 days
+without it, another value a 400, #284) answers the reports, each over the
+range (the activity card, `activity`: the agents' own posts by bus word in
+four groups, one bar per hour (24 h, from `stats.hours_of`, with `hours`: `lines` of `of` the lines that carried hours), day, week or month; 24 h with no line carrying hours says "no hourly data yet" and why (`unavailable`, `reason`);
+the bus overhead share of all tokens per version, estimated; the asks over
+the range and the range before it (n/a with `unavailable`, every figure `null`,
+where the stream does not hold it: 12 months, or before the oldest line held); the bus traffic by category, exact counts
+of bus overhead and coordination; the tokens by category, an estimate marked
+so, as stacked bars in `stacks`
 for the fleet, per version, per role and per harness, in input-token
 equivalents and raw tokens), computed with `stats.py` from lines
 decoded by `stats.decode_line`, each line once by its stream sequence;

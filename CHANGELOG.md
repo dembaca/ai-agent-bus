@@ -629,6 +629,41 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **Stats has a time range and an activity chart** (#284, ADR-015 addition of
+  2026-11-28, RT-6.43 step 8). A switch at the top right, 24 h, 7 days, 30 days,
+  90 days or 12 months, sets the range of every card, the per-version cards
+  included, and the line under the heading names it. "Asks to humans" shows the
+  range and the range before it. A new first card, "Activity · what the agents
+  posted", draws stacked bars of the agents' own posts: one bar per day (7 and 30
+  days), per week (90 days) or per month (12 months), in four groups, working on
+  it, finished something, asking a human and organising, with the exact bus words
+  on hovering a bar; people's posts are not in it. The console now reads the
+  whole STATS history: the login service's stats consumer of each login starts
+  365 days back instead of 7. "24 h" shows the hourly bars of the lines that carry
+  hours (`post_hours`, #290) and says under the chart how many lines carried hours
+  and that running sessions are still to come (their hours arrive with their next
+  daily part); with no such line it says "no hourly data yet" with the reason that
+  hourly figures need agents that publish hourly (n/a, never 0). The card of the range before stays for every
+  range; where the stream does not hold it (12 months: 24 months back) or it starts
+  before the oldest line held, every figure is n/a with a short reason, never 0. The
+  console remembers the range per person in the browser, like the panel
+  preferences, 7 days by default. Each console login now replays up to the stream's
+  1 GiB of STATS lines (a year, since #310), and until the login service is deployed with the
+  change (only the console person's start time, no new right, no `Needs:` line) the
+  console shows 7 days. The counting of a range runs in a worker thread and is kept
+  for a minute. Each login keeps its own copy of the lines (about 170 MB per 100,000
+  lines, at most 100,000 held) and the copies are not shared between logins: every
+  session reads with its own credentials, and a shared copy would mix what two
+  credentials delivered.
+  The five cards below the chart follow the same look: the bus overhead share per
+  version as thin bars (full width 20 %), one "asks to humans" table with a row for
+  the range and a muted one for the range before, the bus traffic by category as
+  bars relative to the largest, and the tokens by category as stacked bars with an
+  "estimated" chip and a switch between input-token equivalents and raw tokens;
+  every missing figure shows n/a with its reason. The Stats styles carry their own
+  `stats-` prefix, so they leave the Asks page and the app-wide chips alone; the asks
+  table stacks into one block per row on a phone.
+
 - **STATS stream: 1 GiB, so a year fits at 300 to 500 agents** (#310, RT-6.45 step 1). The login service raises the stream from 64 MiB to 1 GiB in place at its next start (a larger size an operator set is kept); the NATS server needs that much more JetStream file storage (`max_file_store`). The import's own memory bound stays 64 MiB.
 
 - **The operator console opens on the agents list, with three views** (#283,

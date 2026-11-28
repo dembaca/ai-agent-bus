@@ -36,8 +36,9 @@ func MetricsDeliver(what string) string {
 // may make or keep it, and nobody else's consumer of these names is taken over.
 const metaService = "service"
 
-// MetricsHistory is how far back the stats consumer starts, like a person's.
-const MetricsHistory = PersonStatsHistory
+// MetricsHistory is how far back the stats consumer starts: a week, what /metrics
+// counts over.
+const MetricsHistory = 7 * 24 * time.Hour
 
 // EnsureMetrics makes or keeps the consumers of the console's unattended
 // metrics page at the service's start (#158): PRESENCE with every agent's

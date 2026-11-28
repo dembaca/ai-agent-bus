@@ -1,7 +1,8 @@
-import type { GroupBy, Scope } from "./api/types"
+import type { GroupBy, RangeKey, Scope } from "./api/types"
 
 // What the console remembers per person (#283): whether the "At a glance"
-// panel is open or folded, the grouping, the folded groups and the scope.
+// panel is open or folded, the grouping, the folded groups, the scope and the Stats page's
+// time range (#284).
 // Kept in this browser's localStorage under the operator's name (the login's
 // own, so two people on one browser keep their own); storage can be missing
 // or throw (a private window, blocked site data): then nothing is remembered
@@ -16,12 +17,15 @@ export interface Prefs {
   /** `<by>:<group key>` to true (folded) or false (open): what the operator
    * picked; a group without an entry follows the scope's default. */
   folded: Record<string, boolean>
+  /** The Stats page's time range (#284). */
+  range: RangeKey
 }
 
-export const DEFAULT_PREFS: Prefs = { panel: null, by: "home", scope: "mine", folded: {} }
+export const DEFAULT_PREFS: Prefs = { panel: null, by: "home", scope: "mine", folded: {}, range: "7d" }
 
 const BYS: readonly string[] = ["home", "repo", "owner", "status", "none"]
 const SCOPES: readonly string[] = ["mine", "trusting", "everyone"]
+const RANGE_KEYS: readonly string[] = ["24h", "7d", "30d", "90d", "12m"]
 const MAX_FOLDED = 500
 
 const keyOf = (person: string): string => `choirbus.console.${person}`
@@ -44,6 +48,7 @@ export function loadPrefs(person: string | null): Prefs {
       by: typeof r.by === "string" && BYS.includes(r.by) ? r.by as GroupBy : DEFAULT_PREFS.by,
       scope: typeof r.scope === "string" && SCOPES.includes(r.scope) ? r.scope as Scope : DEFAULT_PREFS.scope,
       folded,
+      range: typeof r.range === "string" && RANGE_KEYS.includes(r.range) ? r.range as RangeKey : DEFAULT_PREFS.range,
     }
   } catch {
     return DEFAULT_PREFS
