@@ -1,19 +1,18 @@
 """What the login tells the responsible human (RT-6.34, ADR-014 point 9, #154).
 
-The approval reaches the human two ways, never a channel: whoever opens the
-link and logs in becomes the owner.
+The approval reaches the human at this machine only, never as a channel post and
+never as a direct message: whoever opens the link and logs in becomes the owner.
+`Shown` opens the verification link in the desktop's browser (only an https link
+on the issuer's scheme, host and port, without a shell, never a console browser
+that would take its stdio) and writes the address and the code to stderr, which
+the harness keeps in its MCP log; the harness's hooks show the same line in the
+agent's terminal (SessionStart, the Stop hook, the OpenCode plugin and the pi
+extension, #198). Never the device code.
 
-* At this machine (`Shown`): the MCP server opens the verification link in the
-  desktop's browser (only an https link on the issuer's scheme, host and port,
-  without a shell, never a console browser that would take its stdio) and
-  writes the address and the code to its stderr, which the harness keeps in
-  its MCP log. Never the device code.
-* As a direct message to the responsible human (`DMNotifier`). The home
-  channel gets an ask that says only that an approval waits in the DM. It is
-  registered like an `ask_human` ask, so the reminders and the open asks of
-  the bus see it, and is settled when the approval ends.
-
-`Combined` runs both: the approval goes on when at least one reached the human.
+Piece 14c-3 removed the DM with its ask in the home (the owner's decision of
+2026-11-27, #198): a fully switched session holds no bot token, so the host
+cannot post it, and the approval is the line at this machine. The theft notices
+(`notice_text`) are no approval and stay a DM where a bot posts them (RT-6.34).
 """
 
 from __future__ import annotations
@@ -24,15 +23,12 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, TextIO
 from urllib.parse import urlsplit
 
-from . import a2a, asks, stats
-
 if TYPE_CHECKING:
     from .login import DeviceGrant
-    from .port import ChatPort
 
 log = logging.getLogger(__name__)
 
@@ -135,7 +131,9 @@ class Shown:
 
 class Combined:
     """Several ways to the human: the approval goes on when at least one
-    reached them; each failure is logged by its type only."""
+    reached them; each failure is logged by its type only. The relay in a
+    corral sandbox shows it at this machine and tells the host for the
+    terminal line (RT-6.18, RT-6.34)."""
 
     def __init__(self, *parts: _Notifier) -> None:
         self._parts = parts
@@ -174,18 +172,6 @@ class Combined:
             except Exception as exc:  # noqa: BLE001
                 log.warning("login: the human was not told (%s)", type(exc).__name__)
 
-DM_TEXT = (
-    "Login approval for your agent {bot}: open {link} and log in. The page shows the code {code}; "
-    "approve only if it matches this one. Whoever approves becomes this agent's owner, so do not "
-    "forward the link. It is valid for {minutes} min."
-)
-ASK_TEXT = "@{human} A login approval for this agent waits in your direct messages."
-ASK_TITLE = "A login approval waits in your direct messages"
-REFUSED_TEXT = (
-    "Login for your agent {bot} refused: the person who approved is not you. The login was "
-    "dropped. Open a new approval yourself, or tell your administrator if you did not expect this."
-)
-
 
 NOTICE_SESSION = (
     "Login of your agent {agent}: its Keycloak session was used from two networks in turn, so the "
@@ -202,76 +188,3 @@ NOTICE_HOST_KEY = (
 def notice_text(agent: str, kind: str) -> str:
     """The theft notice to the responsible human (RT-6.34): what was used and what only they can do."""
     return (NOTICE_HOST_KEY if kind == "host_key" else NOTICE_SESSION).format(agent=agent)
-
-
-class DMNotifier:
-    def __init__(self, get_client: Callable[[], Awaitable[ChatPort | None]],
-                 human: Callable[[], str]) -> None:
-        self._get_client = get_client
-        self._human = human
-        self._ask: str = ""
-
-    async def _target(self) -> tuple[ChatPort, str, str]:
-        from .login import NotifyError
-        client = await self._get_client()
-        human = self._human().strip().lstrip("@")
-        if client is None or not human:
-            raise NotifyError("no chat or no responsible human to tell")
-        uid = await client.human_id(human)
-        if not uid:
-            raise NotifyError("the responsible human is not known in the chat")
-        return client, human, await client.direct_channel_with(uid)
-
-    async def waiting(self, grant: DeviceGrant) -> None:
-        if self._ask:  # an earlier approval's ask is settled, never left open
-            await self.settled("replaced")
-        client, human, dm = await self._target()
-        me = await client.get_me()
-        link = grant.verification_uri_complete or grant.verification_uri
-        text = DM_TEXT.format(bot=me.username, link=link, code=grant.user_code,
-                              minutes=max(1, grant.expires_in // 60))
-        stats.record("post", chars=len(text), w="other")  # RT-6.9: the host's own post, not the agent's
-        await client.post(text, channel_id=dm)
-        # The home: the ask says nothing but that the approval waits in the DM.
-        # The DM is out: a failing ask must not end the approval.
-        try:
-            text = ASK_TEXT.format(human=human)
-            stats.record("post", chars=len(text), w="other")  # RT-6.34: the host's ask, not the agent's
-            post = await client.post(text, props=a2a.props(kind=a2a.ASK))
-            asks.add(me.id, post.id, human, post.id, title=ASK_TITLE)
-            self._ask = post.id
-        except Exception as exc:  # noqa: BLE001
-            log.warning("login: the ask in the home was not posted (%s)", type(exc).__name__)
-
-    async def start(self) -> None:
-        """An ask left open by a session that ended mid-approval is settled."""
-        client = await self._get_client()
-        if client is None:
-            return
-        me = await client.get_me()
-        heads = asks.titles(me.id)
-        for post_id in asks.open_asks(me.id):
-            if heads.get(post_id) == ASK_TITLE and post_id != self._ask:
-                asks.resolve(me.id, post_id)
-                try:
-                    await client.add_reaction(post_id, a2a.done_reaction())
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("login: an old ask got no mark (%s)", type(exc).__name__)
-
-    async def settled(self, outcome: str) -> None:
-        ask, self._ask = self._ask, ""
-        if not ask:
-            return
-        client = await self._get_client()
-        if client is None:
-            return
-        me = await client.get_me()
-        asks.resolve(me.id, ask)
-        await client.add_reaction(ask, a2a.done_reaction())
-
-    async def refused(self) -> None:
-        client, _, dm = await self._target()
-        me = await client.get_me()
-        text = REFUSED_TEXT.format(bot=me.username)
-        stats.record("post", chars=len(text), w="other")  # RT-6.9: the host's own post
-        await client.post(text, channel_id=dm)

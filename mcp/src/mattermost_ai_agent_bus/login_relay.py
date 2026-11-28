@@ -17,22 +17,22 @@ the NATS adapter needs (`RelayedLogin`):
   "token": …}`` from its `login.Login` (refresh or device approval) or
   ``{"id": n, "error": …}`` (a LoginError's text, which carries no secret).
 * The relay tells the host about an approval (``waiting``, ``settled``,
-  ``refused``): the host DMs the responsible human (login_notice.DMNotifier),
-  since only it holds the bot token. The relay itself opens a browser and
-  writes the address and the code to its stderr.
+  ``refused``): the host keeps it for the hooks' terminal line (``pending_line``,
+  ``/v1/login``) and builds the link from its own issuer. The relay itself opens
+  a browser and writes the address and the code to its stderr. No DM and no ask
+  (RT-6.34, piece 14c-3).
 
 The host trusts nothing of the relay beyond the session key, which the agent can
 read: of an approval it takes only the user code (a strict pattern) and builds
-the link to DM from its own issuer, one open approval at a time and at most one
-per cooldown; a token must be the responsible human's; an error keeps only its
-kind (denied, wrong_human, config), so the NATS port stops on it. Nothing here logs a token, a seed or the device code.
+the link for the line from its own issuer; a token must be the responsible
+human's; an error keeps only its kind (denied, wrong_human, config), so the NATS
+port stops on it. Nothing here logs a token, a seed or the device code.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import json
 import logging
 import re
@@ -94,14 +94,13 @@ class _Closed(Exception):
 class RelayedLogin:
     """The login the sandbox holds, seen from the host process (login.start_relayed)."""
 
-    def __init__(self, settings: Settings, *, notifier: Any = None,
+    def __init__(self, settings: Settings, *,
                  human: Callable[[], str] = owners.responsible_human,
                  now: Callable[[], float] = time.monotonic,
                  channel_wait_sec: float = CHANNEL_WAIT_SEC,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         self.settings = settings
         self._sleep = sleep
-        self._notifier = notifier
         self._human = human
         self._now = now
         self._wait = channel_wait_sec
@@ -111,20 +110,12 @@ class RelayedLogin:
         self._waiters: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._next = 0
         self._kp: nkeys.KeyPair | None = None
-        self._tasks: set[asyncio.Task[None]] = set()
         # The approval the sandbox waits on, for its terminal (#198): set at the
         # sandbox's `waiting` event, cleared when it settles, one line per login.
         self._pending: DeviceGrant | None = None
         self._pending_until = 0.0
         self._shown = False
-        self._approval_open = False
-        self._approval_id = 0
-        self._approval_until = 0.0
-        self._last_waiting: float | None = None
-        self._last_refused: float | None = None
         self._warned: dict[str, float] = {}  # a warning's last time: the sandbox may repeat it
-        # The newest approval that came within the cooldown: DMed when it ends.
-        self._deferred: tuple[DeviceGrant, float] | None = None
 
     def __repr__(self) -> str:
         return (f"RelayedLogin(issuer={self.settings.issuer!r}, "
@@ -153,13 +144,8 @@ class RelayedLogin:
         return grant.verification_uri_complete or grant.verification_uri, grant.user_code, left
 
     async def run(self) -> None:
-        """Settle an ask an earlier session left open; the login itself runs in the
-        sandbox. Warns when no login channel comes (an older relay there)."""
-        if self._notifier is not None:
-            try:
-                await self._notifier.start()
-            except Exception as exc:  # noqa: BLE001
-                log.warning("login: an earlier ask was not settled (%s)", type(exc).__name__)
+        """The login itself runs in the sandbox; the host keeps what its hooks show.
+        Warns when no login channel comes (an older relay there)."""
         try:
             await asyncio.to_thread(clear_old_host_store, self.settings, self._human().strip())
         except Exception as exc:  # noqa: BLE001
@@ -261,12 +247,9 @@ class RelayedLogin:
                 for fut in self._waiters.values():
                     if not fut.done():
                         fut.set_exception(_Closed())
-                # The relay is gone mid-approval: its ask is settled, its code dropped,
-                # and no link of it stays for the terminal (#198).
-                self._deferred = None
+                # The relay is gone mid-approval: its code is dropped, and no link
+                # of it stays for the terminal (#198).
                 self._pending, self._shown, self._pending_until = None, False, 0.0
-                if self._approval_open:
-                    self._close_approval("failed")
             self.release(claim)
             log.info("login: the sandbox's login channel closed")
 
@@ -294,34 +277,18 @@ class RelayedLogin:
                 # built here from the issuer with the code checked above.
                 self._pending, self._shown = grant, False
                 self._pending_until = self._now() + grant.expires_in
-                if self._notifier is not None:
-                    self._offer_approval(grant)
             return
         if event == "settled" and msg.get("outcome") in OUTCOMES:
-            # The approval ended: no finished login's link stays for the terminal (#198),
-            # whether or not a notifier is there to settle it.
+            # The approval ended: no finished login's link stays for the terminal (#198).
             self._pending, self._shown, self._pending_until = None, False, 0.0
-        if self._notifier is None:
-            return
-        if event == "settled" and msg.get("outcome") in OUTCOMES:
-            if self._approval_open:
-                self._close_approval(str(msg["outcome"]))
-            else:
-                self._deferred = None  # it ended before its DM went out
-        elif event == "refused":
-            if self._last_refused is not None and self._now() - self._last_refused < login.COOLDOWN_SEC:
-                log.info("login: another refusal within the cooldown; no DM")
-                return
-            self._last_refused = self._now()
-            self._spawn(self._notifier.refused(), "the human was not told")
 
     def _grant(self, msg: dict[str, Any]) -> DeviceGrant | None:
-        """The approval to DM: only the user code comes from the sandbox (a strict
-        pattern); the link is built here from the configured issuer, so no text
-        of the sandbox's reaches the DM."""
+        """The approval for the terminal line: only the user code comes from the
+        sandbox (a strict pattern); the link is built here from the configured
+        issuer, so no text of the sandbox's reaches it."""
         code, expires = msg.get("code"), msg.get("expires_in")
         if not isinstance(code, str) or not USER_CODE.fullmatch(code):
-            self._warn("code", "login: the sandbox's user code is not one; no DM")
+            self._warn("code", "login: the sandbox's user code is not one; no line")
             return None
         uri = f"{self.settings.issuer}/device"
         minutes = expires if type(expires) is int and 0 < expires <= 3600 else 600
@@ -336,63 +303,6 @@ class RelayedLogin:
             return
         self._warned[kind] = now
         log.warning(text)
-
-    def _offer_approval(self, grant: DeviceGrant) -> None:
-        """One open approval at a time (an open one ends at its expiry), and at most
-        one DM per cooldown: a newer one within it waits until the cooldown ends."""
-        now = self._now()
-        if self._approval_open and now >= self._approval_until:
-            self._close_approval("expired")
-        if self._approval_open:
-            self._warn("open", "login: an approval is already open; no second DM")
-            return
-        wait = 0.0 if self._last_waiting is None else self._last_waiting + login.COOLDOWN_SEC - now
-        if wait > 0:
-            first = self._deferred is None
-            self._deferred = (grant, now)  # the newest code wins
-            if first:
-                log.info("login: another approval within the cooldown; its DM follows in %d s", int(wait) + 1)
-                self._spawn(self._later(wait), "the deferred DM was not sent")
-            return
-        self._deferred = None
-        self._approval_open = True
-        self._approval_id += 1
-        self._last_waiting = now
-        self._approval_until = now + grant.expires_in
-        self._spawn(self._notifier.waiting(grant), "the DM with the approval was not sent")
-        self._spawn(self._expire(self._approval_id, grant.expires_in), "the expired ask was not settled")
-
-    async def _later(self, wait: float) -> None:
-        await self._sleep(wait)
-        item, self._deferred = self._deferred, None
-        if item is None:
-            return
-        grant, at = item
-        left = grant.expires_in - int(self._now() - at)
-        if left > 0:
-            self._offer_approval(dataclasses.replace(grant, expires_in=left))
-
-    async def _expire(self, approval: int, seconds: float) -> None:
-        await asyncio.sleep(seconds)
-        if self._approval_open and self._approval_id == approval:
-            self._close_approval("expired")
-
-    def _close_approval(self, outcome: str) -> None:
-        self._approval_open = False
-        # The approval ended: no finished login's link stays for the terminal (#198).
-        self._pending, self._shown, self._pending_until = None, False, 0.0
-        self._spawn(self._notifier.settled(outcome), "the ask was not settled")
-
-    def _spawn(self, coro: Awaitable[None], what: str) -> None:
-        async def run() -> None:
-            try:
-                await coro
-            except Exception as exc:  # noqa: BLE001
-                log.warning("login: %s (%s)", what, type(exc).__name__)
-
-        task = asyncio.create_task(run())
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
 
 
 def clear_old_host_store(settings: Settings, human: str) -> list[str]:
@@ -420,7 +330,8 @@ def clear_old_host_store(settings: Settings, human: str) -> list[str]:
 # --- the relay in the sandbox ---------------------------------------------------------
 
 class ToHost:
-    """Tells the host process about an approval, for its DM; never the device code."""
+    """Tells the host process about an approval, for the hooks' terminal line; never
+    the device code."""
 
     def __init__(self) -> None:
         self.writer: asyncio.StreamWriter | None = None

@@ -830,7 +830,7 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     checking = asyncio.create_task(release.check_loop())
     # The Keycloak login, when CB_LOGIN_* is set; the session never waits for it (RT-6.34).
     # The relay in the sandbox holds it and hands this process tokens (#154, login_relay.py).
-    logging_in = login.start_relayed(get_client)
+    logging_in = login.start_relayed()
     # A home that runs over NATS (CB_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
     nats = asyncio.create_task(compose.start_nats(client))
     try:
