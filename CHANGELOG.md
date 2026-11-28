@@ -35,6 +35,10 @@ before 0.5.0 are described in the git history.
   meanwhile drops its intent instead of taking it again. RT-6.1 step 7 says why the
   workspace tie's lock is never swept. Switch off: nothing differs.
 
+### Docs
+
+- Plan B piece 14 becomes a cutover (the owner's decision of 2026-11-28, #244): the flip of the crown without a bot (14c-2c) and the removal of the host side (14d) in one release, every piece switched on in the lab first with a smoke test, the registrar one day as the way back, then the shutdown; the plan's last six gates (the measured acceptance, the console's signature check and the offline token's lifetime among them) give way to a cutover checklist after release 0.105.0 (`docs/plan-b-piece-14.md`, ADR-014 item 14).
+
 ## 0.105.0
 
 Needs: login service, bridge and hosts on the same release.
