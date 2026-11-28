@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { ActivityBar } from "../api/types"
 import { mockApi } from "../api/mock"
-import { ActivityChart, RANGES, Stats, barLabel } from "./Stats"
+import { ActivityChart, RANGES, ReportCard, Stats, barLabel } from "./Stats"
 
 const groups = [{ id: "working", label: "working on it" }, { id: "finished", label: "finished something" },
   { id: "asking", label: "asking a human" }, { id: "organising", label: "organising" }]
@@ -10,10 +10,10 @@ const groups = [{ id: "working", label: "working on it" }, { id: "finished", lab
 describe("Stats (#284)", () => {
   it("offers the five time ranges and names the range under the heading", () => {
     expect(RANGES.map((r) => r.label)).toEqual(["24 h", "7 days", "30 days", "90 days", "12 months"])
-    const html = renderToStaticMarkup(<Stats api={mockApi()} onFail={() => {}} />)
+    const html = renderToStaticMarkup(<Stats api={mockApi()} onFail={() => {}} range="30d" onRange={() => {}} />)
     expect(html).toContain("<h1>Stats</h1>")
-    expect(html).toContain("the last 7 days")
-    expect(html).toContain('aria-pressed="true">7 days<')
+    expect(html).toContain("the last 30 days")
+    expect(html).toContain('aria-pressed="true">30 days<')
     for (const r of RANGES) expect(html).toContain(`>${r.label}</button>`)
   })
 
@@ -36,11 +36,28 @@ describe("Stats (#284)", () => {
 
   it("says why 24 h has no bars, and when nothing was counted", () => {
     const why = "hourly figures need agents that publish hourly"
-    const html = renderToStaticMarkup(<ActivityChart activity={{ bucket: "hour", groups, bars: [], unavailable: why }} />)
+    const html = renderToStaticMarkup(
+      <ActivityChart activity={{ bucket: "hour", groups, bars: [], unavailable: "no hourly data yet", reason: why }} />)
+    expect(html).toContain("no hourly data yet")
     expect(html).toContain(why)
+    expect(html).not.toMatch(/>0</)
     expect(html).not.toContain("activity__col")
     const none = renderToStaticMarkup(<ActivityChart activity={{ bucket: "day", groups, bars: [] }} />)
     expect(none).toContain("no posts counted in this range")
+  })
+
+  it("keeps the card of a range the stream does not hold, every figure n/a with its reason, never 0", async () => {
+    const reports = await mockApi().stats("12m")
+    const before = reports.find((r) => r.id === "asks-before")!
+    expect(before.window).toBe("the 12 mo before")
+    expect(before.fields.every((f) => f.value === null)).toBe(true)
+    const html = renderToStaticMarkup(<ReportCard report={before} />)
+    expect(html).toContain("the 12 mo before")
+    expect(html).toContain("n/a: the stream holds 12 months at most")
+    expect(html).not.toMatch(/<td>0/)
+    expect(html.match(/<td>n\/a/g)).toHaveLength(before.fields.length)
+    const held = await mockApi().stats("7d")
+    expect(held.find((r) => r.id === "asks-before")!.unavailable).toBeUndefined()
   })
 
   it("labels a bar by its bucket, in UTC", () => {

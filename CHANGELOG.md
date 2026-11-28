@@ -631,9 +631,21 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
   it, finished something, asking a human and organising, with the exact bus words
   on hovering a bar; people's posts are not in it. The console now reads the
   whole STATS history: the login service's stats consumer of each login starts
-  365 days back instead of 7. "24 h" shows no bars and says "hourly figures need
-  agents that publish hourly": the STATS lines carry their counts by bus word per
-  part, at most a day, and a session publishes one part a day.
+  365 days back instead of 7. "24 h" shows no bars and says "no hourly data yet",
+  with the reason that hourly figures need agents that publish hourly (n/a, never
+  0): the STATS lines carry their counts by bus word per part, at most a day, and
+  a session publishes one part a day. The card of the range before stays for every
+  range; where the stream does not hold it (12 months: 24 months back) or it starts
+  before the oldest line held, every figure is n/a with a short reason, never 0. The
+  console remembers the range per person in the browser, like the panel
+  preferences, 7 days by default. Each console login now replays up to the stream's
+  64 MiB of STATS lines (a year), and until the login service is deployed with the
+  change (only the console person's start time, no new right, no `Needs:` line) the
+  console shows 7 days. The counting of a range runs in a worker thread and is kept
+  for a minute. Each login keeps its own copy of the lines (about 170 MB per 100,000
+  lines, at most 100,000 held) and the copies are not shared between logins: every
+  session reads with its own credentials, and a shared copy would mix what two
+  credentials delivered.
 
 - **The operator console opens on the agents list, with three views** (#283,
   ADR-015 points 3 and 6, RT-6.43 step 11). The console has Agents (the start

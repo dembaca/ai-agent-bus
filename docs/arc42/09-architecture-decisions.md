@@ -6160,7 +6160,11 @@ the top right, 24 h, 7 days, 30 days, 90 days or 12 months, applies to every
 card, the per-version card included, and the line under the heading names it:
 `GET /v1/stats?range=24h|7d|30d|90d|12m` (7 days without it, another value a
 400) computes each card over the range, and "Asks to humans" shows the range
-and the range of the same length before it. The new first card, "Activity ·
+and the range of the same length before it; that card never goes away: when the
+stream does not hold the range before (12 months: 24 months back) or it starts
+before the oldest line held, every figure is n/a with a short reason, never 0.
+The range is remembered per person in the browser, like the panel preferences
+(7 days by default). The new first card, "Activity ·
 what the agents posted", draws stacked bars of the agents' own posts by bus
 word, one bar per day (7 and 30 days), week (90 days) or month (12 months),
 in four groups named in plain words: working on it (`ACK`, `PROGRESS`),
@@ -6174,7 +6178,7 @@ need hourly buckets by bus word in the agents' STATS lines (a part carries
 `post_words` for the whole part, at most a day, and a session publishes one
 part a day and one at its end), and a session publishing more often than
 once a day, within the 8 KiB limit of a line; until then "24 h" shows no
-bars and says why. A part counts in the bucket it was received in. Rejected:
+bars and says "no hourly data yet" with that reason. A part counts in the bucket it was received in. Rejected:
 a slider or free date range, and figures by agent, home or owner on this
 page (point 15). In the wording, many agents are a flock, never a fleet.
 

@@ -19,8 +19,10 @@ logged-in operator as owner or trusted (ADR-015 point 15).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
 from collections import deque
 from dataclasses import dataclass, field
@@ -49,6 +51,8 @@ RANGES: dict[str, tuple[str, int, str]] = {
 }
 DEFAULT_RANGE = "7d"
 BARS = {"day": {"7d": 7, "30d": 30}, "week": {"90d": 13}, "month": {"12m": 12}}
+# "24 h" has no hourly data yet (answer of the design contact, #284): n/a, never 0, with the reason.
+HOURLY_NA = "no hourly data yet"
 HOURLY_NOTE = "hourly figures need agents that publish hourly"
 
 # The bus words of an agent's own posts in four groups (#284); a word outside the lists
@@ -73,6 +77,7 @@ class StatsBook:
     _server_now: float = 0.0
     _seen_at: tuple[float, float] | None = None  # (server time, monotonic) of the newest stamp
     count: Callable[[], None] | None = None   # the process-wide counter (#158, telemetry)
+    _cache: tuple[tuple[str, int, int, int], list[dict[str, Any]]] | None = None
 
     @property
     def server_now(self) -> float:
@@ -121,42 +126,61 @@ class StatsBook:
         edge = self.server_now - sec
         return [(at, seq, line) for at, seq, _agent, line in self._lines if at >= edge]
 
-    def _between(self, newer: float, older: float) -> list[dict[str, Any]]:
-        """The lines received from `older` seconds back up to `newer` seconds back."""
-        now = self.server_now
-        return [line for at, _seq, _agent, line in self._lines if now - older <= at < now - newer]
-
     def reports(self, range_key: str = DEFAULT_RANGE) -> list[dict[str, Any]]:
+        """`/v1/stats?range=` over a snapshot of the lines (see `_reports`)."""
+        return self._reports(range_key, tuple(self._lines), self.server_now)
+
+    async def reports_async(self, range_key: str = DEFAULT_RANGE) -> list[dict[str, Any]]:
+        """The same, off the event loop: a year's lines take seconds to count (100k lines, the
+        12 months range, about 2 s). The snapshot (a tuple of the rows, taken here on the loop
+        thread: the lines themselves are never changed) is all the worker thread reads, so
+        deliveries arriving meanwhile cannot disturb it. The answer is kept for a minute per
+        range while no line came (the page asks every 30 s)."""
+        lines, now = tuple(self._lines), self.server_now
+        key = (range_key, len(lines), lines[-1][1] if lines else 0, int(now // 60))
+        if self._cache is not None and self._cache[0] == key:
+            return self._cache[1]
+        out = await asyncio.to_thread(self._reports, range_key, lines, now)
+        self._cache = (key, out)
+        return out
+
+    def _reports(self, range_key: str, lines: tuple[tuple[float, int, str, dict[str, Any]], ...],
+                 now: float) -> list[dict[str, Any]]:
         """`/v1/stats?range=` (#284): over the chosen time range (24 h, 7, 30, 90 days, 12
         months, 7 days by default) the activity bars, the bus overhead share per version, the
         asks over the range and over the range before it, the bus traffic by category and the
         tokens by category."""
         label, sec, _bucket = RANGES[range_key]
-        held = [at for at, _seq, _agent, _line in self._lines if at >= self.server_now - sec]
+        held = [at for at, _seq, _agent, _line in lines if at >= now - sec]
         oldest = {"label": "age of the oldest line", "unit": "s",
-                  "value": round(self.server_now - min(held)) if held else None}
-        week = self._within(sec)
+                  "value": round(now - min(held)) if held else None}
+        week = [line for at, _seq, _agent, line in lines if at >= now - sec]
         rows = _safe(stats.report, week) or []
         # The overhead segment of the token split (RT-6.9 step 3), in input-token
         # equivalents: a version without the split is n/a, never 0.
         share = [{"label": f"version {row['version']}", "unit": "%",
                   "value": _pct(((row.get("split") or {}).get("eq_pct") or {}).get(stats.OVERHEAD))}
                  for row in rows]
-        out = [self._activity(range_key),
+        out = [self._activity(range_key, lines, now),
                {"id": "share-per-version", "title": "bus overhead share of all tokens, per version",
                 "window": label, "note": stats.SPLIT_NOTE,
                 "fields": [*share, {"label": "lines", "unit": "count", "value": len(week) or None}, oldest]}]
-        for rid, window, lines in (("asks", label, week),
-                                   ("asks-before", f"the {label} before", self._between(sec, 2 * sec))):
-            a = _safe(stats.asks_summary, lines) or {}
-            out.append({"id": rid, "title": "asks to humans", "window": window, "fields": [
+        before_na = _before_unavailable(sec, lines, now)
+        before = [] if before_na else [line for at, _seq, _agent, line in lines
+                                       if now - 2 * sec <= at < now - sec]
+        for rid, window, rows_of in (("asks", label, week),
+                                     ("asks-before", f"the {label} before", before)):
+            a = ({} if rid == "asks-before" and before_na else _safe(stats.asks_summary, rows_of)) or {}
+            out.append({"id": rid, "title": "asks to humans", "window": window,
+                        **({"unavailable": before_na} if rid == "asks-before" and before_na else {}),
+                        "fields": [
                 {"label": "asks", "unit": "count", "value": a.get("asks")},
                 {"label": "answered", "unit": "count", "value": a.get("answered")},
                 {"label": "answered share", "unit": "%", "value": _pct(a.get("answered_pct"))},
                 {"label": "mean wait for an answer", "unit": "s", "value": a.get("mean_wait_sec")},
                 {"label": "longest wait for an answer", "unit": "s", "value": a.get("max_wait_sec")},
                 {"label": "still open at the part's end", "unit": "count", "value": a.get("open")},
-                oldest]})
+                {**oldest, "value": None} if rid == "asks-before" and before_na else oldest]})
         t = _safe(stats.traffic_summary, week) or {}
         ovh, coord = t.get("overhead") or [None, None], t.get("coordination") or [None, None]
         out.append({"id": "traffic-by-category", "title": "bus traffic by category", "window": label, "fields": [
@@ -173,7 +197,8 @@ class StatsBook:
         out.append(self._split_report(week, rows, oldest, label))
         return out
 
-    def _activity(self, range_key: str) -> dict[str, Any]:
+    def _activity(self, range_key: str, lines: tuple[tuple[float, int, str, dict[str, Any]], ...],
+                  now: float) -> dict[str, Any]:
         """The first card (#284): the agents' own posts by bus word, one bar per bucket, the
         words bundled into four groups (`ACTIVITY_GROUPS`) and every word kept for the hover.
         A part counts in the bucket it was received in, by the server's time (UTC). A part
@@ -185,18 +210,19 @@ class StatsBook:
                 "bucket": bucket, "groups": [{"id": g, "label": name} for g, name, _w in ACTIVITY_GROUPS],
                 "bars": []}}
         if bucket == "hour":
-            card["activity"]["unavailable"] = HOURLY_NOTE
+            card["activity"]["unavailable"] = HOURLY_NA
+            card["activity"]["reason"] = HOURLY_NOTE
             return card
-        starts = _bucket_starts(self.server_now, bucket, BARS[bucket][range_key])
+        starts = _bucket_starts(now, bucket, BARS[bucket][range_key])
         bars = [{"start": s, "groups": {g: 0 for g, _n, _w in ACTIVITY_GROUPS}, "words": {}}
                 for s in starts]
-        for at, _seq, _agent, line in self._lines:
+        for at, _seq, _agent, line in lines:
             if at < starts[0]:
                 continue
-            i = max(i for i, s in enumerate(starts) if s <= at)
+            i = bisect_right(starts, at) - 1
             for word, n in _words(line):
                 bars[i]["words"][word] = bars[i]["words"].get(word, 0) + n
-                bars[i]["groups"][_group_of(word)] += n
+                bars[i]["groups"][_GROUP_OF.get(word, "organising")] += n
         card["activity"]["bars"] = bars
         return card
 
@@ -248,11 +274,20 @@ class StatsBook:
                 for agent, rows in sorted(groups.items())]
 
 
-def _group_of(word: str) -> str:
-    for gid, _name, words in ACTIVITY_GROUPS:
-        if word in words:
-            return gid
-    return "organising"
+def _before_unavailable(sec: int, lines: tuple[tuple[float, int, str, dict[str, Any]], ...],
+                        now: float) -> str | None:
+    """Why the range before the chosen one cannot be shown, or None (the design contact's
+    answer, #284): the stream holds `YEAR_SEC`, and the console holds the lines it has read,
+    so a previous range that starts further back than that, or before the oldest line held,
+    is n/a (the card stays, every figure n/a, never 0)."""
+    if 2 * sec > YEAR_SEC:
+        return "the stream holds 12 months at most, so the range before is never held"
+    if not lines or min(at for at, _s, _a, _l in lines) > now - 2 * sec:
+        return "the range before starts before the oldest line held"
+    return None
+
+
+_GROUP_OF = {w: gid for gid, _n, words in ACTIVITY_GROUPS for w in words}
 
 
 def _words(line: dict[str, Any]) -> list[tuple[str, int]]:

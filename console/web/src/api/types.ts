@@ -297,6 +297,8 @@ export interface Activity {
   groups: { id: string; label: string }[]
   bars: ActivityBar[]
   unavailable?: string
+  /** The short reason behind `unavailable` ("hourly figures need agents that publish hourly"). */
+  reason?: string
 }
 
 export interface Report {
@@ -308,6 +310,9 @@ export interface Report {
   warn?: string
   /** One line on how the numbers come about (an estimate's method). */
   note?: string
+  /** Set when the whole card is n/a, and why (a range the stream does not hold); its
+   * fields are then all n/a, never 0. */
+  unavailable?: string
   fields: ReportField[]
   bars?: ReportBar[]
   stacks?: ReportStack[]

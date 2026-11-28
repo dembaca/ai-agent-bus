@@ -228,9 +228,13 @@ const tasksOf = (name: string): TaskRow[] => {
   return all[name] ?? []
 }
 
-const asksReport = (id: string, window: string, n: number): Report => ({
+const asksReport = (id: string, window: string, n: number, unavailable?: string): Report => ({
   id, title: "asks to humans", window,
-  fields: [
+  ...(unavailable ? { unavailable } : {}),
+  fields: unavailable ? [
+    "asks", "answered", "answered share", "mean wait for an answer", "longest wait for an answer",
+    "still open at the part's end", "age of the oldest line",
+  ].map((label) => ({ label, value: null, unit: "count" as const })) : [
     { label: "asks", value: n, unit: "count" },
     { label: "answered", value: n - 1, unit: "count" },
     { label: "answered share", value: Math.round(((n - 1) / n) * 100), unit: "%" },
@@ -275,7 +279,7 @@ const activity = (range: RangeKey): Report => {
       groups: [{ id: "working", label: "working on it" }, { id: "finished", label: "finished something" },
                { id: "asking", label: "asking a human" }, { id: "organising", label: "organising" }],
       bars,
-      ...(range === "24h" ? { unavailable: "hourly figures need agents that publish hourly" } : {}),
+      ...(range === "24h" ? { unavailable: "no hourly data yet", reason: "hourly figures need agents that publish hourly" } : {}),
     },
   }
 }
@@ -293,7 +297,8 @@ const stats = (range: RangeKey): Report[] => [
     ],
   },
   asksReport("asks", RANGE_LABEL[range], 19),
-  asksReport("asks-before", `the ${RANGE_LABEL[range]} before`, 14),
+  asksReport("asks-before", `the ${RANGE_LABEL[range]} before`, 14,
+    range === "12m" ? "the stream holds 12 months at most, so the range before is never held" : undefined),
   {
     // RT-6.9 step 3: exact counts, grouped into bus overhead and coordination.
     id: "traffic-by-category", title: "bus traffic by category", window: RANGE_LABEL[range],

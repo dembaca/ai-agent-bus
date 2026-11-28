@@ -219,6 +219,16 @@ def test_the_activity_card_the_fixture_states() -> None:
     assert book.reports("7d")[0] == FIXTURE["activity"]
 
 
+def test_the_card_of_a_range_not_held_the_fixture_states() -> None:
+    """#284: a previous range that starts before the oldest line held is n/a with its reason,
+    every figure null, never 0."""
+    from console_server.stats_view import StatsBook
+    from test_asks_stats import A, LINE, NOW, book_with
+
+    book: StatsBook = book_with((A, LINE, NOW - 600))
+    assert book.reports("7d")[3] == FIXTURE["asksBefore"]
+
+
 def test_the_agent_stats_row_the_fixture_states() -> None:
     """/v1/agent-stats (#201): the row as the server sends it, one per agent, from the
     same protocol line as the report above — the token sums of both windows and the

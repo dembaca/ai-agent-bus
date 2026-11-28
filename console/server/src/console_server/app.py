@@ -419,8 +419,9 @@ class Console:
             span = query.get("range", stats_view.DEFAULT_RANGE)
             if path == "/v1/stats" and span not in stats_view.RANGES:
                 return httpd.Response.text("range: one of " + ", ".join(stats_view.RANGES), 400)
+            # the year's counting runs in a worker thread (100k lines take seconds)
             payload = (view.asks() if path == "/v1/asks"
-                       else view.stats.reports(span) if path == "/v1/stats"
+                       else await view.stats.reports_async(span) if path == "/v1/stats"
                        else view.agent_stats())
             return httpd.Response.json(payload, headers=API_HEADERS)
         if path == "/v1/groups":

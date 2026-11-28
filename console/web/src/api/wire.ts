@@ -30,6 +30,7 @@ let shapes: {
   ask: Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
   report: ReportShape
   activity: ReportShape
+  asksBefore: ReportShape
   agentStats: AgentStatsRow[]
   groups: GroupsAnswer
 } | null = null
@@ -64,6 +65,11 @@ if (!import.meta.env.PROD) {
   if (!report.window || activity.id !== "activity" || !activity.activity
       || !["hour", "day", "week", "month"].includes(activity.activity.bucket)) {
     throw new Error("wire fixture: the report window or the activity card is missing")
+  }
+  const asksBefore: ReportShape = fixture.asksBefore satisfies ReportShape
+  if (asksBefore.id !== "asks-before" || !asksBefore.unavailable
+      || asksBefore.fields.some((f) => f.value !== null)) {
+    throw new Error("wire fixture: the card of a range not held is not all n/a with its reason")
   }
   for (const field of report.fields) {
     if (!["count", "s", "%"].includes(field.unit)) {
@@ -109,7 +115,7 @@ if (!import.meta.env.PROD) {
       }
     }
   }
-  shapes = { card, page, events, ask, report, activity, agentStats, groups }
+  shapes = { card, page, events, ask, report, activity, asksBefore, agentStats, groups }
 }
 
 export const wire_shapes = shapes

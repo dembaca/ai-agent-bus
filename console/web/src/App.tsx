@@ -327,7 +327,7 @@ export function App({ api }: { api: ConsoleApi }) {
               </div>
             )}
             {view === "asks" && <Asks asks={asks} cards={cards} onOpen={openAsk} />}
-            {view === "stats" && <Stats api={api} onFail={fail} />}
+            {view === "stats" && <Stats api={api} onFail={fail} range={prefs.range} onRange={(range) => setPrefs({ range })} />}
           </div>
         </div>
       </main>

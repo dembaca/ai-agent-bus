@@ -629,9 +629,56 @@ def test_the_time_range_applies_to_every_card_and_asks_show_the_range_before() -
     assert [r["window"] for r in book.reports()] == ["7 d"] * 3 + ["the 7 d before"] + ["7 d"] * 2
     got = {k: book.reports(k) for k in ("24h", "7d", "30d", "90d", "12m")}
     assert [fields(r[1])["lines"] for r in got.values()] == [1, 2, 2, 3, 3]
-    assert fields(got["30d"][2])["asks"] == 6 and fields(got["30d"][3])["asks"] == 3   # the line of 40 days back
+    assert fields(got["30d"][2])["asks"] == 6 and got["30d"][3].get("unavailable")   # 60 days back: not held
     assert fields(got["90d"][3])["asks"] is None
     assert [r["window"] for r in got["12m"]] == ["12 mo"] * 3 + ["the 12 mo before"] + ["12 mo"] * 2
+
+
+def test_a_range_before_that_is_not_held_is_n_a_with_its_reason_never_0() -> None:
+    """#284, the design contact's answer: the card of the range before stays; when the stream
+    does not hold it (12 months: 24 months back, never held) or it starts before the oldest
+    line held, every figure is n/a (None) with a short reason; a held range has none."""
+    book = book_with((A, LINE, NOW - 100 * 86400), (B, LINE, NOW - 3 * 86400))
+    held = book.reports("30d")[3]                    # 30 to 60 days back: the oldest line is 100 days old
+    assert "unavailable" not in held
+    for key in ("7d", "30d", "90d"):
+        before = book.reports(key)[3]
+        assert ("unavailable" in before) == (key == "90d"), key
+    na = book.reports("90d")[3]
+    assert "oldest line" in na["unavailable"] and all(f["value"] is None for f in na["fields"])
+    twelve = book.reports("12m")[3]
+    assert "12 months" in twelve["unavailable"] and all(f["value"] is None for f in twelve["fields"])
+    assert twelve["window"] == "the 12 mo before"
+    assert "unavailable" not in book.reports("12m")[2]   # the range itself is held
+    assert all(f["value"] is None for f in StatsBook().reports("7d")[3]["fields"])   # no lines at all
+
+
+def test_the_year_of_lines_counts_the_same_and_fast_enough_and_off_the_loop() -> None:
+    """#284 review: the activity bars find their bucket by bisection (the result equals the
+    plain search of the bucket's start), `reports_async` answers the same as `reports` from a
+    worker thread and keeps the answer for a minute while no line came, and a large book does not
+    take seconds (a coarse guard, 20 times over the measured time)."""
+    import asyncio
+    import time
+    from console_server.stats_view import _bucket_starts
+    book = StatsBook()
+    n = 20_000
+    for i in range(1, n + 1):
+        book._lines.append((NOW - (i * 1511) % (360 * 86400), i, A, LINE | {"post_words": {"ACK": [1, 1], "DONE": [1, 1]}}))
+    book._server_now = NOW
+    book._seen_at = (NOW, time.monotonic())
+    t0 = time.monotonic()
+    got = book.reports("12m")
+    assert time.monotonic() - t0 < 20, "the 12 months range of 20k lines is far too slow"
+    starts = _bucket_starts(book.server_now, "month", 12)
+    want = [0] * 12
+    for at, _seq, _agent, _line in book._lines:
+        if at >= starts[0]:
+            want[max(i for i, s in enumerate(starts) if s <= at)] += 2
+    assert [sum(b["groups"].values()) for b in got[0]["activity"]["bars"]] == want
+    again = asyncio.run(book.reports_async("12m"))
+    assert [r["id"] for r in again] == [r["id"] for r in got] and again[0] == got[0]
+    assert asyncio.run(book.reports_async("12m")) is book._cache[1]   # no new line: kept
 
 
 WORDS = {"ACK": [4, 10], "PROGRESS": [2, 10], "RESULT": [1, 5], "DONE": [3, 5], "ask": [2, 5],
@@ -657,7 +704,7 @@ def test_the_activity_bars_bundle_the_bus_words_in_four_groups() -> None:
     assert sum(b["groups"]["finished"] for b in book.reports("12m")[0]["activity"]["bars"]) == 4 + 7
     assert sum(b["groups"]["finished"] for b in book.reports("90d")[0]["activity"]["bars"]) == 4
     hour = book.reports("24h")[0]["activity"]
-    assert hour["bucket"] == "hour" and hour["bars"] == [] and "hourly" in hour["unavailable"]
+    assert hour["bucket"] == "hour" and hour["bars"] == [] and hour["unavailable"] == "no hourly data yet" and "publish hourly" in hour["reason"]
     assert A not in json.dumps(book.reports("12m")) and B not in json.dumps(book.reports("12m"))
 
 

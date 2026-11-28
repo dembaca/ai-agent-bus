@@ -18,8 +18,9 @@ export const RANGES: readonly { key: RangeKey; label: string; named: string }[] 
  * them — counts and seconds only, no names, no post ids, no text — over one
  * time range for the whole page. A field a source line does not have shows
  * as "n/a", never as 0. */
-export function Stats({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
-  const [range, setRange] = useState<RangeKey>("7d")
+export function Stats({ api, onFail, range, onRange }: {
+  api: ConsoleApi; onFail: Fail; range: RangeKey; onRange: (range: RangeKey) => void
+}) {
   const [reports, setReports] = useState<Report[]>([])
   useEffect(() => {
     let gone = false
@@ -49,7 +50,7 @@ export function Stats({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
       <div className="range" role="group" aria-label="Time range">
         {RANGES.map((r) => (
           <button key={r.key} type="button" className="range__btn"
-            aria-pressed={range === r.key} onClick={() => setRange(r.key)}>{r.label}</button>
+            aria-pressed={range === r.key} onClick={() => onRange(r.key)}>{r.label}</button>
         ))}
       </div>
     </div>
@@ -63,42 +64,51 @@ export function Stats({ api, onFail }: { api: ConsoleApi; onFail: Fail }) {
           <ActivityChart activity={report.activity} />
         </section>
       ) : (
-        <section key={report.id} className="report">
-          <header>
-            <h2>{report.title}</h2>
-            <span className="report__window">{report.window}</span>
-          </header>
-          {report.warn && <p className="report__warn">warn: {report.warn}</p>}
-          {report.note && <p className="report__note">{report.note}</p>}
-          <table className="report__table">
-            <tbody>
-              {report.fields.map((field) => (
-                <tr key={field.label}>
-                  <th>{field.label}</th>
-                  <td>{seconds(field.value, field.unit)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {report.bars && (
-            <div className="report__bars">
-              {report.bars.map((bar) => (
-                <div key={bar.label} className="report__bar" title={`${bar.label}: ${bar.value}`}>
-                  <span className="report__bar-label">{bar.label}</span>
-                  <span className="report__bar-track">
-                    <span className="report__bar-fill"
-                      style={{ width: `${Math.min(100, (bar.value / 6) * 100)}%` }} />
-                  </span>
-                  <span className="report__bar-value">{bar.value}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {report.stacks && <Stacks stacks={report.stacks} />}
-        </section>
+        <ReportCard key={report.id} report={report} />
       ))}
     </div>
     </>
+  )
+}
+
+/** One card of figures (RT-6.9): a card whose range the stream does not hold keeps its
+ * place with every figure n/a and says why. */
+export function ReportCard({ report }: { report: Report }) {
+  return (
+    <section className="report">
+      <header>
+        <h2>{report.title}</h2>
+        <span className="report__window">{report.window}</span>
+      </header>
+      {report.warn && <p className="report__warn">warn: {report.warn}</p>}
+      {report.note && <p className="report__note">{report.note}</p>}
+      {report.unavailable && <p className="report__note" role="status">n/a: {report.unavailable}</p>}
+      <table className="report__table">
+        <tbody>
+          {report.fields.map((field) => (
+            <tr key={field.label}>
+              <th>{field.label}</th>
+              <td>{seconds(field.value, field.unit)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {report.bars && (
+        <div className="report__bars">
+          {report.bars.map((bar) => (
+            <div key={bar.label} className="report__bar" title={`${bar.label}: ${bar.value}`}>
+              <span className="report__bar-label">{bar.label}</span>
+              <span className="report__bar-track">
+                <span className="report__bar-fill"
+                  style={{ width: `${Math.min(100, (bar.value / 6) * 100)}%` }} />
+              </span>
+              <span className="report__bar-value">{bar.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {report.stacks && <Stacks stacks={report.stacks} />}
+    </section>
   )
 }
 
@@ -135,7 +145,10 @@ export function ActivityChart({ activity }: { activity: Activity }) {
         ))}
       </span>
       {activity.unavailable ? (
-        <p className="activity__empty" role="status">{activity.unavailable}</p>
+        <>
+          <p className="activity__empty" role="status">{activity.unavailable}</p>
+          {activity.reason && <p className="report__note">{activity.reason}</p>}
+        </>
       ) : peak === 0 ? (
         <p className="activity__empty" role="status">no posts counted in this range</p>
       ) : (

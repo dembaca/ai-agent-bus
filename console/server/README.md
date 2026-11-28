@@ -156,9 +156,10 @@ anchor, never a login name (point 4 of the console decision's addition of
 nothing. Read-only: no answer, no thread text. `/v1/stats?range=24h|7d|30d|90d|12m` (7 days
 without it, another value a 400, #284) answers the reports, each over the
 range (the activity card, `activity`: the agents' own posts by bus word in
-four groups, one bar per day, week or month, none for 24 h, which says why;
+four groups, one bar per day, week or month, none for 24 h, which says "no hourly data yet" and why (`unavailable`, `reason`);
 the bus overhead share of all tokens per version, estimated; the asks over
-the range and the range before it; the bus traffic by category, exact counts
+the range and the range before it (n/a with `unavailable`, every figure `null`,
+where the stream does not hold it: 12 months, or before the oldest line held); the bus traffic by category, exact counts
 of bus overhead and coordination; the tokens by category, an estimate marked
 so, as stacked bars in `stacks`
 for the fleet, per version, per role and per harness, in input-token

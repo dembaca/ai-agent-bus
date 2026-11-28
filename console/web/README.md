@@ -71,13 +71,16 @@ image.
     numbers of and says how many that are.
   - **Remembered per person** (`src/prefs.ts`, this browser's `localStorage`
     under the operator's name; a storage that refuses is no error): the panel
-    open or folded, the grouping, the folded groups and the scope.
+    open or folded, the grouping, the folded groups, the scope and the Stats
+    time range (7 days by default).
   - **Asks** with *for you* / *may answer*, and **Stats** (formerly Reports) —
     one time range at the top right (24 h, 7, 30, 90 days, 12 months) for
     every card, the first card the activity chart (stacked bars of the agents'
     own posts in four groups, the exact bus words on hovering a bar; "24 h"
-    says hourly figures need agents that publish hourly); counts and seconds
-    only, a missing field shows as `n/a`, never as 0.
+    says "no hourly data yet", as hourly figures need agents that publish
+    hourly); "asks to humans" keeps the range before, n/a with its reason where
+    the stream does not hold it; counts and seconds only, a missing field shows
+    as `n/a`, never as 0.
   - **The detail** of an agent or an ask is a drawer from the right, about
     half the width (the whole width below 800 px), not modal: the page behind
     stays usable, a click on another agent swaps the content, the cross, Esc or
