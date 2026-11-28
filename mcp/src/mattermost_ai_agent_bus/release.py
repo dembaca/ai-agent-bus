@@ -656,18 +656,30 @@ def cached_record(now: float | None = None) -> tuple[State | None, str]:
 async def refresh_record(*, environ: Mapping[str, str] | None = None, now: float | None = None,
                          transport: Any = None) -> tuple[State | None, str]:
     """Read the record once and cache it; a failure is cached as none, said once
-    in the log, and never falls back to release.env (the switch's promise)."""
+    in the log, and never falls back to release.env (the switch's promise). The
+    whole read is bounded by `selfupdate.TIMEOUT`, not only each phase of it: a
+    dripping answer holds no notice for longer. A record older than the one
+    cached (a stale copy behind a load balancer) does not replace it: the
+    newest `iat` read wins."""
     global _record_cache
     env = os.environ if environ is None else environ
     try:
-        state = await asyncio.to_thread(record_state, records_url(env), environ=env,
-                                        now=now, transport=transport)
+        state = await asyncio.wait_for(
+            asyncio.to_thread(record_state, records_url(env), environ=env,
+                              now=now, transport=transport),
+            selfupdate.TIMEOUT)
+    except TimeoutError:
+        state, why = None, f"not read within {selfupdate.TIMEOUT:g} s"
     except RecordFailed as exc:
         state, why = None, str(exc)
     except Exception as exc:  # noqa: BLE001 — an unreadable record is no notice
         state, why = None, f"not read ({type(exc).__name__})"
     else:
         why = ""
+        kept, _ = cached_record()
+        if (kept is not None and kept.checked_at and state is not None
+                and state.checked_at < kept.checked_at):
+            state = kept
     if state is None:
         _note_record_once(f"not read: {why}; no release notice")
     _record_cache = (time.monotonic(), state, why)

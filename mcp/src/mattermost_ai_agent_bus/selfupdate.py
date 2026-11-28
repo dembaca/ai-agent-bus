@@ -89,11 +89,14 @@ def network(url: str, environ: Mapping[str, str]) -> tuple[str | None, ssl.SSLCo
     return proxy, verify
 
 
-def fetch(url: str, timeout: float = TIMEOUT, transport: httpx.BaseTransport | None = None,
+def fetch(url: str, timeout: float | None = None, transport: httpx.BaseTransport | None = None,
           environ: Mapping[str, str] | None = None) -> str | None:
     """The record's JWS; None for the registrar's own `no release set`. No
     Authorization header, no redirect, at most RECORD_MAX bytes, proxy and
-    trust store only as network() takes them. Raises Failed for anything else."""
+    trust store only as network() takes them, each phase of the read bounded by
+    `timeout` (TIMEOUT unless given; release.py bounds the whole read itself).
+    Raises Failed for anything else."""
+    timeout = TIMEOUT if timeout is None else timeout
     body = bytearray()
     try:
         proxy, verify = network(url, {} if environ is None else environ)
