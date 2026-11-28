@@ -4586,6 +4586,24 @@ which each piece reads for itself.
        `services/bridge`, the bounds; `testrig`: a run with files.
        Lab: the agent attaches a file, a person posts one and the agent
        reads it.
+     - Built 2026-11-28, behind the switch (#244 piece 8): the MCP server
+       sends an upload in parts on `<req>.file.<agent>` from the same
+       calls as before (`attach`, `POST /v1/files`, so
+       `mm-agent-post.sh --file` needs no change) and reads a person's
+       file back in parts, checked by length and hash; the bridge
+       (`services/bridge/internal/files`) re-checks the file rules,
+       holds the transfers within the decided bounds and uploads with
+       the agent's own bridge bot, and answers a download with the
+       metadata (the author's account record beside it, RT-6.42) and the
+       bytes, the trust computed by the port's own classifier (the
+       posting person's account bound to an attested trusted
+       anchor, the rule an account approves by, RT-6.41 step 6). A file id
+       no seen post of the session named takes today's
+       path, for the session cannot tell its channel without a
+       Mattermost read (open point, with a follow-up when piece 5's
+       reads name every file); files of a DM stay on Mattermost, for a
+       DM channel carries no switch; the testrig run and the lab check
+       follow when the switch lands.
   9. **The bot's status: idle and typing, its Mattermost presence, and
      the crown's mirror** (RT-6.5, RT-6.6), and the channel header. Needs
      the roster (piece 2), since the link today lives in the bot's

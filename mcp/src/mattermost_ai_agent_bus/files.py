@@ -12,7 +12,8 @@ whether it may approve anything (RT-6.16).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Sequence
 
 from . import gate
 from .model import Post
@@ -78,6 +79,32 @@ class Fetched:
     image_format: str = ""
 
 
+# Plan B piece 8 (RT-6.23 step 2): which channel a seen file id belongs to. Every
+# slim post names the files of its post (slim._one harvests them here), so the
+# session knows a file's channel without a Mattermost read; get_file's path over
+# the bridge is switched per channel (planb.on(8, channel), NatsPort.fetch_file).
+_seen: dict[str, str] = {}
+_SEEN_MAX = 4096
+
+
+def saw(fs: Sequence[FileInfo], channel_id: str) -> None:
+    """Note the channel of the files a post carries; without this, a file id
+    takes today's path (the session cannot tell its channel)."""
+    if not channel_id:
+        return
+    for f in fs:
+        if f.id:
+            _seen[f.id] = channel_id
+    while len(_seen) > _SEEN_MAX:
+        del _seen[next(iter(_seen))]
+
+
+def channel_of(file_id: str) -> str:
+    """The channel a seen post carried the file in ('' unknown)."""
+    return _seen.get(file_id, "")
+
+
+
 async def _author(client: ChatPort, user_id: str) -> dict[str, Any]:
     """Who posted the file, as an event says it (RT-6.16): Mattermost makes
     the uploader the post's author. Unsure: not trusted."""
@@ -98,7 +125,14 @@ async def _author(client: ChatPort, user_id: str) -> dict[str, Any]:
 
 async def fetch(client: ChatPort, file_id: str) -> Fetched:
     """The file's metadata and content (RT-6.23 steps 2–4); raises when
-    Mattermost refuses it."""
+    Mattermost refuses it. With plan B piece 8 on for a seen file's channel,
+    the port serves it over NATS instead (NatsPort.fetch_file): no Mattermost
+    call, the bytes checked by length and hash."""
+    over_nats: Callable[[str], Awaitable[Fetched | None]] | None = getattr(client, "fetch_file", None)
+    if over_nats is not None:
+        got = await over_nats(file_id)
+        if got is not None:
+            return got
     info = await client.file_info(file_id)
     meta: dict[str, Any] = hint(info)
     if info.mime_type:

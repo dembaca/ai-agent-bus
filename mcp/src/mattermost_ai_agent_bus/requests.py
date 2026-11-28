@@ -31,6 +31,10 @@ HISTORY_SEC = 35.0  # a history read may take the bridge up to 30 s: give it hea
 KINDS = ("history", "file", "header")
 MAX_PARTS = 64  # an answer's parts: a file's chunks or a history read's pages
 MAX_TOTAL = 4 * 1024 * 1024  # the bytes an answer's parts may add up to
+FILE_BODY = 1 << 20  # the kind "file" alone: a part carries bytes, and the bridge's own
+# bound for it is 1 MiB (requests.go maxFileBody); every other kind stays at the bus
+# stream's MAX_BODY, for the bridge keeps those small (an anchor, never the messages).
+FILE_TOTAL = 8 * 1024 * 1024  # and its parts may add up to an image's base64 (IMAGE_MAX 5 MB)
 _REQUEST_ID = 16
 
 
@@ -88,17 +92,17 @@ async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = N
         raise ValueError(f"unknown request kind {kind!r}; one of {', '.join(KINDS)}")
     if timeout is None:
         timeout = default_timeout(kind)
-    nc = bus._nc  # noqa: SLF001 - the bus keeps the connection; a request is its own subject
-    if nc is None or not bus._connected:  # noqa: SLF001
-        raise RequestError("the bus is not connected")
     request_id = _new_id()
     prefix = prefix or bus._s.req  # noqa: SLF001 - the settings the bus was made with
     subject = f"{prefix}.{kind}.{bus.name}"
     answer_subject = f"deliver.{bus.name}.req.{request_id}"
     body = json.dumps({"v": 1, "request": request_id, "kind": kind,
                        "payload": dict(payload or {})}, separators=(",", ":")).encode()
-    if len(body) > MAX_BODY:
-        raise ValueError("the request's body is larger than a NATS message may be")
+    if len(body) > (FILE_BODY if kind == "file" else MAX_BODY):
+        raise ValueError(f"the {kind} request's body is larger than its kind may be")
+    nc = bus._nc  # noqa: SLF001 - the bus keeps the connection; a request is its own subject
+    if nc is None or not bus._connected:  # noqa: SLF001
+        raise RequestError("the bus is not connected")
     answers: asyncio.Queue[Any] = asyncio.Queue()
 
     async def on_answer(msg: Any) -> None:
@@ -130,8 +134,8 @@ async def request(bus: NatsBus, kind: str, payload: Mapping[str, Any] | None = N
                     f"the bridge did not answer a {kind} request within {timeout:.0f} s") from None
             data = getattr(msg, "data", b"")
             total += len(data) if isinstance(data, (bytes, bytearray)) else 0
-            if total > MAX_TOTAL:
-                raise RequestError(f"the bridge's {kind} answer is larger than {MAX_TOTAL} bytes")
+            if total > (FILE_TOTAL if kind == "file" else MAX_TOTAL):
+                raise RequestError(f"the bridge's {kind} answer is larger than its kind may be")
             answer = _decode_answer(data if isinstance(data, (bytes, bytearray)) else b"",
                                     request_id, kind)
             part = answer.get("part", 1)
