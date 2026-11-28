@@ -175,6 +175,16 @@ asking agent's server reminds the human in the ask's thread, and the
 coordinator's server wakes it with `{kind: stall}` when open work sits quiet
 ([arc42 §6.19](arc42/06-runtime-view.md#619-stall-noticed-asks-reminded)).
 
+In a home over NATS with plan B's piece 6 switched on (asks over NATS), the ask is
+a NATS post on `<bus>.ch.<home>.<agent>` like any other, with three more props
+after the props prefix: `ask_card`, the card's attachments as JSON text,
+`ask_answers`, the alternatives as JSON text, and `ask_to`, the username its first
+line mentions; a reminder carries `ask_to` alone. The bridge posts the copy with the
+card and keeps that one mention when the username is an active person's account; the
+three props never reach Mattermost. People's answers come back as their events
+(below), naming the ask by `root` and `ref`
+([arc42 §6.11 step 7](arc42/06-runtime-view.md#611-asking-a-human)).
+
 An ask is a `question` or an `approval` (`kind`, default approval; the server
 makes one that names an action with effect an approval). A trusted human's
 top-level post `ask-mode coordinator` (or `ask-mode direct`) in a home sends
@@ -292,7 +302,7 @@ The three bodies, format v1:
 | `files` | post | How many files the post holds; they stay on Mattermost |
 | `cut` | post | `true` when the text was cut: at 16 000 characters, and further until the body fits the stream's 64 KiB |
 | `emoji` | reaction, unreaction | The emoji's name |
-| `ref` | reaction, unreaction | The reacted post's stream sequence, when it is on NATS (an ask lives on Mattermost and has none) |
+| `ref` | reaction, unreaction | The reacted post's stream sequence, when it is on NATS (an ask on Mattermost has none; one over NATS, plan B piece 6, has) |
 
 There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, an
 unknown or duplicate key, an unknown kind or a malformed id. Edits and deletes are not

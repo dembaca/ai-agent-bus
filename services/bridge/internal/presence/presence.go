@@ -8,7 +8,6 @@ package presence
 import (
 	"encoding/json"
 	"errors"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -220,8 +219,8 @@ func Subject(subject string) (owner, name string, ok bool) {
 	return parts[1], parts[2], true
 }
 
-// nameRE is an agent name as the bus writes it: the subject's last token.
-var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+// nameRE (crown.go) is an agent name as the bus writes it: the subject's last
+// token.
 
 // Membership splits presence.member.<channel>.<name> (RT-6.37): the channel an
 // agent announced it is in, and the agent.

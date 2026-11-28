@@ -300,6 +300,7 @@ def wire_nats(port: Any) -> None:
     for a hosted session (hosted._load_server)."""
     port.card_source = _presence_card
     port.ask_source = _open_asks
+    port.unmention = _unmention_text  # plan B piece 6: a post that goes on to Mattermost (RT-6.11)
     asks.on_change = port.asks_changed
     stats.nats_publish = port.publish_stats
 
@@ -1512,6 +1513,12 @@ async def _unmention(client: ChatPort, text: str) -> tuple[str, list[str]]:
     out = _in_prose(text, lambda p: _MENTION_RE.sub(
         lambda m: m.group(1) if m.group(1) in person else m.group(0), p))
     return out, sorted(set(person.values())) + everyone
+
+
+async def _unmention_text(client: Any, text: str) -> str:
+    """_unmention's text alone, with `client`'s lookup: plan B piece 6 checks a post that goes on
+    to Mattermost again with the Mattermost adapter's (NatsPort._for_mattermost, RT-6.11)."""
+    return (await _unmention(client, text))[0]
 
 
 async def _unasked(client: ChatPort, text: str, uid: str) -> list[str]:

@@ -1125,6 +1125,28 @@ func TestRecordIsTheAccountsNewestRecord(t *testing.T) {
 	}
 }
 
+type allOn map[int]bool
+
+func (a allOn) On(piece int, _ string) bool { return a[piece] }
+func (allOn) CaughtUp() bool                { return true }
+
+// RT-6.11 step 7, plan B piece 6: the signal names piece 6 only while its
+// switch is on, so a host sends an ask over NATS only to a bridge that posts it.
+func TestTheSignalNamesPiece6OnlyWhileItsSwitchIsOn(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		r := newRigWith(t, nil, func(b *Bridge) { b.Switches = allOn{6: on} })
+		r.connect(1)
+		var sig map[string]any
+		if err := json.Unmarshal(waitSignal(t, r.sig).Data, &sig); err != nil {
+			t.Fatal(err)
+		}
+		got, has := sig["pieces"]
+		if list, _ := got.([]any); has != on || (on && (len(list) != 1 || list[0] != float64(6))) {
+			t.Fatalf("on %v: signal %v", on, sig)
+		}
+	}
+}
+
 // A person's post by the account uid.
 func postBy(uid, id string, at int64) *mmws.Posted {
 	return &mmws.Posted{PostID: id, UserID: uid, ChannelID: cid, Message: "go ahead", CreateAt: at, UpdateAt: at}
