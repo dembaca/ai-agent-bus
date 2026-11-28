@@ -1514,9 +1514,8 @@ class NatsPort:
         piece 8 is on for the channel (ADR-014 phase 5): no Mattermost call,
         the bridge uploads with the agent's own bot; a failure raises, no
         fallback. Otherwise the Mattermost adapter's, unchanged."""
-        bus = self._bus
-        token = self._files_on(channel_id)
-        if bus is None or not isinstance(bus, natsbus.NatsBus) or not token or not bus.connected:
+        token, bus = self._files_route(channel_id)
+        if not token:
             return await self.inner.upload_file(channel_id, name, data)
         return await natsfiles.upload(bus, token, name, data)
 
@@ -1526,11 +1525,28 @@ class NatsPort:
         path (files.fetch), also for a file no seen post names. The channel
         names itself in the request, and the author fields come from the
         port's own classifier (_file_author), never a Mattermost read."""
-        bus = self._bus
-        token = self._files_on(files.channel_of(file_id))
-        if bus is None or not isinstance(bus, natsbus.NatsBus) or not token or not bus.connected:
+        token, bus = self._files_route(files.channel_of(file_id))
+        if not token:
             return None
         return await natsfiles.fetch(bus, file_id, token, self._file_author)
+
+    def _files_route(self, channel_id: str) -> tuple[str, Any]:
+        """The channel's piece 8 token and the bus, or ("", None) when the switch is off.
+        With the switch on and the bus down a file call raises, as pieces 6 and 7 do:
+        a Mattermost fallback would read or write for a channel that runs over NATS
+        (#299)."""
+        token = self._files_on(channel_id)
+        if not token:
+            return "", None
+        bus = self._bus
+        if bus is None or not isinstance(bus, natsbus.NatsBus) or not bus.connected:
+            try:
+                name = self._name_now(channel_id)
+            except NatsPortError:
+                name = channel_id
+            raise NatsPortError(f"~{name} runs over NATS (plan B piece 8), but the bus is not "
+                                "connected: nothing uploaded or fetched, no fallback to Mattermost")
+        return token, bus
 
     def _file_author(self, answer: Mapping[str, Any]) -> dict[str, Any]:
         """The fetched file's author, judged by the rule a Mattermost account
