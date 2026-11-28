@@ -15,8 +15,8 @@ before 0.5.0 are described in the git history.
   `unanswered-` to the session's NATS name, and so do the scripts' files (`turn-`,
   `listen-`, `update-`; `mm_state_key` in `bin/mm-agent-lib.sh`, from `CB_STATE_KEY` in
   the endpoint file or `state_key` in `/v1/me`). Once the bus has the name the server
-  takes `key-<name>.lock` for its run, copies every kind once (counters too, so the
-  session's last part counts them once; never a lock), writes `copied-<name>.env` even
+  takes `key-<name>.lock` for its run, copies every kind once and moves the counters
+  (`stats-`, so the session's last part counts them once; never a lock), writes `copied-<name>.env` even
   without a bot and only then switches the key; a second process with the same name keeps
   the bot id's key and `bus_info` says why. While a bot id exists the server also keeps
   `coord-` and `channel-` under it, for a hook of the plugin before. A session without a
@@ -36,10 +36,13 @@ before 0.5.0 are described in the git history.
   server per workspace. The predecessor's marker gets `CB_TAKEN_BY`, and the sweep then
   removes its files by the day rule; a name whose lock is held is never swept. The pi
   extension passes pi's session id to the server as `PI_SESSION_ID`, which corral's relay
-  carries to the host process. The counters (`stats-`) are moved, not copied, crash-safe,
-  so no part publishes them twice, also on the way back.
+  carries to the host process; it does not count as the relay's identity, a pi relay is
+  still told apart by its workspace. The counters (`stats-`) are moved, not copied, also
+  on the way back.
   No nonce, endpoint or session file moves, so no session gets a new name by this.
-  Switch off: every file name is as before.
+  Switch off: every file name is as before. What differs: pi's server is passed
+  `PI_SESSION_ID` (blank without one), and `mm_state_key` accepts a key of the pattern
+  `[a-z0-9][a-z0-9_-]{0,127}` where the scripts checked 26 characters.
 
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads

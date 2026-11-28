@@ -116,11 +116,13 @@ _NAMING_PAIRS = (("CB_WORKSPACE", "MM_WORKSPACE"), ("CB_CHANNEL_PUSH", "MM_CHANN
 # a relay that differs from the first one in these is refused. The working
 # directory counts only when neither directory is named. OPENCODE_SESSION_ID:
 # the OpenCode session the plugin bound the bus to (RT-6.20 step 1), so two
-# OpenCode processes in one workspace are told apart; PI_SESSION_ID alike, the pi
-# session the extension passes (RT-6.27 step 1). CB_WORKSPACE stands for
-# the pair with MM_WORKSPACE (check_session folds them, refusing two values).
-_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "PI_SESSION_ID", "CLAUDE_PROJECT_DIR", "CB_WORKSPACE")
-_IDS = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "PI_SESSION_ID")
+# OpenCode processes in one workspace are told apart. PI_SESSION_ID is not among
+# them: the relay carries it (NAMING, apply_session) only so the host server can tie its
+# kept state to the session (RT-6.2 step 9); a pi relay is told apart by its workspace,
+# as before. CB_WORKSPACE stands for the pair with MM_WORKSPACE (check_session folds
+# them, refusing two values).
+_IDENTITY = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CB_WORKSPACE")
+_IDS = ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID")
 
 # What preStart may hand the host process on stdin besides the key: the bus
 # settings (CB_*, MM_*, MATTERMOST_*), the corral session's names and the network
