@@ -68,9 +68,6 @@ Each component reads its variables like this from 0.103.0 on:
 4. The fallbacks go in 0.105.0 (the owner's decision of 2026-11-27; 0.104.0
    still reads the old names), called *the removal release* below. What happens to an old name from then on says
    [After the fallbacks go](#after-the-fallbacks-go-refuse-never-ignore).
-   Moved by the owner on 2026-11-28 (ask `6srsrf7unjf6ixk4i8616w9fzo`): the
-   fallbacks go with plan B's cutover release, 0.106.0
-   ([plan-b-piece-14.md](plan-b-piece-14.md), section 4).
 
 A shell script that cannot log a warning (a hook that must stay quiet) writes
 it to its log file instead. Two cases log no warning, since no person set the

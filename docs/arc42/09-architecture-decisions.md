@@ -6819,8 +6819,9 @@ Mattermost. Two points for the changeover follow from it:
   rename in Keycloak takes the person out of its reach. To be settled before
   the first import, not in this step. Decided for the lab by the owner on
   2026-11-28 (ask `6fybr8iemffcibp53j7oh7rfqy`): the lab's import may run
-  with the brake by name; the rename procedure is in the lab runbook, and the
-  brake by anchor (#336) comes before the bus leaves the lab.
+  with the brake by name; the rename procedure goes into the lab runbook
+  (dembaca/bgl-infra#476), and the brake by anchor (#336) comes before the
+  bus leaves the lab.
 
 Built as well, after 0.97.0: the upkeep through the login service's admin
 API and the one-time import from Mattermost (decisions 1, 2, 3 and 8;

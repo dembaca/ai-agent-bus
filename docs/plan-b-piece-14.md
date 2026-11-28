@@ -198,8 +198,9 @@ The issues behind the dropped gates stay open; none of them holds the cutover ba
   (`POST /v1/directory/import`, RT-6.40 step 6), run once on the new login-service
   image, and `CB_AUTH_DIRECTORY_IMPORTED=true` set, before `authd dir planb`. The
   owner decided on 2026-11-28 (ask `6fybr8iemffcibp53j7oh7rfqy`) that the lab's
-  import may run with the emergency brake by name: the rename procedure is in the lab
-  runbook, and the brake by anchor (#336) comes before the bus leaves the lab. Then
+  import may run with the emergency brake by name: the rename procedure goes into the
+  lab runbook (dembaca/bgl-infra#476), and the brake by anchor (#336) comes before the
+  bus leaves the lab. Then
   every plan B piece, 1 to 13, switched on in every home's directory record
   (`authd dir planb`, RT-6.40 step 5), with gate 10's rights and config.
 - **(d) A smoke test in the lab** on the head of `cutover/plan-b`, for Claude Code,
