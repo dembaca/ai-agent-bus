@@ -8,8 +8,9 @@
 // The operator of this console is "dembaca" (Ask.forMe / mayAnswer are
 // relative to that name).
 import type {
+  Activity, ActivityBar,
   AgentCard, AgentState, AgentStatsRow, Ask, ConnState, ConsoleApi, FleetEvent, Group, GroupBy, GroupNumbers,
-  GroupsAnswer, Operator, Post, Report, ReportStack, Scope, TaskRow, ThreadPage,
+  GroupsAnswer, Operator, Post, RangeKey, Report, ReportStack, Scope, TaskRow, ThreadPage,
 } from "./types"
 
 const now = () => Date.now()
@@ -227,9 +228,13 @@ const tasksOf = (name: string): TaskRow[] => {
   return all[name] ?? []
 }
 
-const asksReport = (id: string, window: "24 h" | "7 d", n: number): Report => ({
+const asksReport = (id: string, window: string, n: number, unavailable?: string): Report => ({
   id, title: "asks to humans", window,
-  fields: [
+  ...(unavailable ? { unavailable } : {}),
+  fields: unavailable ? [
+    "asks", "answered", "answered share", "mean wait for an answer", "longest wait for an answer",
+    "still open at the part's end", "age of the oldest line",
+  ].map((label) => ({ label, value: null, unit: "count" as const })) : [
     { label: "asks", value: n, unit: "count" },
     { label: "answered", value: n - 1, unit: "count" },
     { label: "answered share", value: Math.round(((n - 1) / n) * 100), unit: "%" },
@@ -244,9 +249,45 @@ const SPLIT_NOTE = "estimated: exact totals per token type from the harness (Cla
   + "at 4 characters per token; text and thinking by what drove the request, a convention"
 
 // The server's reports (RT-6.43 step 8): no names, counts and seconds only.
-const stats = (): Report[] => [
+const RANGE_LABEL: Record<RangeKey, string> = {
+  "24h": "24 h", "7d": "7 d", "30d": "30 d", "90d": "90 d", "12m": "12 mo",
+}
+const BAR_COUNT: Record<RangeKey, number> = { "24h": 24, "7d": 7, "30d": 30, "90d": 13, "12m": 12 }
+const BUCKET: Record<RangeKey, Activity["bucket"]> = {
+  "24h": "hour", "7d": "day", "30d": "day", "90d": "week", "12m": "month",
+}
+
+// The activity card (#284): the mock's bars, a steady wave; 24 h has hourly bars and the note on the lines that carried hours.
+const activity = (range: RangeKey): Report => {
+  const n = BAR_COUNT[range]
+  const end = Date.UTC(2026, 10, 28)
+  const step = { hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 }[BUCKET[range]]
+  const bars = Array.from({ length: n }, (_, i): ActivityBar => {
+    const k = 1 + ((i * 7) % 5)
+    const words = { ACK: 3 * k, PROGRESS: 4 * k, RESULT: k, DONE: 2 * k, ask: k % 3, TASK: k, HELLO: 1, plain: 2 * k }
+    return {
+      start: (end - (n - 1 - i) * step) / 1000,
+      words,
+      groups: { working: words.ACK + words.PROGRESS, finished: words.RESULT + words.DONE, asking: words.ask,
+                organising: words.TASK + words.HELLO + words.plain },
+    }
+  })
+  return {
+    id: "activity", title: "Activity · what the agents posted", window: RANGE_LABEL[range], fields: [],
+    activity: {
+      bucket: BUCKET[range],
+      groups: [{ id: "working", label: "working on it" }, { id: "finished", label: "finished something" },
+               { id: "asking", label: "asking a human" }, { id: "organising", label: "organising" }],
+      bars,
+      ...(range === "24h" ? { hours: { lines: 3, of: 5 } } : {}),
+    },
+  }
+}
+
+const stats = (range: RangeKey): Report[] => [
+  activity(range),
   {
-    id: "share-per-version", title: "bus overhead share of all tokens, per version", window: "7 d",
+    id: "share-per-version", title: "bus overhead share of all tokens, per version", window: RANGE_LABEL[range],
     note: SPLIT_NOTE,
     fields: [
       { label: "version 0.100.0", value: 7.4, unit: "%" },
@@ -255,11 +296,12 @@ const stats = (): Report[] => [
       { label: "age of the oldest line", value: 5 * 86400, unit: "s" },
     ],
   },
-  asksReport("asks-24h", "24 h", 4),
-  asksReport("asks-7d", "7 d", 19),
+  asksReport("asks", RANGE_LABEL[range], 19),
+  asksReport("asks-before", `the ${RANGE_LABEL[range]} before`, 14,
+    range === "12m" ? "the stream holds 12 months at most, so the range before is never held" : undefined),
   {
     // RT-6.9 step 3: exact counts, grouped into bus overhead and coordination.
-    id: "traffic-by-category", title: "bus traffic by category", window: "7 d",
+    id: "traffic-by-category", title: "bus traffic by category", window: RANGE_LABEL[range],
     fields: [
       { label: "bus overhead, items", value: 212, unit: "count" },
       { label: "bus overhead, characters", value: 96_400, unit: "count" },
@@ -275,7 +317,7 @@ const stats = (): Report[] => [
   },
   {
     // RT-6.9 step 3: an estimate, marked so; equivalents by default, raw on request.
-    id: "tokens-by-category", title: "tokens by category", window: "7 d",
+    id: "tokens-by-category", title: "tokens by category", window: RANGE_LABEL[range],
     note: `${SPLIT_NOTE}; from 24 of 42 lines (claude-code)`,
     fields: [
       { label: "lines with the split", value: 24, unit: "count" },
@@ -285,7 +327,7 @@ const stats = (): Report[] => [
       { label: "age of the oldest line", value: 5 * 86400, unit: "s" },
     ],
     stacks: [
-      stack("fleet", [83, 6, 11], [88, 7, 5]),
+      stack("flock", [83, 6, 11], [88, 7, 5]),
       stack("version 0.102.0", [81, 7, 12], [87, 8, 5]),
       stack("role coordinator", [58, 9, 33], [70, 11, 19]),
       stack("role worker", [89, 5, 6], [92, 6, 2]),
@@ -493,8 +535,8 @@ export function mockApi(): ConsoleApi {
       const open = await this.asks()
       return mockGroups(cardsNow, open, agentStats(), by, scope)
     },
-    async stats(): Promise<Report[]> {
-      return stats()
+    async stats(range: RangeKey): Promise<Report[]> {
+      return stats(range)
     },
     async agentStats(): Promise<AgentStatsRow[]> {
       return agentStats()

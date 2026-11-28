@@ -15,7 +15,7 @@
 // goes to the server's `/login` route (the mock never 401s).
 import type {
   AgentCard, AgentStatsRow, Ask, ConsoleApi, ConnState, FleetEvent, GroupBy, GroupsAnswer, Post,
-  Report, Scope, ThreadPage,
+  RangeKey, Report, Scope, ThreadPage,
 } from "./types"
 
 /** The wire contract: snake_case where the ADR spells it that way. Only
@@ -139,8 +139,8 @@ export function httpApi(base: string): ConsoleApi {
     async groups(by: GroupBy, scope: Scope): Promise<GroupsAnswer> {
       return await json(strip, `/v1/groups?by=${by}&scope=${scope}`)
     },
-    async stats(): Promise<Report[]> {
-      return await json(strip, "/v1/stats")
+    async stats(range: RangeKey): Promise<Report[]> {
+      return await json(strip, `/v1/stats?range=${range}`)
     },
     async agentStats(): Promise<AgentStatsRow[]> {
       return await json(strip, "/v1/agent-stats")

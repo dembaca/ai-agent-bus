@@ -24,12 +24,19 @@ func tctx(t *testing.T) context.Context {
 	return c
 }
 
-// logRecorder keeps the level and message of every record.
-type logRecorder struct{ msgs []string }
+// logRecorder keeps the level and message of every record, and each
+// record's "reason" attribute.
+type logRecorder struct{ msgs, reasons []string }
 
 func (r *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
 func (r *logRecorder) Handle(_ context.Context, rec slog.Record) error {
 	r.msgs = append(r.msgs, rec.Level.String()+" "+rec.Message)
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == "reason" {
+			r.reasons = append(r.reasons, a.Value.String())
+		}
+		return true
+	})
 	return nil
 }
 func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler { return r }
@@ -49,12 +56,19 @@ func (r *logRecorder) count(msg string) int {
 // anything, js has the service's documented rights except the update.
 func statsLab(t *testing.T) (admin, js *nats.Conn) {
 	t.Helper()
+	return statsLabStore(t, 0)
+}
+
+// statsLabStore is statsLab with the server's JetStream file storage capped at
+// maxStore bytes (0: the server's default).
+func statsLabStore(t *testing.T, maxStore int64) (admin, js *nats.Conn) {
+	t.Helper()
 	var allow []string
 	for _, s := range []string{BusStream, PresenceStream, StatsStream} {
 		allow = append(allow, "$JS.API.STREAM.CREATE."+s, "$JS.API.STREAM.INFO."+s, "$JS.API.CONSUMER.*."+s, "$JS.API.CONSUMER.*."+s+".>")
 	}
 	allow = append(allow, "stats.import.*") // the import's right (RT-6.45)
-	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, JetStream: true,
+	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, JetStream: true, JetStreamMaxStore: maxStore,
 		StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
 		Users: []*server.User{{Username: "admin", Password: "pwd"}, {Username: "js", Password: "pwd", Permissions: &server.Permissions{
 			Publish:   &server.SubjectPermission{Allow: allow},
@@ -101,12 +115,13 @@ func statsConfig(t *testing.T, m *Manager) map[string]any {
 
 // An existing STATS made by an older service (30 days, 100 per subject) is
 // brought to a year and 500 per subject in place, its lines kept; a second
-// start changes nothing; a larger max_bytes is kept, a smaller one raised.
+// start changes nothing; a larger max_bytes is kept, a smaller one (the
+// 64 MiB of releases before #310) is raised to 1 GiB.
 func TestAnOldStatsStreamIsUpdatedInPlace(t *testing.T) {
 	admin, _ := statsLab(t)
 	rec := &logRecorder{}
 	m := manager(t, admin, slog.New(rec), 0)
-	old := strings.Replace(StatsStreamJSON("stats", 32<<20), `"max_age":`+itoa(int64(StatsMaxAge)), `"max_age":`+itoa(int64(30*24*time.Hour)), 1)
+	old := strings.Replace(StatsStreamJSON("stats", 64<<20), `"max_age":`+itoa(int64(StatsMaxAge)), `"max_age":`+itoa(int64(30*24*time.Hour)), 1)
 	old = strings.Replace(old, `"max_msgs_per_subject":500`, `"max_msgs_per_subject":100`, 1)
 	if err := m.api(tctx(t), "$JS.API.STREAM.CREATE."+StatsStream, old, nil); err != nil {
 		t.Fatal(err)
@@ -126,7 +141,7 @@ func TestAnOldStatsStreamIsUpdatedInPlace(t *testing.T) {
 		}
 	}
 	got := statsConfig(t, m)
-	if got["max_age"] != float64(365*24*time.Hour) || got["max_msgs_per_subject"] != float64(500) || got["max_bytes"] != float64(64<<20) {
+	if got["max_age"] != float64(365*24*time.Hour) || got["max_msgs_per_subject"] != float64(500) || got["max_bytes"] != float64(1<<30) {
 		t.Fatalf("not updated: %v %v %v", got["max_age"], got["max_msgs_per_subject"], got["max_bytes"])
 	}
 	if err := checkStream(StatsStream, "stats.>", got); err != nil {
@@ -141,11 +156,11 @@ func TestAnOldStatsStreamIsUpdatedInPlace(t *testing.T) {
 	}
 	// An operator's larger max_bytes stays.
 	big := statsConfig(t, m)
-	big["max_bytes"] = float64(128 << 20)
+	big["max_bytes"] = float64(2 << 30)
 	if err := m.api(tctx(t), "$JS.API.STREAM.UPDATE."+StatsStream, big, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Stats().Update(tctx(t)); err != nil || statsConfig(t, m)["max_bytes"] != float64(128<<20) {
+	if err := m.Stats().Update(tctx(t)); err != nil || statsConfig(t, m)["max_bytes"] != float64(2<<30) {
 		t.Fatalf("the larger size: %v, %v", statsConfig(t, m)["max_bytes"], err)
 	}
 }
@@ -349,5 +364,75 @@ func TestTheStatsRoom(t *testing.T) {
 	}
 	if after, err := s.Room(tctx(t)); err != nil || after > before-1000 {
 		t.Fatalf("after a line: %d, %v", after, err)
+	}
+}
+
+// oldStats makes a STATS stream of 64 MiB, with the age of an older service
+// when oldAge is set.
+func oldStats(t *testing.T, m *Manager, oldAge bool) {
+	t.Helper()
+	old := StatsStreamJSON("stats", 64<<20)
+	if oldAge {
+		old = strings.Replace(old, `"max_age":`+itoa(int64(StatsMaxAge)), `"max_age":`+itoa(int64(30*24*time.Hour)), 1)
+	}
+	if err := m.api(tctx(t), "$JS.API.STREAM.CREATE."+StatsStream, old, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// RT-6.45: a server without room for the larger size refuses the raise; the
+// service starts with the old size and a warning.
+func TestARefusedStatsSizeRaiseWarnsAndKeepsTheOldSize(t *testing.T) {
+	admin, _ := statsLabStore(t, 256<<20)
+	rec := &logRecorder{}
+	m := manager(t, admin, slog.New(rec), 0)
+	oldStats(t, m, false)
+	if err := m.Stats().Update(tctx(t)); err != nil {
+		t.Fatalf("a refused size raise stops nothing: %v", err)
+	}
+	if got := statsConfig(t, m)["max_bytes"]; got != float64(64<<20) {
+		t.Fatalf("the old size stays: %v", got)
+	}
+	if rec.count("WARN consumers: stats stream size not raised") != 1 {
+		t.Fatalf("want the warning: %v", rec.msgs)
+	}
+	// The refusal is the server's storage limit, not some other error.
+	if len(rec.reasons) != 1 || !strings.Contains(rec.reasons[0], "insufficient") {
+		t.Fatalf("want the storage refusal as the reason: %v", rec.reasons)
+	}
+}
+
+// The age is updated, the size is not, and there is no error.
+func TestARefusedStatsSizeRaiseStillUpdatesTheAge(t *testing.T) {
+	admin, _ := statsLabStore(t, 256<<20)
+	rec := &logRecorder{}
+	m := manager(t, admin, slog.New(rec), 0)
+	oldStats(t, m, true)
+	if err := m.Stats().Update(tctx(t)); err != nil {
+		t.Fatal(err)
+	}
+	got := statsConfig(t, m)
+	if got["max_age"] != float64(StatsMaxAge) || got["max_bytes"] != float64(64<<20) {
+		t.Fatalf("age %v, size %v", got["max_age"], got["max_bytes"])
+	}
+	if rec.count("stats stream size not raised") != 1 || rec.count("stream limits updated") != 1 {
+		t.Fatalf("%v", rec.msgs)
+	}
+}
+
+// A refused age change stays an error. Here the JetStream user may not
+// update, so this reaches the no-answer path: a server that refuses an age
+// with an API error is not cheap to build, since the ceilings are checked
+// before the request.
+func TestARefusedStatsAgeChangeIsStillAnError(t *testing.T) {
+	admin, js := statsLabStore(t, 256<<20)
+	m := manager(t, admin, nil, 0)
+	oldStats(t, m, true)
+	mj := manager(t, js, nil, 0)
+	if err := mj.Stats().Update(tctx(t)); err == nil {
+		t.Fatal("a refused age change must stop the start")
+	}
+	if got := statsConfig(t, m)["max_age"]; got != float64(30*24*time.Hour) {
+		t.Fatalf("age changed: %v", got)
 	}
 }
