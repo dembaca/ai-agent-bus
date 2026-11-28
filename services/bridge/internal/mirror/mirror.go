@@ -113,6 +113,13 @@ type Mirror struct {
 	Store  Store
 	Links  Links
 	Bots   Bots // optional: the agents' own bots; nil posts everything with Sink
+	// Plan B piece 6 (RT-6.11, ask.go): the switches per channel and the lookup
+	// of a person's username; without them asks are mirrored like any post.
+	Switches  Switches
+	People    People
+	Directory Directory
+	people    personCache
+	mentions  mentionLimit
 }
 
 // Handle mirrors one message; sender is the subject's last token, seq the
@@ -139,7 +146,17 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 		shown = sender
 	}
 	id := fmt.Sprintf("n1:%s:%d", m.Home, seq)
-	props := m.senderProps(msg.Props)
+	keep, cards, asks := "", []any(nil), msg.Kind == message.Post && m.asksOn()
+	in := msg.Props
+	if asks {
+		// Plan B piece 6: the ask's card and its one mention; its own keys never pass.
+		if keep, cards, err = m.ask(ctx, sender, msg); err != nil {
+			return err
+		}
+		m.logOutsider(ctx, cid, sender, keep)
+		in = m.withoutAsk(msg.Props)
+	}
+	props := m.senderProps(in)
 	props[m.Prefix+"nats_id"] = id
 	props[m.Prefix+"shown_as"] = shown
 	p := Post{}
@@ -155,13 +172,16 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 				props[m.Prefix+"nats_root"] = fmt.Sprintf("n1:%s:%d", m.Home, *msg.Root)
 			}
 		}
+		if cards != nil {
+			props["attachments"] = cards
+		}
 		var pid string
 		if own := m.own(ctx, sender); own != nil {
 			// The agent's own bot shows who wrote it: no attribution line.
-			pid, err = own.Create(ctx, cid, Cut(DefuseMentions(unmark(msg.Text))), root, props)
+			pid, err = own.Create(ctx, cid, Cut(DefuseMentionsExcept(unmark(msg.Text), keep)), root, props)
 			m.failed(sender, err)
 		} else {
-			pid, err = m.Sink.Create(ctx, cid, Attribution(shown, msg.Text), root, props)
+			pid, err = m.Sink.Create(ctx, cid, attribution(shown, msg.Text, keep), root, props)
 		}
 		if err != nil {
 			return err
@@ -338,11 +358,16 @@ func (m *Mirror) senderProps(in map[string]any) map[string]any {
 const SenderMark = "▍"
 
 func Attribution(shown, text string) string {
+	return attribution(shown, text, "")
+}
+
+// attribution is Attribution keeping the mention of keep (an ask's, ask.go).
+func attribution(shown, text, keep string) string {
 	// The sender line is ours and marked; the text cannot move it. Mentions in
 	// the text would notify people through the bridge's bot, so every @ gets a
 	// zero-width space after it. Cut after defusing, so the limit holds for what
 	// is posted.
-	return SenderMark + "**" + shown + "**\n\n" + Cut(DefuseMentions(unmark(text)))
+	return SenderMark + "**" + shown + "**\n\n" + Cut(DefuseMentionsExcept(unmark(text), keep))
 }
 
 // unmark replaces SenderMark in a mirrored text, under the bridge bot and an

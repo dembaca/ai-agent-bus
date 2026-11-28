@@ -134,6 +134,55 @@ before 0.5.0 are described in the git history.
   record that carries `crown` (`attest.py`), and `/agent-debug on full` now signs one, so update the hosts first) logs the view at each tick: claimants in order,
   members, standing, holder and why nobody stands.
 
+- **Plan B piece 6: asks to humans and their answers over NATS** (#244,
+  ADR-014 phase 5, RT-6.11 step 7). With the piece's switch on for a home over
+  NATS (`planb.on(6, home)`, off by default), `ask_human` posts the ask on
+  NATS like any agent post (its id `n1:<home>:<n>`), with its card, its
+  alternatives and the username it mentions as the props `ask_card`,
+  `ask_answers` and `ask_to`; the reminders, `resolve_ask`'s ✅ and its note go
+  over NATS too, and the session makes no Mattermost call for them. The bridge
+  posts the copy with the card and keeps only the ask's own mention, and only of
+  an active person's account that the login service's records bind, at most 20 a
+  sender an hour; every other mention stays plain. Its signal names
+  `"pieces": [6]` while the switch is on there, and the session sends an ask over
+  NATS only then. A host before this release refuses that field and reads the
+  home's people on Mattermost, as with `bot_prefix`. People's replies
+  and 👍/👎 on the copy come back as their events (RT-6.42), named by the ask's
+  stream sequence, also after a restart; approval stays as strict as before (a
+  trusted anchor, a fresh approver record, 24 h). The check that turns a person's
+  @-mention plain reads the login service's account records instead of
+  Mattermost. Not moved yet: the ✅ of an ask asked before the switch, the ask's
+  link in a person's thread, the ask mode's and debug card's reads of the home,
+  and the console's list, which counts a NATS ask only in `more`. A reminder of
+  such an ask, and an ask in a home with the piece off, keep their mention. The
+  bridge logs a kept mention of a person who is no member of the home and posts
+  it as it is. The bridge and the MCP server ship together; with the switch off
+  nothing changes. Rollout: switch piece 6 on in a home only once every host
+  there runs this release: an older host refuses the bridge's signal that names
+  `"pieces"`, and then reads that home's people on Mattermost and shows no bot
+  prefix there.
+- **Plan B piece 12: guest channels and the lobby over NATS, behind a switch
+  that is off** (#244, ADR-014 phase 5, RT-6.22 step 7). An owner opts a guest
+  channel or the lobby in by listing it in `CB_NATS_HOMES` beside the home:
+  a session whose home runs over NATS then asks the login service for that
+  guest (`CB_MM_PROJECT_CHANNEL` after the home, at most 16) or the lobby
+  (`CB_MM_CHANNEL` when it is not the home) as well, since only a channel the
+  credential grants brings its plan B switch. With `CB_NATS_HOMES` naming the
+  home alone the hello is unchanged. With the channel's switch
+  `planb.on(12, channel)` on, read once the bus is up and latched with the
+  channel ids, that guest or the lobby runs like a home: its id comes from the
+  credential's channel record, `post_message(channel=…)` joins nothing in
+  Mattermost, posts, reads and reactions go over NATS, the membership is
+  announced there, and the wake rules of guest channels and the lobby apply to
+  the posts that come over NATS; no Mattermost call names the channel. A
+  channel switched on that the record names no id for is not reachable: it is
+  refused and its events are dropped, never sent to Mattermost instead. A guest
+  that stays on Mattermost stays as it is. For a channel asked for whose
+  switch is off the session drops what the login service delivers there and
+  behaves as before. Not moved with it: the join at the session start (the host hook and
+  `session_start` run before the switch is read), people's history there
+  (piece 5) and replies and reactions to a person's post (piece 7).
+
 - **Plan B piece 4: every check of a trusted human and of an agent's owner
   from the login service** (#244, ADR-014 phase 5, RT-6.41 step 6). With the
   piece's switch on for a home over NATS, the MCP server's trusted humans
@@ -255,6 +304,32 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
   release it needs the login service's JetStream user to publish
   `presence.planb.*.v1` and the bridge user the right
   `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1`, both
+  in `services/auth/nats-server.example.conf`; without them every piece
+  stays off.
+- **Plan B piece 9: the bot's status, presence and crown shown by the bridge
+  (switch off)** (#244, ADR-014 phase 5, RT-6.6 steps 1 and 7, RT-6.38 step 3, RT-6.44
+  step 9). Behind `planb.on(9, channel)`, off by default, and only with piece 2 on too
+  (the link still lives in the registrar bot's status; with piece 2 off the session keeps
+  the old path and says so once in its log). In a home over NATS the session then writes
+  no custom status, no presence and no crown mirror to Mattermost, and neither reads nor
+  writes the channel header: its presence states the status it would have shown,
+  `shown` (its home, the state's emoji, the text without link tag or `coordinator` head,
+  its end, `crown` while its mirror holds the home's crown), a change goes out at once
+  (`NatsBus.presence_soon`), and the bus line of the header goes to the bridge on
+  `<req>.header.<agent>`. The bridge, with the agents' own bots, sets each agent's bot's
+  custom status and Mattermost presence from that (offline and no status once the
+  presence is stale, cleared when the switch goes off), shows the 👑 only where the
+  presence says `crown` and the claims make that agent the holder, and writes the
+  holder's bus line with its own bot when the line is one the bus writes, keeping what
+  people wrote; a graceful stop sets the bots it showed offline. It reads the claims
+  through a consumer of its own, `bridge_crown`, made once a served home has piece 9 on:
+  the bridge's NATS user needs
+  `$JS.API.CONSUMER.CREATE.PRESENCE.bridge_crown.presence.crown.*.*`
+  (`nats-server.example.conf`). With the switch off nothing changes: the presence and
+  every Mattermost call are as before. Where the bridge's holder and the sessions' differ
+  (the bridge does not yet apply membership or the owner rule; both come with #270) no 👑
+  shows and the header line is refused.
+
   in `services/auth/nats-server.example.conf`; without the login service's
   right every piece stays off. Since the binding proof (#266) the bridge
   carries no home until it has read `bridge_planb` once, so without the

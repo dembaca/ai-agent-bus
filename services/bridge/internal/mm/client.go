@@ -202,6 +202,39 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 		AuthData: raw.AuthData}, nil
 }
 
+// Person is the user id of username's account when it is a person's: it
+// exists, is not deactivated and is no bot (Mattermost's is_bot, as
+// GetUser); "" otherwise, not an error. Plan B piece 6 (RT-6.11) keeps an
+// ask's mention only of such an account (mirror.People).
+func (c *Client) Person(ctx context.Context, username string) (string, error) {
+	var raw []struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+		IsBot    bool   `json:"is_bot"`
+		DeleteAt int64  `json:"delete_at"`
+	}
+	if err := c.do(ctx, "POST", "/api/v4/users/usernames", []string{username}, &raw); err != nil {
+		return "", fmt.Errorf("mattermost: username %q: %w", username, err)
+	}
+	for _, u := range raw {
+		if strings.EqualFold(u.Username, username) && !u.IsBot && u.DeleteAt == 0 {
+			return u.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// Member says whether userID is a member of channelID: a 404 is no member,
+// any other failure an error (plan B piece 6 logs it only, mirror.Members).
+func (c *Client) Member(ctx context.Context, channelID, userID string) (bool, error) {
+	err := c.do(ctx, "GET", "/api/v4/channels/"+url.PathEscape(channelID)+"/members/"+url.PathEscape(userID), nil, nil)
+	var st *StatusError
+	if errors.As(err, &st) && st.Status == http.StatusNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Post is one of a channel's posts, as the catch-up after a WebSocket
 // reconnect needs it (mmws.Reconnected): who wrote it and where, its
 // thread, Mattermost's clock fields, the text — and the fields the drop

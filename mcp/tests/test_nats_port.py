@@ -2102,7 +2102,8 @@ async def test_start_links_the_bot_and_announces_membership_of_every_channel_not
         assert fake.linked_bot == BOT  # the bot's Mattermost id, as the session names it
         assert fake.linked_name == inner.me.username  # its username, for the console (ADR-015)
         assert lease._nats_link is not None and lease._nats_link() == TAG_A
-        assert fake.announced == ["home", "other", "guest"]
+        # a guest only while plan B piece 12 runs it over NATS (RT-6.22 step 7): off here
+        assert fake.announced == ["home", "other"]
         assert fake.claimed_homes == []  # the crown claim is not made at start
         # RT-6.37 step 6: the home's id, which the card's last post must name
         assert port.home_id == await inner.work_channel_id()

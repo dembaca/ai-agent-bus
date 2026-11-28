@@ -422,3 +422,59 @@ func TestPostsFromRefusesAWindowItCannotWalk(t *testing.T) {
 		t.Fatalf("got %v, want ErrTooManyPosts", err)
 	}
 }
+
+// RT-6.11, plan B piece 6: Person reads a username's account: a person is
+// active and no bot; an unknown name is no person and no error.
+func TestPerson(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/users/usernames" || r.Method != "POST" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var names []string
+		_ = json.NewDecoder(r.Body).Decode(&names)
+		users := map[string]map[string]any{
+			"dembaca": {"id": "u-dembaca", "username": "dembaca", "is_bot": false, "delete_at": 0},
+			"agent-a": {"username": "agent-a", "is_bot": true, "delete_at": 0},
+			"gone":    {"username": "gone", "is_bot": false, "delete_at": 1700000000000},
+		}
+		out := []map[string]any{}
+		for _, n := range names {
+			if u, ok := users[n]; ok {
+				out = append(out, u)
+			}
+		}
+		json.NewEncoder(w).Encode(out)
+	})
+	for name, want := range map[string]string{"dembaca": "u-dembaca", "agent-a": "", "gone": "", "nobody": ""} {
+		got, err := c.Person(context.Background(), name)
+		if err != nil || got != want {
+			t.Errorf("%s: got %v %v, want %v", name, got, err, want)
+		}
+	}
+	down := fake(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) })
+	if _, err := down.Person(context.Background(), "dembaca"); err == nil {
+		t.Fatal("a failed read must be an error")
+	}
+}
+
+func TestMember(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/channels/c1/members/in":
+			_, _ = w.Write([]byte(`{"user_id":"in"}`))
+		case "/api/v4/channels/c1/members/out":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	})
+	for id, want := range map[string]bool{"in": true, "out": false} {
+		if got, err := c.Member(context.Background(), "c1", id); err != nil || got != want {
+			t.Errorf("%s: %v %v, want %v", id, got, err, want)
+		}
+	}
+	if _, err := c.Member(context.Background(), "c1", "down"); err == nil {
+		t.Fatal("a failed read must be an error")
+	}
+}
