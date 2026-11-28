@@ -13,10 +13,17 @@ image.
   today's bus and it changes on its own, so the agents list visibly lives
   without a backend. It is development only: the production bundle carries
   neither the mock nor its sample data.
-- **Read-only** (ADR-015 stage 1): nothing posts, an ask gets no answer button.
-  An ask is answered where it is answered today, in the humans' chat; the
-  console shows it open until the agent ends it. There is deliberately no
-  `POST /v1/asks/<id>/answer` in this app yet.
+- **Read-only, answering disabled** (ADR-015 stage 1, addition of 2026-11-28,
+  #285): nothing posts. The Asks view lists the asks, a click unfolds a row
+  (the answer box, "Chat with agent"), the thread opens as a drawer with its
+  posts. The answer buttons and the drawer's reply field are visibly disabled
+  ("answer in the chat for now"); no write endpoint, publish right or answer
+  binding exists before the human security review. The red count of replies by
+  others (never the ask's own post or the operator's own) uses the read position
+  per person and ask, kept in this browser's
+  `localStorage` (`src/reads.ts`), since the server has no per-person store. The answer box shows go / no-go
+  for an approval and nothing for a question: the ask's own answers are not on the ask
+  record, and carrying them needs a record change the owner decides separately (#285).
 - **The look**: the design the owner agreed on 2026-11-25, in the website's
   Choirbus brand — tokens in `src/app.css` after `site/src/page.css`, the
   logo's navy as the accent, the site's word colors (orange asks, blue tasks,
