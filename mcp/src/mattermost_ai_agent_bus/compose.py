@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from . import a2a, lease, ownpost, unanswered
+from . import a2a, identity, lease, ownpost, unanswered
 from .config import env
 from .port import ChatPort
 from .registration import RegistrationPort
@@ -98,7 +98,7 @@ class Remembered(Wire):
                                           props=props, file_ids=file_ids)
         # The chat resolved the channel (the home when none was named): the
         # post carries it, so no request is repeated here.
-        await _remember(self.port, self.port.bot_id, post.channel_id, post)
+        await _remember(self.port, identity.key_now(self.port), post.channel_id, post)
         return post
 
 
@@ -306,5 +306,8 @@ def event_source(client: ChatPort) -> EventSource:
     if port is None:
         return chat
     from .nats_port import MergedEvents, NatsEvents
+
+    if identity.bot_less(client):
+        return NatsEvents(port)  # no bot, no Mattermost WebSocket: NATS alone (piece 14c-2a)
 
     return MergedEvents(chat, NatsEvents(port), port)

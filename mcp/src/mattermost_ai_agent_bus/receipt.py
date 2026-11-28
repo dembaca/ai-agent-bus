@@ -35,7 +35,7 @@ from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from . import a2a, channel, gate, lease, life, tasks, unread
+from . import a2a, channel, gate, identity, lease, life, tasks, unread
 from .model import Mark, Post, Reaction
 
 if TYPE_CHECKING:
@@ -117,7 +117,7 @@ async def arrived(client: ChatPort, post: Post, uid: str, gated: bool) -> None:
             return
         holding = lease.crown_held(uid)  # against this home now: its crown only (ADR-002, #258)
         if holding:
-            me = (await client.get_me()).username
+            me = await identity.self_name(client)
             cls = (await gate.author_classes(client, [post]))[0]
             if wakes_holder(post, cls, uid, me, home):
                 now = time.time()

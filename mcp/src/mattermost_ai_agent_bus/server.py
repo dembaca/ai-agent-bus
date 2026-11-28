@@ -29,7 +29,7 @@ from . import (
     __version__, a2a, askroute, asks, attach, attest, channel, compose, debug, departed, files, gate, hookapi, hosted,
     lease, life, login, mandate, overhead,
     owners, ownpost, permission,
-    natsbus, nobot, profile, receipt, release, remind, session_file, slim, stall, stats, tasks, unanswered, unread, usage,
+    identity, natsbus, nobot, profile, receipt, release, remind, session_file, slim, stall, stats, tasks, unanswered, unread, usage,
 )
 from .a2a import attachment_props, props_view, with_debug
 from .compose import BusClient
@@ -852,7 +852,7 @@ async def _usage_of(client: ChatPort, rows: list[Any]) -> dict[str, dict[str, An
     per agent). This agent's own row is what it holds in memory, exact. An agent
     whose text carries none gives nothing."""
     out: dict[str, dict[str, Any]] = {}
-    own = lease.roster_self(client, (await client.get_me()).id)  # its NATS name on plan B piece 2
+    own = lease.roster_self(client, (await identity.self_me(client)).id)  # its NATS name on plan B piece 2
     for r in rows:
         got = usage.own() if r.user_id == own else r.usage
         if got:
@@ -920,7 +920,7 @@ async def _queued_rows(client: ChatPort) -> list[dict[str, Any]]:
     queued: only its own server knows them (they are in its state file, no
     post yet). Not an item of the stall check, which reads posts. Fails open."""
     try:
-        me = await client.get_me()
+        me = await identity.self_me(client)
     except Exception as exc:  # noqa: BLE001
         log.info("queued asks not listed: %s", exc)
         return []
@@ -1608,7 +1608,7 @@ async def _unreachable(client: ChatPort, message: str, post: Post) -> tuple[list
     if a2a.word(message) not in ("TASK", "DELEGATE"):
         return [], False
     try:
-        me = (await client.get_me()).username
+        me = await identity.self_name(client)
         if not departed.mentioned(message, me) or await lease.is_direct(client, post.channel_id):
             return [], False
         return (await departed.unreachable(client, message, me, post.channel_id),
@@ -1786,7 +1786,7 @@ async def announce(
     if role not in ("coordinator", "member"):
         return _refused("announce", 'role must be "coordinator" or "member"')
     client = _get_client()
-    me = await client.get_me()
+    me = await identity.self_me(client)
     responsible, trusted = await _responsible_and_trusted(client)
     autonomous = config.env("CB_AGENT_KIND") == "autonomous"
     # Names without @: a HELLO is no request to anyone (RT-6.11).
@@ -1850,7 +1850,10 @@ async def _foreign_coordinator(client: ChatPort, me: str) -> str:
 @tool()
 async def get_me(raw: bool = False) -> str:
     """Return the current bot user: id and username (raw=true: users/me as is)."""
-    me = await _get_client().get_me()
+    # Without a Mattermost bot (plan B piece 14c-2a): the NATS name and the name it is mentioned
+    # by (identity.self_me); raw needs the bot. The text the model reads is unchanged until 14c-2c.
+    client = _get_client()
+    me = await (client.get_me() if raw else identity.self_me(client))
     return _out("get_me", me.json() if raw else {"id": me.id, "username": me.username})
 
 
@@ -2303,7 +2306,7 @@ async def ask_human(
     if bad := _bad_id(post=root_id):
         return _refused("ask_human", bad)
     client = _get_client()
-    me = await client.get_me()
+    me = await identity.self_me(client)
     # Free text of the model: nothing but the ask itself may notify (RT-6.11):
     # a person's @-mention turns plain as in post_message, @channel/@here/@all too.
     # RT-6.11 step 1: a list of plain texts, emojis stripped, each one line and
@@ -2487,7 +2490,7 @@ async def _post_queued(client: ChatPort, me: Any, key: str,
 
 
 async def _advance_queue(client: ChatPort, key: str, answered: set[str]) -> None:
-    await _post_queued(client, await client.get_me(), key, answered)
+    await _post_queued(client, await identity.self_me(client), key, answered)
 
 
 remind.advance = _advance_queue
@@ -2569,7 +2572,7 @@ async def _ask_fallback(_port: Any, question: str, human: str, coord: str) -> st
     once, linked both ways; close the question (✅) and tell the agent. The
     new ask's id; raises when it could not be posted (the next tick tries)."""
     client = _get_client()
-    me = await client.get_me()
+    me = await identity.self_me(client)
     title = asks.titles(me.id).get(question) or "A question for the coordinator"
     wait = askroute.wait_sec() // 60
     out = await _post_ask(
@@ -2605,13 +2608,13 @@ async def resolve_ask(post_id: str, note: str = "") -> str:
     """
     _done_typing()
     if post_id.startswith("q-"):  # RT-6.11 step 2: withdraw a queued ask
-        me = await _get_client().get_me()
+        me = await identity.self_me(_get_client())
         return _out("resolve_ask", {"ask": post_id, "queued": True,
                                     "was_open": asks.claim(me.id, post_id) is not None})
     if bad := _bad_id(post=post_id or "-"):
         return _refused("resolve_ask", bad)
     client = _get_client()
-    me = await client.get_me()
+    me = await identity.self_me(client)
     await client.add_reaction(post_id, a2a.done_reaction())
     target = asks.whom_of(me.id, post_id)[0]
     was_open = asks.resolve(me.id, post_id)
@@ -3031,7 +3034,7 @@ async def _event_items(events: list[Any], raw: bool = False) -> list[dict[str, A
     uid = ""
     if any(e.post.root_id for e in events):
         try:
-            uid = (await client.get_me()).id
+            uid = (await identity.self_me(client)).id
         except Exception as exc:  # noqa: BLE001 — unknown: no answer marked expired
             log.info("could not read the bot's id: %s", exc)
     questions = asks.questions(uid) if uid else {}
@@ -3414,7 +3417,7 @@ async def _permission_request(params: dict[str, Any]) -> None:
         await _posted(client, post)
         # An open ask, so a 👍/👎 on it reaches the inbox (RT-6.11); without a
         # human, so it does not hold up the agent's own asks to them.
-        asks.add((await client.get_me()).id, post.id)
+        asks.add((await identity.self_me(client)).id, post.id)
         _relay.add(rid, post.id, tool)
         permission.note("dm posted", rid, tool)
     except Exception as exc:  # noqa: BLE001 — the terminal dialog is still open
@@ -3557,7 +3560,7 @@ async def _push_intercept(item: dict[str, Any]) -> bool:
         stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
         with unanswered.server_line():  # RT-6.2 step 2: the server's line, no answer
             await _posted(client, await client.post(text, root_id=pending.post_id))
-        asks.resolve((await client.get_me()).id, pending.post_id)
+        asks.resolve((await identity.self_me(client)).id, pending.post_id)
         _done_typing()
         return True
     except Exception as exc:  # noqa: BLE001 — undecided: hand it to the agent
@@ -3578,7 +3581,7 @@ async def permissions_obsolete(client: ChatPort) -> None:
                                                   f"`{rid}`: this prompt is closed.")
             continue
         try:
-            uid = uid or (await client.get_me()).id
+            uid = uid or (await identity.self_me(client)).id
             text = f"{a2a.symbol(Mark.DESKTOP)} Answered in the terminal · `{rid}`: this prompt is closed."
             stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
             with unanswered.server_line():  # RT-6.2 step 2: the server's line, no answer
