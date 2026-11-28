@@ -40,8 +40,8 @@ dropped, and the cutover checklist (section 3) takes their place.
 
 The reason: there are no external users, and the owner switches all agents within an
 hour. So the earlier plan's migration over several releases, made for hosts that skip
-releases, is not needed: a decision release (14a to 14c), a removal release (14d)
-once every home ran every piece, and the registrar's shutdown after two weeks without
+releases, is not needed: a decision release (14a to 14c), a release for the host
+side's removal (14d) once every home ran every piece, and the registrar's shutdown after two weeks without
 a registration. Where the sections below keep the earlier wording, it is marked.
 
 **The owner's yes for the flip.** The merge of the decision (14a, #313) left a
@@ -93,7 +93,7 @@ the shutdown follows a day after it.
 | 14b, the release notice | The MCP server reads the release record the bridge signs (`GET …/register/v1/release`, already routed in `services/bridge/cmd/bridged/main.go`) and tells its human; no host release check | #312, merged | 0.105.0, behind `CB_RECORDS_URL` |
 | 14c, identity and state | The session's own identity is its NATS name, not the bot's Mattermost id (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`); the state files still keyed by the bot id move to the name; in the six steps below | | |
 | 14c-1, the state keys | Built behind piece 2's switch, RT-6.2 step 9: every per-bot file of the MCP server and the scripts, copied once at the latch, one process per name by `key-<name>.lock`, a restart takes over its predecessor's state by the session's tie (`CB_TIE`) | #328, merged | 0.105.0, behind piece 2's switch |
-| 14c-1b, its follow-up | The conditions #244 lists before piece 2 or 14c goes on (step a of the cutover checklist) | #337, open | 0.105.0 |
+| 14c-1b, its follow-up | The conditions #244 lists before piece 2 or 14c goes on (step a of the cutover checklist) | #337, merged | 0.105.0 |
 | 14c-2a, the identity | Every site that decides "is this me, my state, may I act" asks `identity.py`: with a bot the bot's id and username, unchanged, else the NATS name | #333, open | before the cutover, inert |
 | 14c-2b, the rest without a token | The hook API, the status and the heartbeat without a token (still behind `client.token` after 14c-2a), with what needs them: `bus_info` (also naming the refused latch beyond its warning), `unread.after`'s `account_created()` and the NATS port's hand-over cursor at its start | not yet | before the cutover, inert |
 | 14c-2c, the flip | `nobot.CROWN_NEEDS_BOT` and `CB_CROWN_NEEDS_BOT` (`bin/mm-agent-lib.sh`) turned in one commit; `nobot.decide`'s early return goes with its docstring sentence and test, and the sentences about it in RT-6.10 step 8 and RT-6.18 step 13 | not yet, on `cutover/plan-b` | **the cutover release** |
@@ -177,7 +177,7 @@ The issues behind the dropped gates stay open; none of them holds the cutover ba
 
 ### The cutover checklist, in order
 
-- **(a) The conditions from #244 fixed** (14c-1b, #337, in 0.105.0, so they hold
+- **(a) The conditions from #244 fixed** (14c-1b, #337, merged in 0.105.0, so they hold
   before piece 2 is on). The two not to switch on without: the sweep's lock probe
   takes the exclusive lock, so a server starting in that instant stays unlatched; a
   kill between the counter move and the marker strands the counters. The strict
@@ -233,16 +233,16 @@ lab switches every piece on first (step c) and every agent moves to it at once (
 
 ## 4. Releases, `Needs:` lines and migration
 
-The `Needs:` lines below pass `NEEDS_PATTERN` (`release.py`, checked). The
-next release is 0.105.0 (the Unreleased NATS-name change, a breaking minor), the
-cutover release 0.106.0 (the owner's decision in its row); the shutdown release's
+The `Needs:` lines below pass `NEEDS_PATTERN` (`release.py`, checked). Release
+0.105.0 is merged (#338: pieces 1 to 13 and 14a to 14c-1b, every switch off); the
+cutover release is 0.106.0 (the owner's decision in its row); the shutdown release's
 number is a placeholder. They name no `CB_*` name: a host
 before 0.103.0 drops such a line ([env-names.md, the needs rule](env-names.md#the-needs-rule));
 the `CB_` names go into the entry's text.
 
 | Release | Content | SemVer | `Needs:` line |
 |---|---|---|---|
-| 0.105.0 | pieces 1 to 13, 14a, 14b, 14c-1 and its follow-up 14c-1b, every switch off | as its other content asks; with the switches off nothing changes | none for piece 14 |
+| 0.105.0 (#338) | pieces 1 to 13, 14a, 14b, 14c-1 and its follow-up 14c-1b, every switch off | as its other content asks; with the switches off nothing changes | none for piece 14 |
 | After 0.105.0, in 0.106.0 at the latest | 14c-2a, 14c-2b and 14c-3, inert; the first step of the host side's removal (the MCP entry point); the rest of gates 1 to 9 | as their content asks; with the switches off nothing changes | none for piece 14 |
 | Cutover release, 0.106.0 | the flip (14c-2c) and the removal of the host side (14d), merged from `cutover/plan-b`; the old `MM_*` setting names (the fallbacks to `CB_*`, #169) go with it, the owner's decision of 2026-11-28 17:03 (ask `6srsrf7unjf6ixk4i8616w9fzo`) | minor, `### Breaking`: no bot in a fully switched home, corral's hooks and the host copy are gone, an old name alone refuses the start | `Needs: every channel on nats with every piece on, bridge and login service at 0.105.0 or newer, new names set.` |
 | Shutdown release, e.g. 0.107.0, after the registrar's day | registration code and registrar names out of the MCP server and the harness plugins | minor, `### Breaking` | `Needs: registrar off, secret kept two weeks, then deleted.` |
@@ -274,8 +274,9 @@ Decided by the owner on 2026-11-28 08:41, ask qbsb7zr1sbnmx8sm8ca9xto48a: all ei
 
 Read with the cutover (above): where these answers name the decision release, that is
 now the releases before the cutover, which carry 14a, 14b and the inert parts of 14c;
-the removal release is now the cutover release. The host process that answer 1 lets
-decide goes with 14d in that release. Answers 5 and 6, which held the removal release
+the removal release (the old plan's release for the host side's removal, 14d) is now
+the cutover release. The host process that answer 1 lets decide goes with 14d in that
+release. Answers 5 and 6, which held that release back
 for the offline token's maximum lifetime and for the console's signature check
 (#192), are superseded with gates 18 and 19: neither holds the cutover back. Answer
 8's four pull requests became the steps of the table above.

@@ -14,8 +14,8 @@ type Lookup func(name string) (string, bool)
 type Warn func(msg string, args ...any)
 
 // oldNamesRemoved is the removal release's switch (docs/env-names.md, "After
-// the fallbacks go: refuse, never ignore"). In 0.103.0 and 0.104.0 it is
-// false: an old name alone is read with a deprecation warning. 0.105.0 sets
+// the fallbacks go: refuse, never ignore"). From 0.103.0 to 0.105.0 it is
+// false: an old name alone is read with a deprecation warning. 0.106.0 sets
 // it to true: an old name alone then refuses the start, naming both names,
 // instead of being ignored. Nothing else changes with it. NewEnv copies it
 // into Env.refuseOld, so the tests can cover the refusal.
@@ -77,7 +77,7 @@ func (e *Env) Get(newName, oldName string) (string, error) {
 		return "", fmt.Errorf("%s is no longer read: rename it to %s", oldName, newName)
 	default:
 		e.once(oldName, "config: "+oldName+" is deprecated, read as "+newName+
-			"; rename it, the old name goes in 0.105.0", "old", oldName, "new", newName)
+			"; rename it, the old name goes in 0.106.0", "old", oldName, "new", newName)
 		return ov, nil
 	}
 }
