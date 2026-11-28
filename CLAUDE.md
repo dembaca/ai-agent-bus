@@ -83,7 +83,8 @@ versions and words only, the new names go into the entry's text
 
 A change of at most about 50 lines, in one area, with no new behaviour and nothing
 in login, tokens, rights, hook trust, NATS permissions or release and signing, may
-skip an ADR and repeated review rounds; those always take the full way. It keeps:
+skip an ADR and repeated review rounds. Changes in login, tokens, rights, hook trust,
+NATS permissions or release and signing always take the full way. It keeps:
 
 - **One review** by a model with the overview of the whole (Opus or Fable, never a
   cheaper one because the diff looks small), which reads the change against its
@@ -93,7 +94,8 @@ skip an ADR and repeated review rounds; those always take the full way. It keeps
 - **The merge go** as usual.
 
 **Basis rule.** A PR whose CI went green on a base that `main` has since passed only
-by docs commits (CHANGELOG or docs alone) may merge without a new run, if GitHub
+by commits for which `checks.yml` runs just `docs` and `lint` (files no test reads)
+may merge without a new run, if GitHub
 says mergeable and clean and its CHANGELOG lines read clean against `main`. The
 ~chat-next coordinator granted this once on 2026-11-28; it is up to the merge approver.
 

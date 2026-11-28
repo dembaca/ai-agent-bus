@@ -41,7 +41,7 @@ jobs:
 
   tests:
     needs: changes
-    if: needs.changes.outputs.py == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.py != 'false' }}
     runs-on: ubuntu-latest
     # The suite takes 7-8 min in CI. This bounds a hang (a stuck test once held
     # the runner to GitHub's 6 h default), with room for a slow runner.
@@ -59,7 +59,7 @@ jobs:
   mcp-python-311:
     name: MCP server on Python 3.11
     needs: changes
-    if: needs.changes.outputs.py == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.py != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15   # the suite without the live NATS tests, ~2 min
     steps:
@@ -82,7 +82,7 @@ jobs:
   opencode-plugin:
     name: OpenCode plugin (node, API ${{ matrix.api }})
     needs: changes
-    if: needs.changes.outputs.opencode == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.opencode != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # ~20 s each
     strategy:
@@ -112,7 +112,7 @@ jobs:
   pi-extension:
     name: pi extension (node)
     needs: changes
-    if: needs.changes.outputs.pi == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.pi != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # ~10 s
     steps:
@@ -127,7 +127,7 @@ jobs:
   site:
     name: promo site builds (site/)
     needs: changes
-    if: needs.changes.outputs.site == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.site != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # ~20 s
     steps:
@@ -148,7 +148,7 @@ jobs:
   console:
     name: operator console builds (console/web)
     needs: changes
-    if: needs.changes.outputs.console == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.console != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # like the site job
     steps:
@@ -171,7 +171,7 @@ jobs:
   console-server:
     name: operator console server (console/server, real nats-server)
     needs: changes
-    if: needs.changes.outputs.console == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.console != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -285,7 +285,10 @@ jobs:
             have_base=true
           fi
           files=""
-          [ "$have_base" = true ] && files="$(git diff --name-only "$base" HEAD)"
+          [ "$have_base" = true ] && files="$(git diff --no-renames --name-only "$base" HEAD)"
+          # A deleted file may be one a test or the doc map names: everything runs.
+          deleted=""
+          [ "$have_base" = true ] && deleted="$(git diff --no-renames --name-only --diff-filter=D "$base" HEAD)"
           # the console image: console/ and mcp/ (its path dependency) or this file.
           # A manual run of main publishes on purpose, as bridge.yml's does; so does
           # a push whose previous head is gone.
@@ -293,8 +296,8 @@ jobs:
              printf '%s\n' "$files" | grep -qE '^(console/|mcp/|\.github/workflows/checks\.yml$)'; then
             publish=true
           fi
-          if [ "$EVENT" != "pull_request" ] || [ "$have_base" != true ]; then
-            all   # a push to main, a manual run, or no base to diff: everything
+          if [ "$EVENT" != "pull_request" ] || [ "$have_base" != true ] || [ -n "$deleted" ]; then
+            all   # a push to main, a manual run, no base to diff, or a deleted file: everything
           else
             while IFS= read -r f; do
               [ -n "$f" ] || continue
@@ -304,24 +307,34 @@ jobs:
                 mcp/*) py=true; oc=true; pi=true; con=true ;;
                 # the plugin's test reads bin/mm-agent-lib.sh; pi imports the plugin
                 bin/*) py=true; oc=true; pi=true ;;
-                opencode/*) oc=true; pi=true ;;
-                pi/*) pi=true ;;
+                # the Python tests hash the plugins' sentences, scan opencode/**/*.ts and
+                # copy both directories; pi imports the OpenCode plugin
+                opencode/*) py=true; oc=true; pi=true ;;
+                pi/*) py=true; pi=true ;;
                 # the console image reads the version from plugin.json
                 .claude-plugin/*) py=true; con=true ;;
-                hooks/*|adapters/*|skills/*|tests/*|scripts/*|pyproject*|uv.lock) py=true ;;
+                # the OpenCode and pi tests read SKILL.md
+                skills/*) py=true; oc=true; pi=true ;;
+                hooks/*|adapters/*|tests/*|scripts/*|pyproject*|uv.lock) py=true ;;
                 # tests read these as text (Go sources, the NATS configuration example)
                 services/*) py=true ;;
                 site/*) site=true ;;
+                # an MCP test reads the console's type file
+                console/web/src/api/types.ts) py=true; con=true ;;
                 console/*) con=true ;;
                 # read by the hook tests and the spec tests
-                docs/doc-map.toml|docs/env-names.md|docs/protocol.md|docs/arc42/09-*|docs/arc42/11-*) py=true ;;
+                docs/doc-map.toml|docs/env-names.md|docs/protocol.md|docs/arc42/06-*|docs/arc42/11-*) py=true ;;
+                # the console server's test quotes both word for word
+                docs/arc42/09-*) py=true; con=true ;;
+                CHANGELOG.md) con=true ;;
                 # pure documentation: the docs job is its check
-                docs/*|CHANGELOG.md) ;;
+                docs/*) ;;
                 # no other path with a slash is claimed: it makes everything run
                 */*) all ;;
+                .gitignore) py=true ;;   # the installer test copies it
                 *.md) ;;
                 # lint's own configuration
-                ruff.toml|.shellcheckrc|.gitignore|LICENSE) ;;
+                ruff.toml|.shellcheckrc|LICENSE) ;;
                 *) all ;;
               esac
             done <<< "$files"
