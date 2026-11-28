@@ -740,6 +740,57 @@ def _check_relayed():
     assert isinstance(lg._notifier, login_notice.DMNotifier)   # the DM still goes from here
 
 
+async def test_a_bot_less_session_shows_the_approval_at_the_machine_only(monkeypatch, tmp_path):
+    """RT-6.34, piece 14c-3: the DM and the ask stay while a bot is there (main's tests
+    above); a session that decided to hold no bot has neither, the machine only."""
+    from mattermost_ai_agent_bus import nobot
+    _login_env(monkeypatch, tmp_path)
+    nobot.reset()
+    nobot.hold(FakeChat())
+    try:
+        lg = login.start(lambda: asyncio.sleep(0, None))
+        assert isinstance(lg, asyncio.Task)
+        current = login.current()
+        assert isinstance(current, login.Login)
+        assert isinstance(current._notifier, login_notice.Shown)
+    finally:
+        login.stop()
+        nobot.reset()
+
+
+async def test_a_bot_less_relayed_login_has_no_dm(monkeypatch, tmp_path):
+    from mattermost_ai_agent_bus import nobot
+    _login_env(monkeypatch, tmp_path)
+    nobot.reset()
+    nobot.hold(FakeChat())
+    try:
+        login.start_relayed(lambda: asyncio.sleep(0, None))
+        current = login.current()
+        assert current is not None and current._notifier is None
+    finally:
+        login.stop()
+        nobot.reset()
+
+
+async def test_the_dm_notifier_posts_nothing_once_the_session_holds_no_bot(state):
+    from mattermost_ai_agent_bus import nobot
+    chat = FakeChat(people={"u1": "alice"}, post_id="ask1")
+    note = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
+    nobot.reset()
+    try:
+        await note.waiting(login.DeviceGrant("https://kc/d", "https://kc/d?c=1", "ABCD", 600))
+        assert len(chat.posted) == 2                     # with a bot: the DM and the ask
+        await note.refused()
+        assert len(chat.posted) == 3                     # and the refusal, too
+        nobot.hold(chat)
+        with pytest.raises(login.NotifyError):
+            await note.waiting(login.DeviceGrant("https://kc/d", "https://kc/d?c=2", "EFGH", 600))
+        await note.refused()                             # no DM either (piece 14c-3)
+        assert len(chat.posted) == 3                     # no second DM, no ask
+    finally:
+        nobot.reset()
+
+
 async def _quiet_services(monkeypatch):
     from mattermost_ai_agent_bus import attest, hookapi, lease, release
 

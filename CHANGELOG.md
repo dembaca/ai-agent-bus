@@ -21,6 +21,21 @@ before 0.5.0 are described in the git history.
   the flip (14c-2c) follow. The docs no longer say the crown claim carries the bot's id:
   it is `{"v":1}` under the session's NATS name.
 
+### Changed
+
+- **The login approval at this machine only once a session holds no bot** (#198, RT-6.34,
+  ADR-014 item 14; plan B piece 14c-3). With a bot, nothing changes: the approval still
+  reaches the responsible human as a DM with an ask in the home, and a wrong person's
+  approval is still a DM. A session that decided to hold no bot (piece 14a, only after
+  piece 14c-2c's flip) has neither, since it could not post them, so its approval is
+  the machine's: the browser, the address and the code in the MCP log and the harness's
+  terminal line (Claude Code's `SessionStart` and Stop hooks, the OpenCode plugin, the pi
+  extension), also under corral, where the relay shows it and the host keeps it for the
+  line. Cursor and Codex have no hook and rest with the browser and the MCP log there; on
+  a machine without a desktop browser (SSH, no `DISPLAY`, a headless pi) the log alone
+  remains. The theft notices stay a DM. With nobody at the machine, a new login of a
+  bot-less session waits (the price the owner accepted, RISK-29).
+
 ### Docs
 
 - Plan B piece 14 becomes a cutover (the owner's decision of 2026-11-28, #244): the flip of the crown without a bot (14c-2c) and the removal of the host side (14d) in one release, every piece switched on in the lab first with a smoke test, the registrar one day as the way back, then the shutdown; the plan's last six gates (the measured acceptance, the console's signature check and the offline token's lifetime among them) give way to a cutover checklist after release 0.105.0 (`docs/plan-b-piece-14.md`, ADR-014 item 14).

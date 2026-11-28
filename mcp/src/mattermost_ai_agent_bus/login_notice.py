@@ -8,12 +8,15 @@ link and logs in becomes the owner.
   without a shell, never a console browser that would take its stdio) and
   writes the address and the code to its stderr, which the harness keeps in
   its MCP log. Never the device code.
-* As a direct message to the responsible human (`DMNotifier`). The home
-  channel gets an ask that says only that an approval waits in the DM. It is
-  registered like an `ask_human` ask, so the reminders and the open asks of
-  the bus see it, and is settled when the approval ends.
+* As a direct message to the responsible human (`DMNotifier`), while the session
+  has a bot. The home channel gets an ask that says only that an approval waits
+  in the DM. It is registered like an `ask_human` ask, so the reminders and the
+  open asks of the bus see it, and is settled when the approval ends. A session
+  decided to hold no bot (piece 14a) has neither: its approval is the machine's
+  only (piece 14c-3, the owner's decision "once no agent has a bot", RT-6.34).
 
-`Combined` runs both: the approval goes on when at least one reached the human.
+`Combined` runs both where there is a bot: the approval goes on when at least one
+reached the human.
 """
 
 from __future__ import annotations
@@ -223,6 +226,12 @@ class DMNotifier:
         return client, human, await client.direct_channel_with(uid)
 
     async def waiting(self, grant: DeviceGrant) -> None:
+        from . import nobot
+        from .login import NotifyError
+        if nobot.held():
+            # The session decided to hold no bot (piece 14a) after the login started: no DM,
+            # no ask - the approval is the machine's (piece 14c-3, RT-6.34).
+            raise NotifyError("this session holds no bot: the approval is at this machine only")
         if self._ask:  # an earlier approval's ask is settled, never left open
             await self.settled("replaced")
         client, human, dm = await self._target()
@@ -245,6 +254,9 @@ class DMNotifier:
 
     async def start(self) -> None:
         """An ask left open by a session that ended mid-approval is settled."""
+        from . import nobot
+        if nobot.held():  # no bot: no ask of an earlier approval is settled here
+            return
         client = await self._get_client()
         if client is None:
             return
@@ -270,6 +282,9 @@ class DMNotifier:
         await client.add_reaction(ask, a2a.done_reaction())
 
     async def refused(self) -> None:
+        from . import nobot
+        if nobot.held():  # no bot: no DM to tell (piece 14c-3); Shown says it at the machine
+            return
         client, _, dm = await self._target()
         me = await client.get_me()
         text = REFUSED_TEXT.format(bot=me.username)

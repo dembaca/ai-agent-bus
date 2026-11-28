@@ -972,15 +972,23 @@ def start(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[
     """Start the login in the background when configured; the session never
     waits for it. One per process: a second call returns the running task.
     None when the login is off. The human sees the approval at this machine
-    (a browser, else stderr) and in a DM (#154)."""
+    (a browser, else stderr) and, while this session has a bot, in a DM with its ask
+    in the home (#154, RT-6.34); a session decided to hold no bot has the machine only
+    (piece 14c-3)."""
     global _current, _task
     if _current is not None:
         return _task
     settings = settings_from_env()
     if settings is None:
         return None
+    from . import nobot
     from .login_notice import Combined, DMNotifier, Shown
-    notifier = Combined(Shown(settings.issuer), DMNotifier(get_client, owners.responsible_human))
+
+    shown = Shown(settings.issuer)
+    # The DM and its ask stay while a bot is there or not yet decided (RT-6.34); a session
+    # that decided to hold no bot (piece 14a, `nobot.held`) has neither - the owner's
+    # decision is the approval at this machine only once no agent has a bot (piece 14c-3).
+    notifier = shown if nobot.held() else Combined(shown, DMNotifier(get_client, owners.responsible_human))
     # Outside corral an earlier version's token and key move over once (#154);
     # under corral the host's state directory is not reachable.
     _current = Login(settings, store=default_store(), notifier=notifier, migrate=not corral_sandbox())
@@ -999,9 +1007,14 @@ def start_relayed(get_client: Callable[[], Awaitable[ChatPort | None]]) -> async
     settings = settings_from_env()
     if settings is None:
         return None
+    from . import nobot
     from .login_notice import DMNotifier
     from .login_relay import RelayedLogin
-    _current = RelayedLogin(settings, notifier=DMNotifier(get_client, owners.responsible_human))
+
+    # With a bot the host DMs the approval the relay shows; a session without one has no DM
+    # and no ask, only the relay's own display and the host's terminal line (piece 14c-3).
+    notifier = None if nobot.held() else DMNotifier(get_client, owners.responsible_human)
+    _current = RelayedLogin(settings, notifier=notifier)
     _task = asyncio.create_task(_current.run())
     return _task
 
