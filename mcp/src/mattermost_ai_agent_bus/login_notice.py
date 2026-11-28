@@ -282,6 +282,9 @@ class DMNotifier:
         await client.add_reaction(ask, a2a.done_reaction())
 
     async def refused(self) -> None:
+        from . import nobot
+        if nobot.held():  # no bot: no DM to tell (piece 14c-3); Shown says it at the machine
+            return
         client, _, dm = await self._target()
         me = await client.get_me()
         text = REFUSED_TEXT.format(bot=me.username)

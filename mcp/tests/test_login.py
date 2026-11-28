@@ -780,10 +780,13 @@ async def test_the_dm_notifier_posts_nothing_once_the_session_holds_no_bot(state
     try:
         await note.waiting(login.DeviceGrant("https://kc/d", "https://kc/d?c=1", "ABCD", 600))
         assert len(chat.posted) == 2                     # with a bot: the DM and the ask
+        await note.refused()
+        assert len(chat.posted) == 3                     # and the refusal, too
         nobot.hold(chat)
         with pytest.raises(login.NotifyError):
             await note.waiting(login.DeviceGrant("https://kc/d", "https://kc/d?c=2", "EFGH", 600))
-        assert len(chat.posted) == 2                     # no second DM, no ask
+        await note.refused()                             # no DM either (piece 14c-3)
+        assert len(chat.posted) == 3                     # no second DM, no ask
     finally:
         nobot.reset()
 
