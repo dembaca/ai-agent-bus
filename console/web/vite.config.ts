@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig, loadEnv } from "vite"
 import react from "@vitejs/plugin-react"
 
@@ -19,6 +20,8 @@ export default defineConfig(({ mode }) => {
   }
   return {
     plugins: [react()],
+    // the Asks test reads Asks.css as text: vitest blanks stylesheets unless told
+    test: { css: { include: [/Asks\.css/] } },
     build: {
       outDir: "dist",
       emptyOutDir: true,
