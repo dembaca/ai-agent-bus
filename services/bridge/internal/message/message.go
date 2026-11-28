@@ -4,7 +4,9 @@
 // The format is a contract with natsbus.py (`decode`/`_check`): version 1, a
 // kind of post, reaction or unreaction; a post carries its text (which may be
 // empty) and optionally the stream sequence of its thread's root, a reaction
-// the sequence it reacts to and one emoji. Decoding is as strict as the Python
+// the sequence it reacts to and one emoji. With plan B piece 7 (RT-6.42 step
+// 11) a post may name a Mattermost post as its root (`mm_root`) and a reaction
+// the Mattermost post it reacts to (`mm_ref`) instead of a sequence. Decoding is as strict as the Python
 // side: no invalid UTF-8, no duplicate keys, props with the bus prefix only and
 // scalar values. Anything else is refused, never guessed.
 package message
@@ -40,6 +42,23 @@ type Msg struct {
 	Ref   *uint64 // reaction: the stream sequence of the post
 	Emoji string  // reaction
 	Props map[string]any
+	// Plan B piece 7 (RT-6.42 step 11): a Mattermost post named by its id
+	// instead of a sequence, never beside Root or Ref.
+	MMRoot string // post: the Mattermost post it replies to
+	MMRef  string // reaction: the Mattermost post it reacts to
+}
+
+// mmPost is a Mattermost post id: 26 characters of [a-z0-9].
+func mmPost(s string) bool {
+	if len(s) != 26 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // Decode reads one message body; prefix is the bus props prefix (MM_PROPS_PREFIX).
@@ -58,13 +77,15 @@ func Decode(body []byte, prefix string) (Msg, error) {
 		return Msg{}, fmt.Errorf("not a bus message: %w", err)
 	}
 	var raw struct {
-		V     *int           `json:"v"`
-		Kind  string         `json:"kind"`
-		Text  string         `json:"text"`
-		Root  *uint64        `json:"root"`
-		Ref   *uint64        `json:"ref"`
-		Emoji string         `json:"emoji"`
-		Props map[string]any `json:"props"`
+		V      *int           `json:"v"`
+		Kind   string         `json:"kind"`
+		Text   string         `json:"text"`
+		Root   *uint64        `json:"root"`
+		Ref    *uint64        `json:"ref"`
+		Emoji  string         `json:"emoji"`
+		Props  map[string]any `json:"props"`
+		MMRoot *string        `json:"mm_root"`
+		MMRef  *string        `json:"mm_ref"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -75,6 +96,18 @@ func Decode(body []byte, prefix string) (Msg, error) {
 		return Msg{}, errors.New("not format v1")
 	}
 	m := Msg{Text: raw.Text, Props: raw.Props}
+	if raw.MMRoot != nil && (Kind(raw.Kind) != Post || raw.Root != nil || !mmPost(*raw.MMRoot)) {
+		return Msg{}, errors.New("mm_root is a Mattermost post id, on a post without root")
+	}
+	if raw.MMRef != nil && (Kind(raw.Kind) == Post || raw.Ref != nil || !mmPost(*raw.MMRef)) {
+		return Msg{}, errors.New("mm_ref is a Mattermost post id, on a reaction without ref")
+	}
+	if raw.MMRoot != nil {
+		m.MMRoot = *raw.MMRoot
+	}
+	if raw.MMRef != nil {
+		m.MMRef = *raw.MMRef
+	}
 	if m.Props == nil {
 		m.Props = map[string]any{}
 	}
@@ -103,7 +136,7 @@ func Decode(body []byte, prefix string) (Msg, error) {
 		if raw.Text != "" || raw.Root != nil {
 			return Msg{}, errors.New("a reaction has no text or root")
 		}
-		if raw.Ref == nil || *raw.Ref == 0 {
+		if (raw.Ref == nil || *raw.Ref == 0) && m.MMRef == "" {
 			return Msg{}, errors.New("a reaction needs ref")
 		}
 		if raw.Emoji == "" || len(raw.Emoji) > 64 || strings.ContainsAny(raw.Emoji, "\r\n") {

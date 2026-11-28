@@ -193,11 +193,12 @@ func validKey(s string) bool {
 }
 
 // Reaction adds or removes one sender's reaction of a home's message (its
-// stream sequence) and emoji, and returns how many senders reacted: the
+// stream sequence in decimal, or "m" and a Mattermost post id for a post
+// named by its id, plan B piece 7: mirror.MMRef) and emoji, and returns how many senders reacted: the
 // bridge's bot reacts on 1 and unreacts on 0. A sender reacting twice is one
 // reaction, as on the bus, so a replay counts nothing.
-func (s *KV) Reaction(ctx context.Context, home string, seq uint64, emoji, sender string, add bool) (int, error) {
-	key := "r." + home + "." + strconv.FormatUint(seq, 10) + "." + hex.EncodeToString([]byte(emoji))
+func (s *KV) Reaction(ctx context.Context, home, ref, emoji, sender string, add bool) (int, error) {
+	key := "r." + home + "." + ref + "." + hex.EncodeToString([]byte(emoji))
 	for range 5 {
 		e, err := s.kv.Get(ctx, key)
 		senders := map[string]bool{}
@@ -253,8 +254,8 @@ func (s *KV) Reaction(ctx context.Context, home string, seq uint64, emoji, sende
 // OwnReaction says whether sender's own bot holds its reaction of a home's
 // message and emoji (RT-6.44): the removal goes to that bot, whatever state
 // the bot is in by then.
-func (s *KV) OwnReaction(ctx context.Context, home string, seq uint64, emoji, sender string) (bool, error) {
-	_, err := s.kv.Get(ctx, ownKey(home, seq, emoji, sender))
+func (s *KV) OwnReaction(ctx context.Context, home, ref, emoji, sender string) (bool, error) {
+	_, err := s.kv.Get(ctx, ownKey(home, ref, emoji, sender))
 	switch {
 	case errors.Is(err, jetstream.ErrKeyNotFound):
 		return false, nil
@@ -265,8 +266,8 @@ func (s *KV) OwnReaction(ctx context.Context, home string, seq uint64, emoji, se
 }
 
 // SetOwnReaction records or clears sender's own bot's reaction.
-func (s *KV) SetOwnReaction(ctx context.Context, home string, seq uint64, emoji, sender string, on bool) error {
-	key := ownKey(home, seq, emoji, sender)
+func (s *KV) SetOwnReaction(ctx context.Context, home, ref, emoji, sender string, on bool) error {
+	key := ownKey(home, ref, emoji, sender)
 	if on {
 		_, err := s.kv.Put(ctx, key, []byte("1"))
 		return err
@@ -277,8 +278,8 @@ func (s *KV) SetOwnReaction(ctx context.Context, home string, seq uint64, emoji,
 	return nil
 }
 
-func ownKey(home string, seq uint64, emoji, sender string) string {
-	return "o." + home + "." + strconv.FormatUint(seq, 10) + "." + hex.EncodeToString([]byte(emoji)) +
+func ownKey(home, ref, emoji, sender string) string {
+	return "o." + home + "." + ref + "." + hex.EncodeToString([]byte(emoji)) +
 		"." + hex.EncodeToString([]byte(sender))
 }
 

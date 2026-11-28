@@ -234,6 +234,37 @@ func (c *Client) Member(ctx context.Context, channelID, userID string) (bool, er
 	return err == nil, err
 }
 
+// Target reads one post by id and its author, for plan B piece 7 (RT-6.42
+// step 11, mirror.Targets): the bridge checks it before an agent's reply or
+// reaction naming it is written. A refusal keeps its status (StatusError); an
+// answer that does not decode, or names no post or author, counts as no
+// such post (404), so it is skipped rather than retried for ever.
+func (c *Client) Target(ctx context.Context, postID string) (mirror.Target, error) {
+	var raw postJSON
+	body, err := c.request(ctx, "GET", "/api/v4/posts/"+url.PathEscape(postID), nil)
+	if err != nil {
+		return mirror.Target{}, fmt.Errorf("mattermost: post %q: %w", postID, err)
+	}
+	err = json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&raw)
+	body.Close()
+	if err != nil || raw.ID == "" || raw.UserID == "" {
+		return mirror.Target{}, &StatusError{Status: http.StatusNotFound,
+			Err: fmt.Errorf("mattermost: post %q: no post in the answer", postID)}
+	}
+	u, err := c.GetUser(ctx, raw.UserID)
+	if err != nil {
+		var st *StatusError
+		if !errors.As(err, &st) && strings.Contains(err.Error(), "no user") {
+			err = &StatusError{Status: http.StatusNotFound, Err: err}
+		}
+		return mirror.Target{}, err
+	}
+	_, hook := raw.Props["from_webhook"]
+	_, override := raw.Props["override_username"]
+	return mirror.Target{ID: raw.ID, ChannelID: raw.ChannelID, RootID: raw.RootID, Type: raw.Type,
+		DeleteAt: raw.DeleteAt, Webhook: hook || override, AuthorName: u.Username, AuthorBot: u.IsBot}, nil
+}
+
 // Post is one of a channel's posts, as the catch-up after a WebSocket
 // reconnect needs it (mmws.Reconnected): who wrote it and where, its
 // thread, Mattermost's clock fields, the text — and the fields the drop

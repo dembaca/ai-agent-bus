@@ -91,7 +91,8 @@ func run(log *slog.Logger) error {
 	var wg sync.WaitGroup
 	// Plan B's switches per channel, as the login service writes them from the
 	// channel directory (RT-6.39 step 5), through the bridge's own consumer
-	// bridge_planb made at every start: the mirror reads piece 6 (asks, RT-6.11),
+	// bridge_planb made at every start: the mirror reads piece 6 (asks, RT-6.11)
+	// and piece 7 (replies and reactions to a person's post, RT-6.42 step 11),
 	// and piece 4 decides how a person's post binds (inbound.ProofPiece, #266).
 	planb := &presence.Switches{}
 	// Plan B piece 9 (piece9.go): the agents' bots show their status, and the
@@ -140,7 +141,7 @@ func run(log *slog.Logger) error {
 		lk := &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
 			Window: 90 * time.Second, TTL: 30 * time.Second}
 		mr := &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv, Links: lk,
-			Switches: planb, People: client, Directory: accounts}
+			Switches: planb, People: client, Directory: accounts, Targets: client}
 		if bots != nil {
 			mr.Bots = bots
 		}
@@ -190,7 +191,7 @@ func run(log *slog.Logger) error {
 	// (auth_service, auth_data; RT-6.42 step 3, #266): the admin bot's. Without
 	// it, every person of such a home goes out under "-" (one warning when the
 	// bridge first meets one); with piece 4 off, the record alone binds. The
-	// signal names piece 6 while it is on (RT-6.11 step 7).
+	// signal names pieces 6 and 7 while each is on (RT-6.11 step 7, RT-6.42 step 11).
 	in.Switches = planb
 	if cfg.AdminToken != "" {
 		in.Users = mm.New(cfg.MMURL, cfg.AdminToken)
