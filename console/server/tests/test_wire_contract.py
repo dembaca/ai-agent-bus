@@ -155,6 +155,10 @@ def test_the_app_side_shapes_split_by_seam() -> None:
     an MCP server's record in test_the_ask_row_the_fixture_states)."""
     ask = FIXTURE["ask"]
     assert set(ask) >= {"for_me", "may_answer", "display_name", "thread_id"}
+    assert "card" not in ask  # the title only for a reader the asking agent does not name
+    mine = FIXTURE["askForMe"]
+    assert set(mine) == set(ask) | {"card"}
+    assert set(mine["card"]) == {"context", "recommendation", "where", "decision", "answers", "chosen"}
     me = FIXTURE["me"]
     assert set(me) == {"username", "display_name", "groups", "build"}
     assert set(me["build"]) == {"version", "revision"}  # #182: the footer's version
@@ -169,12 +173,20 @@ def test_the_ask_row_the_fixture_states(fleet_scenario) -> None:
     `<presence>.ask.<home>.<name>`) and read by the fleet's strict decoder."""
     from mattermost_ai_agent_bus.natsbus import OpenAsk, encode_ask_record
 
-    ask = FIXTURE["ask"]
-    record = encode_ask_record([OpenAsk(mm=ask["id"], kind=ask["kind"], human="dembaca",
-                                        title=ask["need"], asked=ask["at"] // 1000)], 1763980800)
+    ask, mine = FIXTURE["ask"], FIXTURE["askForMe"]
+    card = mine["card"]
+    record = encode_ask_record([OpenAsk(
+        mm=ask["id"], kind=ask["kind"], human="dembaca", title=ask["need"], asked=ask["at"] // 1000,
+        context=card["context"], recommendation=card["recommendation"], where=card["where"],
+        decision=card["decision"], answers=tuple(card["answers"]), chosen=card["chosen"] or "")],
+        1763980800)
     assert fleet_scenario.on_delivery(f"presence.ask.{ask['home']}.{ask['by']}", record,
                                       ack(5, 5, 1763980800.0), "PRESENCE", "console")
+    # without the operator's anchor, and for one the agent does not name: the title only
     assert fleet_scenario.asks() == [ask]
+    assert all("card" not in r for r in fleet_scenario.asks("someone-else"))
+    # the asked human, whom the agent's attestation names: the whole card
+    assert fleet_scenario.asks("dembaca") == [mine]
 
 
 def test_the_report_the_fixture_states() -> None:

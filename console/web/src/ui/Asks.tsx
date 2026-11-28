@@ -163,13 +163,17 @@ export function Asks({ api, asks, cards = [], reads = {}, operator = null, onThr
   )
 }
 
-/** What the unfolded row shows of an ask: the need's decision and the ask's own
- * answers, as the bus carries them. The API sends no context, recommendation or
- * "where" (the ask record holds a title, never the ask's body) and, until a record
- * change is decided separately (#285), none of the ask's own answers either, so
- * none is drawn, and no caption stands over nothing. The answer box is shown to the
- * asked human and to those the asking agent trusts ("may answer"); everybody else
- * reads, and sees the answers as plain text. The box's buttons are disabled. */
+/** The card's texts in the design's order, each with its caption above it. */
+const CARD_PARTS = [["Context", "context"], ["Recommendation", "recommendation"], ["Where", "where"]] as const
+
+/** What the unfolded row shows of an ask: its card (Context, Recommendation, Where,
+ * each with its caption above the text; an empty one is left out with its caption),
+ * the answer box with the decision's wording and the ask's own answers. The API
+ * hands the card only to the asked human and to those the asking agent trusts
+ * ("may answer"), who also get the answer box; everybody else reads the title and
+ * the answers an approval always has (go / no-go) as plain text. The texts are
+ * plain text, never markup; long ones wrap, never cut. The box's buttons are
+ * disabled. */
 export function Unfolded({ ask, fresh, onThread }: {
   ask: Ask
   fresh: number
@@ -179,15 +183,26 @@ export function Unfolded({ ask, fresh, onThread }: {
   const expired = ask.end === "expired"
   const answered = ask.end === "answered"
   const list = answersOf(ask)
+  const decision = ask.decision?.trim() ?? ""
   return (
     <div className="asks__unfolded">
       <div className="asks__unfolded-main">
+        {CARD_PARTS.map(([caption, key]) => {
+          const text = ask[key]?.trim()
+          return text ? (
+            <div key={key} className="asks__part">
+              <p className="small muted asks__caption">{caption}</p>
+              <p className="asks__text">{text}</p>
+            </div>
+          ) : null
+        })}
         {mine && !answered && (
           <div className="asks__box" aria-label="Answer">
-            {ask.kind === "approval" && (
-              <p className="asks__counts">
-                This counts as your approval of: <strong>{ask.need}</strong>
-              </p>
+            {ask.kind === "approval" && (decision
+              ? <p className="asks__counts">
+                  This counts as your approval of: <strong className="asks__text">{decision}</strong>
+                </p>
+              : <p className="asks__counts muted">The ask states no decision of its own; read its thread before you answer.</p>
             )}
             {!ask.forMe && ask.human &&
               <p className="muted small">Meant for {ask.human}; you may answer because the asking agent trusts you.</p>}
