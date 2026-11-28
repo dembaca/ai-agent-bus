@@ -12,7 +12,7 @@
 // itself run in development only: the production bundle carries neither.
 import {
   AGENT_STATES, HARNESS_LABEL, type AgentCard, type AgentStatsRow, type Post, type Report,
-  type ReportSegment, type ReportStack, type ThreadPage,
+  type GroupsAnswer, type ReportSegment, type ReportStack, type ThreadPage,
 } from "./types"
 import type { WireAsk, WireMe } from "./http"
 import fixture from "../../../fixtures/console-api.json"
@@ -30,6 +30,7 @@ let shapes: {
   ask: Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
   report: ReportShape
   agentStats: AgentStatsRow[]
+  groups: GroupsAnswer
 } | null = null
 
 type ReportFieldShape = Omit<Report["fields"][number], "unit"> & { unit: string }
@@ -50,6 +51,9 @@ if (!import.meta.env.PROD) {
   const me = fixture.me satisfies WireMe
   const report: ReportShape = fixture.report satisfies ReportShape
   const agentStats: AgentStatsRow[] = fixture.agentStats satisfies AgentStatsRow[]
+  const groups = { ...fixture.groups,
+    by: fixture.groups.by as GroupsAnswer["by"], scope: fixture.groups.scope as GroupsAnswer["scope"],
+  } satisfies GroupsAnswer
   if (ask.kind !== "approval" && ask.kind !== "question") {
     throw new Error(`wire fixture: unknown ask kind ${ask.kind}`)
   }
@@ -100,7 +104,7 @@ if (!import.meta.env.PROD) {
       }
     }
   }
-  shapes = { card, page, events, ask, report, agentStats }
+  shapes = { card, page, events, ask, report, agentStats, groups }
 }
 
 export const wire_shapes = shapes

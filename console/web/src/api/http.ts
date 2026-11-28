@@ -7,15 +7,15 @@
 // --- The wire contract, in one place -------------------------------------
 // The console server (#94) sends the app's own camelCase shapes for the
 // fleet (its events and the cards in them), the thread pages (`posts`
-// with `rootId`, `at`, …, and `next`, a cursor) and the graph and report
+// with `rootId`, `at`, …, and `next`, a cursor) and the groups and report
 // documents — so those pass through unchanged, and the TypeScript types
 // `are` the contract. The ask rows and `/v1/me` use the ADR-015 spellings
 // (`for_me`, `may_answer`, `display_name`, `username`), mapped here so no
 // cast goes unchecked. A 401 anywhere means the session is gone: the app
 // goes to the server's `/login` route (the mock never 401s).
 import type {
-  AgentCard, AgentStatsRow, Ask, ConsoleApi, ConnState, FleetEvent, GraphData, Post,
-  Report, ThreadPage,
+  AgentCard, AgentStatsRow, Ask, ConsoleApi, ConnState, FleetEvent, GroupBy, GroupsAnswer, Post,
+  Report, Scope, ThreadPage,
 } from "./types"
 
 /** The wire contract: snake_case where the ADR spells it that way. Only
@@ -136,8 +136,8 @@ export function httpApi(base: string): ConsoleApi {
       const rows = await json<WireAsk[]>(strip, "/v1/asks")
       return rows.map(askOf)
     },
-    async graph(): Promise<GraphData> {
-      return await json(strip, "/v1/graph")
+    async groups(by: GroupBy, scope: Scope): Promise<GroupsAnswer> {
+      return await json(strip, `/v1/groups?by=${by}&scope=${scope}`)
     },
     async stats(): Promise<Report[]> {
       return await json(strip, "/v1/stats")

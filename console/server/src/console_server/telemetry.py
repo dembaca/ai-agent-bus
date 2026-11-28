@@ -52,7 +52,7 @@ MAX_VERSIONS = 8
 # the fixed assets; anything with a variable tail is its bucket, anything
 # else "other". Never a name, an id or a file of the app.
 _ROUTES = ("/", "/livez", "/login", "/callback", "/logout", "/metrics",
-           "/v1/me", "/v1/fleet", "/v1/asks", "/v1/stats", "/v1/agent-stats", "/v1/graph",
+           "/v1/me", "/v1/fleet", "/v1/asks", "/v1/stats", "/v1/agent-stats", "/v1/groups",
            "/v1/threads", "health", "static")
 
 

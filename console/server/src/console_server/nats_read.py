@@ -50,7 +50,7 @@ from nats.aio.client import Client as NatsClient
 
 from mattermost_ai_agent_bus.natsbus import connect_reason, parse_ack
 
-from . import config
+from . import config, groups
 from .auth import Refused, Tokens
 from .fleet import Fleet
 from .stats_view import StatsBook
@@ -235,6 +235,17 @@ class View:
         (ADR-015 point 15, RT-6.43 step 8); none until the login's own record gave the
         anchor. The aggregate reports (`/v1/stats`) stay over every agent."""
         return self.stats.agent_rows(self.fleet.own_or_trusted(self.anchor()))
+
+    def groups(self, by: str, scope: str) -> dict[str, Any]:
+        """`/v1/groups` (#283): the agents list's groups and the panel's numbers, counted
+        here from this session's fleet. The operator's own and trusted agents come from
+        the anchor of the login's own record; without it nothing is "mine" and no number
+        of a single agent is summed."""
+        anchor = self.anchor()
+        return groups.groups(self.fleet.cards(anchor), self.fleet.asks(anchor),
+                             self.agent_stats(), by=by, scope=scope,
+                             own=self.fleet.own(anchor),
+                             own_or_trusted=self.fleet.own_or_trusted(anchor))
 
     def bus(self) -> dict[str, Any]:
         """What the browser sees of this session's reading (``/v1/me``)."""

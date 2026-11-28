@@ -420,6 +420,14 @@ class Console:
                        else view.stats.reports() if path == "/v1/stats"
                        else view.agent_stats())
             return httpd.Response.json(payload, headers=API_HEADERS)
+        if path == "/v1/groups":
+            if self._operator(headers) is None:
+                return _unauthorized()
+            # #283: the agents list's groups and "At a glance", counted here
+            view = self._view(self._session_token(headers))
+            return httpd.Response.json(
+                view.groups(query.get("by", "home"), query.get("scope", "mine")),
+                headers=API_HEADERS)
         if path == "/metrics":
             # #158: who may scrape — the operator that is logged in, the same
             # right /v1/* needs; no anonymous scrape, no token of its own and no
@@ -445,13 +453,6 @@ class Console:
                 return _unauthorized()
             return httpd.Response.json({"posts": [], "next": None},
                                        headers=API_HEADERS)
-        if path == "/v1/graph":
-            if self._operator(headers) is None:
-                return _unauthorized()
-            view = self._view(self._session_token(headers))
-            # point 7: the operator's own person node is marked from the login's own
-            # record (RT-6.43 step 2), never from anything the browser sends
-            return httpd.Response.json(view.fleet.graph(view.anchor()), headers=API_HEADERS)
         if path == "/logout":
             own = urlsplit(s.public_url)
             want = f"{own.scheme}://{own.netloc}"

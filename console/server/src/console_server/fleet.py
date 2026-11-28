@@ -420,65 +420,6 @@ class Fleet:
                 return card
         return None
 
-    def graph(self, anchor: str | None = None) -> dict[str, Any]:
-        """Nodes: people, channels, agents; edges: the owner (as attested), each agent's
-        home channel and its guest channels — trusts, coordinates and guest, cut at no
-        depth yet (the pilot shows one tenant, whole).
-
-        `anchor`: the operator's, from the login's own record (RT-6.43 step 2), never a
-        value the browser sends. The person node it names is marked `you` (ADR-015
-        point 7), matched by anchor, so two people of one name stay apart.
-
-        Node ids are unique across kinds: a person's is `person:<anchor token>`, a
-        channel's its name, an agent's its name — an owner named like a channel is
-        two nodes with two ids."""
-        nodes = []
-        edges = []
-        # anchor token -> the name it is shown under: the anchor is the identity
-        # (RT-6.41), the name only labels the node, so two people of one name stay
-        # two nodes. An owner without an attestation is the presence subject's
-        # owner token, its name read back (RT-6.37 step 1).
-        people: dict[str, str] = {}
-        for agent in self.agents():
-            att = self._attests.get(agent)
-            record = att[2] if att and att[2].exp > self.server_now else None
-            if record:
-                # an attestation's anchor is in name form ("." kept), the login's own
-                # record's in subject form ("." as "~"): the token is what both share
-                token, name = owner_token(record.owner_anchor), record.owner_name
-            else:
-                name = self._owners.get(agent, "")
-                token = owner_token(name)
-            if token != natsbus.NO_OWNER:
-                people.setdefault(token, name)
-                edges.append({"id": f"e-{agent}-owner", "from": agent,
-                              "to": f"person:{token}", "kind": "trusts"})
-        me = anchor or ""
-        for token, name in people.items():
-            # `person:` keeps a person's id apart from a channel's or an agent's of the
-            # same name; the card's `home` stays the plain channel name
-            person: dict[str, Any] = {"id": f"person:{token}", "kind": "person", "label": name}
-            if me and token == me:
-                person["you"] = True
-            nodes.append(person)
-        for channel in self.channels():
-            nodes.append({"id": channel, "kind": "channel", "label": channel})
-            for agent in sorted(self._members.get(channel, {})):
-                edges.append({"id": f"e-{agent}-{channel}", "from": agent, "to": channel,
-                              "kind": ("coordinates" if self.home_of(agent) == channel
-                                       else "guest")})
-        for agent in self.agents():
-            crown = any(self.holder_of(ch) == agent for ch in self._claims)
-            node: dict[str, Any] = {"id": agent, "kind": "agent",
-                                   "label": self.shown_name(agent),
-                                   "state": self.state_of(agent)}
-            if crown:
-                node["crown"] = True
-            nodes.append(node)
-        return {"nodes": nodes, "edges": [{"id": e["id"], "from": e["from"], "to": e["to"],
-                                          "kind": e["kind"]} for e in edges],
-                "cutDepth": None}
-
 
     # --- the asks (RT-6.43 step 6; ADR-015 addition of 2026-11-25, points 8 to 11) --------
 
@@ -491,6 +432,18 @@ class Fleet:
     def _fresh_attestation(self, agent: str) -> Attestation | None:
         att = self._attests.get(agent)
         return att[2] if att and att[2].exp > self.server_now else None
+
+    def own(self, anchor: str | None) -> set[str]:
+        """The agents whose fresh attestation names `anchor` as owner: the "Mine" of the
+        agents list (#283). Without the anchor, none."""
+        if not anchor or anchor == natsbus.NO_OWNER:
+            return set()
+        out = set()
+        for agent in self._attests:
+            att = self._fresh_attestation(agent)
+            if att and anchor == owner_token(att.owner_anchor):
+                out.add(agent)
+        return out
 
     def own_or_trusted(self, anchor: str | None) -> set[str]:
         """The agents whose fresh attestation (the login service's record, RT-6.41)

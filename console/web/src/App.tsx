@@ -1,27 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { AgentCard, AgentStatsRow, Ask, ConnState, ConsoleApi, FleetEvent, Operator } from "./api/types"
+import type {
+  AgentCard, AgentStatsRow, Ask, ConnState, ConsoleApi, FleetEvent, GroupsAnswer, Operator,
+} from "./api/types"
 import { AGENT_STATES } from "./api/types"
 import { Unavailable } from "./api/http"
-import { TopBar, VIEW_LABEL, type View } from "./ui/TopBar"
+import { TopBar, type View } from "./ui/TopBar"
 import { Footer } from "./ui/Footer"
 import { AgentList } from "./ui/AgentList"
 import { Asks } from "./ui/Asks"
 import { Detail } from "./ui/Detail"
-import { GraphView } from "./ui/GraphView"
-import { Overview } from "./ui/Overview"
+import { Glance } from "./ui/Glance"
 import { Reports } from "./ui/Reports"
-import { isOpen, statsByAgent, type StatusFilter } from "./ui/agents"
-import { Split, asPlace, pushPlace, replacePlace, resolvePlace, selectedAfter, type Place } from "./nav"
+import { isOpen, statsByAgent } from "./ui/agents"
+import { agentOf, asPlace, loadedPlace, neighbour, pushPlace, replacePlace, type Place } from "./nav"
+import { DEFAULT_PREFS, loadPrefs, savePrefs, type Prefs } from "./prefs"
 import { useTheme } from "./theme"
 
-/** The whole console (the agreed design, 2026-11-25): a top bar with the
- * views — the agents list is the home — one live fleet, the asks, the chosen
- * view, an agent's or an ask's detail as a page of its own, and the footer
+/** The whole console (the agreed design, 2026-11-25; #283): a top bar with the
+ * three views Agents (the start page), Asks and Stats, one live flock, the asks,
+ * the chosen view, an agent's or an ask's detail as a drawer from the right
+ * (not modal, the open agent in the address), and the footer
  * with the console's build (#182). Read-only (ADR-015 stage 1): nothing here
  * posts, an ask gets no answer button — answers stay in the humans' chat
  * until the owner opens answering.
  *
- * One connection state for the whole app (Fable's point 6): the fleet
+ * One connection state for the whole app (Fable's point 6): the flock
  * stream's own state shows in the top bar, every view's failed load in the
  * notice under it.
  *
@@ -38,9 +41,10 @@ export function App({ api }: { api: ConsoleApi }) {
   /** The fleet stream's first snapshot came: the cards are the whole fleet. */
   const [fleetSeen, setFleetSeen] = useState(false)
   const [me, setMe] = useState<Operator | null>(null)
-  const [view, setViewState] = useState<View>("overview")
-  const [agent, setAgent] = useState<AgentCard | null>(null)
-  const [ask, setAsk] = useState<Ask | null>(null)
+  // where the console stands: the view and the open drawer's agent or ask,
+  // also the address (nav.ts); the cards and asks are looked up live
+  const [place, setPlace] = useState<Place>(loadedPlace)
+  const view: View = place.view
   const [conn, setConn] = useState<ConnState>("connecting")
   const [notice, setNotice] = useState<string | null>(null)
   // bumped to reopen the stream and ask for the operator again after a 503
@@ -76,8 +80,6 @@ export function App({ api }: { api: ConsoleApi }) {
     } else if (event.type === "drop") {
       setCards((all) => all.filter((c) => c.name !== event.name))
     }
-    // an open detail follows its agent; one that left closes (nav.ts)
-    setAgent((sel) => selectedAfter(event, sel))
   }, [])
   const onState = useCallback((state: ConnState) => {
     if (state !== "error") {
@@ -177,48 +179,122 @@ export function App({ api }: { api: ConsoleApi }) {
     if (askTimer.current !== null) clearTimeout(askTimer.current)
   }, [])
 
-  // The places in the browser's history (nav.ts): every move pushes one, the
-  // browser's Back and Forward come back through popstate. The live fleet and
-  // asks are read through refs, so a place finds the current card or ask.
-  const cardsNow = useRef(cards)
-  cardsNow.current = cards
-  const asksNow = useRef(asks)
-  asksNow.current = asks
-  const viewNow = useRef(view)
-  viewNow.current = view
-  const go = useCallback((place: Place, push: boolean) => {
-    const shown = resolvePlace(place, cardsNow.current, asksNow.current)
-    setViewState(shown.view)
-    setAsk(shown.ask)
-    setAgent(shown.agent)
-    if (push) pushPlace(place)
+  // The places in the browser's history and address (nav.ts): every move pushes
+  // one, the browser's Back and Forward come back through popstate. The live
+  // flock and asks are looked up by name and id, so a drawer follows its agent.
+  const placeNow = useRef(place)
+  placeNow.current = place
+  const go = useCallback((next: Place, push = true) => {
+    setPlace(next)
+    if (push) pushPlace(next); else replacePlace(next)
   }, [])
   useEffect(() => {
-    replacePlace({ view: "overview" })
-    const back = (event: PopStateEvent) => { go(asPlace(event.state) ?? { view: "overview" }, false) }
+    replacePlace(placeNow.current)
+    const back = (event: PopStateEvent) => { setPlace(asPlace(event.state) ?? loadedPlace()) }
     window.addEventListener("popstate", back)
     return () => { window.removeEventListener("popstate", back) }
-  }, [go])
+  }, [])
+  const askRow = place.ask ? asks.find((a) => a.id === place.ask) ?? null : null
+  const agent = agentOf(place, cards, askRow?.by)
+  const [asksSeen, setAsksSeen] = useState(false)
+  useEffect(() => { if (asks.length > 0) setAsksSeen(true) }, [asks])
+  // a drawer for an agent that is not in the flock (a stale link, an agent
+  // that left) closes; an ask whose agent is gone stays, alone
+  useEffect(() => {
+    if (!fleetSeen || agent !== null) return
+    if (place.ask ? askRow === null && asksSeen : place.agent !== undefined) {
+      go({ view: place.view }, false)
+    }
+  }, [fleetSeen, agent, askRow, asksSeen, place, go])
 
   const openAgent = useCallback((card: AgentCard) => {
-    go({ view: viewNow.current, agent: card.name }, true)
+    const now = placeNow.current
+    // a second click on the same agent closes the drawer
+    go(now.agent === card.name && !now.ask ? { view: now.view } : { view: now.view, agent: card.name })
   }, [go])
   const openAsk = useCallback((row: Ask) => {
-    go({ view: viewNow.current, ask: row.id, agent: row.by }, true)
+    const now = placeNow.current
+    go(now.ask === row.id ? { view: now.view } : { view: now.view, ask: row.id, agent: row.by })
   }, [go])
-  // The breadcrumb: back to the view the detail was opened from.
-  const closeDetail = useCallback(() => { go({ view: viewNow.current }, true) }, [go])
-  // A view picked in the top bar closes a detail page that is open.
-  const setView = useCallback((next: View) => { go({ view: next }, true) }, [go])
-  // The list's search and status filter live here, so a detail page and the
-  // way back keep them.
-  const [listFilter, setListFilter] = useState<StatusFilter>("all")
+  const closeDetail = useCallback(() => { go({ view: placeNow.current.view }) }, [go])
+  // a view picked in the top bar closes the drawer
+  const setView = useCallback((next: View) => { go({ view: next }) }, [go])
   const [listQuery, setListQuery] = useState("")
   const { theme, toggle } = useTheme()
 
+  // What the console remembers per person: the panel, the grouping, the folded
+  // groups and the scope (prefs.ts), read once the operator is known.
+  const person = me?.username ?? null
+  const personNow = useRef(person)
+  personNow.current = person
+  const [prefs, setPrefsState] = useState<Prefs>(DEFAULT_PREFS)
+  useEffect(() => { setPrefsState(loadPrefs(person)) }, [person])
+  const setPrefs = useCallback((patch: Partial<Prefs>) => {
+    setPrefsState((was) => {
+      const next = { ...was, ...patch }
+      savePrefs(personNow.current, next)
+      return next
+    })
+  }, [])
+  // a narrow window starts with the panel folded until a pick is remembered
+  const [narrow] = useState(() => {
+    try { return window.matchMedia("(max-width: 899px)").matches } catch { return false }
+  })
+  const panelFolded = prefs.panel === null ? narrow : prefs.panel === "folded"
+
+  // The groups and the panel's numbers (`GET /v1/groups`), counted by the
+  // server: read again when the grouping or scope changes, when a card's state
+  // or home changes (250 ms later, so a burst costs one read), when the asks
+  // change, and every 30 s.
+  const [answer, setAnswer] = useState<GroupsAnswer | null>(null)
+  const groupsRead = useRef(0)
+  const loadGroups = useCallback(async () => {
+    const mine = ++groupsRead.current
+    try {
+      const got = await api.groups(prefs.by, prefs.scope)
+      if (mine === groupsRead.current) setAnswer(got)
+    } catch (error: unknown) {
+      if (mine === groupsRead.current) fail("groups", error)
+    }
+  }, [api, fail, prefs.by, prefs.scope])
+  useEffect(() => {
+    const timer = setInterval(loadGroups, 30_000)
+    return () => { clearInterval(timer) }
+  }, [loadGroups])
+  const cardsMark = cards.map((c) => `${c.name}:${c.state}:${c.home}`).join(",")
+  useEffect(() => {
+    const timer = setTimeout(() => { void loadGroups() }, 250)
+    return () => { clearTimeout(timer) }
+  }, [loadGroups, cardsMark, asks, me])
+
+  // The agents of the list in the order shown (AgentList), for the arrow keys.
+  const order = useRef<string[]>([])
+  const onVisible = useCallback((names: string[]) => { order.current = names }, [])
+  const detail = agent !== null || askRow !== null
+  // Esc closes the drawer; arrow up and down move to the next agent of the list
+  // — never while the keys belong to a field.
+  useEffect(() => {
+    if (!detail) return
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeDetail()
+      } else if ((event.key === "ArrowDown" || event.key === "ArrowUp")
+                 && !event.metaKey && !event.ctrlKey && !event.altKey && view === "agents") {
+        const el = event.target instanceof Element ? event.target : null
+        if (el?.closest("input, textarea, select, [contenteditable]")) return
+        const next = neighbour(order.current, agent?.name ?? null, event.key === "ArrowDown" ? 1 : -1)
+        if (next) {
+          event.preventDefault()
+          go({ view, agent: next })
+        }
+      }
+    }
+    window.addEventListener("keydown", key)
+    return () => { window.removeEventListener("keydown", key) }
+  }, [detail, agent, view, closeDetail, go])
+
   const open = asks.filter(isOpen).length
   const forMe = asks.filter((a) => a.forMe && isOpen(a)).length
-  const detail = agent !== null || ask !== null
 
   return (
     <div className="app">
@@ -228,32 +304,41 @@ export function App({ api }: { api: ConsoleApi }) {
         conn={conn} operator={me?.username ?? "…"}
         theme={theme} onToggleTheme={toggle}
       />
-      <main className={"stage" + (detail ? " stage--split" : "")}>
+      <main className="stage">
         {notice && (
           <div className="notice" role="alert">
             <span>{notice}</span>
             <button type="button" aria-label="dismiss" onClick={() => setNotice(null)}>×</button>
           </div>
         )}
-        {/* #200: a detail opens beside the view, which stays mounted and
-            visible (half and half); below 1000 px the view hides and the
-            detail is the whole page (app.css) */}
-        <Split detail={detail && (
-          <Detail api={api} card={agent} ask={ask} asks={asks} stats={agentStats}
-            from={VIEW_LABEL[view]} onBack={closeDetail} onFail={fail} />
-        )}>
-            {view === "agents" && <AgentList cards={cards} asks={asks} stats={agentStats} compact={detail}
-              selected={agent?.name ?? null}
-              filter={listFilter} onFilter={setListFilter} query={listQuery} onQuery={setListQuery}
-              onOpenAgent={openAgent} onOpenAsk={openAsk} onAllAsks={() => setView("asks")} />}
+        <div className="solo">
+          <div className="view">
+            {view === "agents" && (
+              <div className={"agents-page" + (panelFolded ? " agents-page--rail" : "")}>
+                <Glance answer={answer} asks={asks} cards={cards} folded={panelFolded}
+                  onFold={(folded) => setPrefs({ panel: folded ? "folded" : "open" })}
+                  onOpenAgent={openAgent} onOpenAsk={openAsk} />
+                <div className="agents-page__list">
+                  <AgentList answer={answer} cards={cards} asks={asks} stats={agentStats}
+                    prefs={prefs} onPrefs={setPrefs} query={listQuery} onQuery={setListQuery}
+                    selected={agent?.name ?? null} panelFolded={panelFolded}
+                    onOpenAgent={openAgent} onVisible={onVisible} />
+                </div>
+              </div>
+            )}
             {view === "asks" && <Asks asks={asks} cards={cards} onOpen={openAsk} />}
-            {view === "graph" && <GraphView api={api} cards={cards} asks={asks} fleetSeen={fleetSeen}
-              theme={theme} onOpenAgent={openAgent} onOpenAsk={openAsk} onFail={fail} />}
-            {view === "overview" && <Overview cards={cards} asks={asks}
-              onOpenAsk={openAsk} onView={setView} />}
-            {view === "reports" && <Reports api={api} onFail={fail} />}
-        </Split>
+            {view === "stats" && <Reports api={api} onFail={fail} />}
+          </div>
+        </div>
       </main>
+      {/* #283: the detail is a drawer from the right, not modal: the page
+          behind stays usable, a click on another agent swaps its content */}
+      {detail && (
+        <aside className="drawer" aria-label="Detail">
+          <Detail api={api} card={agent} ask={askRow} asks={asks} stats={agentStats}
+            onClose={closeDetail} onFail={fail} />
+        </aside>
+      )}
       <Footer build={me?.build ?? null} />
     </div>
   )
