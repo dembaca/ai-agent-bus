@@ -3711,7 +3711,7 @@ decided against it (Context).
    channel with test bots in the lab Mattermost. Runs beside the build and
    does not hold it up.
    Built in part (after 0.103.0, #151 step 4c): the fault-run rig
-   `testrig/` (`testrig/README.md`) runs two real MCP servers against a
+   `testrig/` (`testrig/README.md`) runs two real MCP servers (the plugin's entry point, `entry.py`) against a
    Mattermost stand-in, and with `bus-run --transport nats` with their home
    over NATS against a local nats-server whose static users carry the
    login service's rights. Faults on NATS: the server restarted (SIGKILL,

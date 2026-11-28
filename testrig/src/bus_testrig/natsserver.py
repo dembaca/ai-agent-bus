@@ -11,7 +11,7 @@ each agent's nkey as a static user (`natsrig.user_entry`). So this shim does wha
 answers `access_token` with an unsigned token that only names the owner (what
 `nats_port._owner_of` reads, `preferred_username`) and signs the server's nonce
 with the agent's nkey. It installs that login where `login.start` would put the
-real one, and then runs the server's **normal** entry point (`hosted.main`): the
+real one, and then runs the server's **normal** entry point (`entry.main`): the
 compose path, the NATS port, the heartbeat and the tools are the product's, only
 the login is not. Product code is not changed by this.
 
@@ -90,7 +90,7 @@ def install() -> FakeLogin:
 
 def main() -> None:
     install()
-    from mattermost_ai_agent_bus.hosted import main as serve
+    from mattermost_ai_agent_bus.entry import main as serve
 
     serve(sys.argv[1:])
 

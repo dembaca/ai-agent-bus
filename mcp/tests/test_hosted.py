@@ -20,7 +20,7 @@ import anyio
 import httpx
 import pytest
 
-from mattermost_ai_agent_bus import hosted, session_file, stats
+from mattermost_ai_agent_bus import entry, hosted, session_file, stats
 from mattermost_ai_agent_bus.client import post_of
 from mattermost_ai_agent_bus.model import Me
 
@@ -648,12 +648,15 @@ def test_relay_fails_clearly_without_the_host(monkeypatch, capsys):
     assert "refused the relay: wrong key" in capsys.readouterr().err
 
 
-def test_entry_point_relays_when_the_endpoint_is_set(monkeypatch):
+@pytest.mark.parametrize("main", ["entry", "hosted"])
+def test_entry_point_relays_when_the_endpoint_is_set(monkeypatch, main):
+    """RT-6.18: the plugin's entry point (entry.main), and hosted.main that hands
+    all but --host to it, relay when the endpoint is set."""
     calls = []
     monkeypatch.setattr(hosted, "relay", lambda env: calls.append(env["CB_BUS_MCP_ENDPOINT"]) or 3)
     monkeypatch.setenv("CB_BUS_MCP_ENDPOINT", "tcp://127.0.0.1:1")
     with pytest.raises(SystemExit) as exc:
-        hosted.main([])
+        (entry.main if main == "entry" else hosted.main)([])
     assert exc.value.code == 3 and calls == ["tcp://127.0.0.1:1"]
 
 

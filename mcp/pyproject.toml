@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mattermost-ai-agent-bus-mcp = "mattermost_ai_agent_bus.hosted:main"
+mattermost-ai-agent-bus-mcp = "mattermost_ai_agent_bus.entry:main"
 
 [build-system]
 requires = ["hatchling"]

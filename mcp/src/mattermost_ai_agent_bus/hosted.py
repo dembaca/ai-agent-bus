@@ -37,7 +37,8 @@ the relay logs in with its store in the sandbox's home and opens a second
 connection with ``"login": true``, over which this process asks for access
 tokens and gets the nkey seed to sign with (login_relay.py).
 
-Without the relay environment the entry point is the plain stdio server.
+The plugin's MCP entry point is entry.py: it hands ``--host`` and the relay
+environment to this module and runs the plain stdio server without them.
 """
 
 from __future__ import annotations
@@ -65,7 +66,7 @@ import anyio
 from anyio.abc import SocketAttribute, TaskStatus
 from anyio.streams.buffered import BufferedByteReceiveStream
 
-from . import a2a, config, session_file, stats
+from . import a2a, config, entry, session_file, stats
 
 if TYPE_CHECKING:
     from .compose import BusClient
@@ -73,7 +74,7 @@ if TYPE_CHECKING:
 
 log =logging.getLogger(__name__)
 
-ENDPOINT_ENV = "CB_BUS_MCP_ENDPOINT"
+ENDPOINT_ENV = entry.ENDPOINT_ENV
 KEY_ENV = "CB_BUS_KEY"
 LOOPBACK = "127.0.0.1"
 MIN_KEY = 32
@@ -161,27 +162,15 @@ Serve = Callable[[Any, Any], Awaitable[None]]
 
 
 def main(argv: list[str] | None = None) -> None:
-    """The plugin's MCP entry point: host process, relay, or plain stdio server."""
+    """The host process (``--host``); anything else goes to the plugin's entry
+    point (entry.main), which hands the relay case back to relay()."""
     args = sys.argv[1:] if argv is None else list(argv)
     if args[:1] == ["--host"]:
         sys.exit(host_main(args[1:]))
-    try:  # two names of one setting that disagree refuse the start (docs/env-names.md)
-        config.check()
-    except config.EnvConflict as exc:
-        sys.exit(_fail(str(exc)))
-    if config.env(ENDPOINT_ENV).strip():
-        sys.exit(relay(os.environ))
-    try:
-        from .server import main as serve_stdio
-    except ValueError as exc:  # a bad CB_PROPS_PREFIX (RT-6.16 step 8): one line, not a traceback
-        sys.exit(_fail(str(exc)))
-
-    serve_stdio()
+    entry.main(args)
 
 
-def _fail(message: str) -> int:
-    print(f"ai-agent-bus: {message}", file=sys.stderr, flush=True)
-    return 1
+_fail = entry.fail
 
 
 # --- relay (inside the sandbox) ----------------------------------------------
@@ -316,18 +305,6 @@ def relay_warning() -> str:
         return ""
     return (f"relay: none since {time.strftime('%H:%M', time.localtime(since))} — "
             f"is the bus plugin installed in the harness? ({adapter_doc()})")
-
-
-def client_session_refusal(sent: str, environ: Mapping[str, str] | None = None) -> str:
-    """Why the hook API refuses a caller, or "" (RT-6.18 step 6): the host
-    serves the OpenCode session whose relay came first (OPENCODE_SESSION_ID);
-    a hook call naming another one is refused, so a second OpenCode process
-    or a restarted one never sets this bot's presence or reads its posts. A
-    call without the header (an older plugin, another harness) is served."""
-    own = (os.environ if environ is None else environ).get("OPENCODE_SESSION_ID", "")
-    if not own or not sent or hmac.compare_digest(sent.encode(), own.encode()):
-        return ""
-    return ("this bus serves another OpenCode session: " + _ONE_AGENT_HOOKS)
 
 
 def relay_connected() -> None:
@@ -567,7 +544,6 @@ def identity(values: Mapping[str, str]) -> dict[str, str]:
 
 _ONE_AGENT = ("the host serves one agent with one bot, so another session's relay would post "
               "and answer as this bot (RT-6.18 step 6). Run each agent in its own corral session")
-_ONE_AGENT_HOOKS = ("one agent, one bot (RT-6.18 step 6). Continue that session or start a new corral session")
 
 
 def identity_mismatch(first: Mapping[str, str], other: Mapping[str, str]) -> str:

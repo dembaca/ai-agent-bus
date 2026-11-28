@@ -812,6 +812,17 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **The MCP server's entry point leaves `hosted.py`: plan B piece 14d, first part**
+  (#244, the keyless session RT-6.18; internal, no change of behaviour). The console
+  script `mattermost-ai-agent-bus-mcp` and `python -m mattermost_ai_agent_bus` now start
+  `entry.main` (`mcp/src/…/entry.py`): `--host` (the host process) and
+  `CB_BUS_MCP_ENDPOINT` set (the relay in the sandbox) go to `hosted.py` as before,
+  anything else is the plain stdio server, which no longer imports `hosted.py`; the
+  hook API's check of the OpenCode session moved into `hookapi.py`, and the no-relay
+  warning is read from `hosted.py` only in the host process. The cutover release
+  deletes `hosted.py`; `hosted.main` still works and hands all but `--host` to the new
+  entry. The console script's name is unchanged.
+
 - **CI: each check runs only for the areas a PR touches.** A `changes` job in
   `.github/workflows/checks.yml` (it replaces `console-changed`) names the areas a
   pull request touches, and each job carries an `if:` on them, so a skipped job

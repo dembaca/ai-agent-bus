@@ -390,7 +390,7 @@ def imports_module(source: str, name: str) -> bool:
 # The entry points (arc42 §5.2): they drive the bus through ChatPort,
 # RegistrationPort and the EventSource, and compose.py builds what stands
 # behind them; the whole server runs on stand-ins (test_server_on_fakes).
-ENTRY_POINTS = ("server.py", "hosted.py", "hookapi.py", "websocket_inbox.py")
+ENTRY_POINTS = ("entry.py", "server.py", "hosted.py", "hookapi.py", "websocket_inbox.py")
 
 
 def test_the_entry_points_import_no_adapter():

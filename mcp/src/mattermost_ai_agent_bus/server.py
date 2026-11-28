@@ -26,7 +26,7 @@ from pydantic import ValidationError
 
 from . import config
 from . import (
-    __version__, a2a, askroute, asks, attach, attest, channel, compose, debug, departed, files, gate, hookapi, hosted,
+    __version__, a2a, askroute, asks, attach, attest, channel, compose, debug, departed, files, gate, hookapi,
     lease, life, login, mandate, overhead,
     owners, ownpost, permission,
     natsbus, nobot, profile, receipt, release, remind, session_file, slim, stall, stats, tasks, unanswered, unread, usage,
@@ -1200,8 +1200,9 @@ async def bus_info() -> str:
     unbound = (profile.unbound_warning(me.username) if own.status != attest.VALID
                and profile.unbound(await client.bot_description(me.id)) else "")
     # RT-6.18: no relay reached the host process (none since its start).
+    relay = h.relay_warning() if (h := hookapi._hosted()) else ""
     warnings = [w for w in (unbound, *own.warnings, _hook_warning().get("warning", ""),
-                            hosted.relay_warning(), *lease.nats_notes(), *config.unknown_names()) if w]
+                            relay, *lease.nats_notes(), *config.unknown_names()) if w]
     return _out("bus_info", {
         "version": VERSION,
         "on_bus": True,

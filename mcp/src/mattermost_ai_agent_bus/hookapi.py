@@ -108,7 +108,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import config
 from . import (
-    a2a, asks, attach, channel, files, gate, hosted, lease, life, model, ownpost, release, session_file, stall, stats,
+    a2a, asks, attach, channel, files, gate, lease, life, model, ownpost, release, session_file, stall, stats,
     planb, tasks, turnend, unanswered, unread, usage,
 )
 from .homes import guest_ids, watched_channel_ids
@@ -165,6 +165,28 @@ Route = Callable[[Any, Mapping[str, str], Mapping[str, Any]], Awaitable[Reply]]
 _UID = re.compile(r"[a-z0-9]{26}")
 # One per waiting long poll; ring() sets them all (ADR-009 phase 1).
 _bells: set[asyncio.Event] = set()
+
+
+_ONE_AGENT_HOOKS = ("one agent, one bot (RT-6.18 step 6). Continue that session or start a new corral session")
+
+
+def client_session_refusal(sent: str, environ: Mapping[str, str] | None = None) -> str:
+    """Why the hook API refuses a caller, or "" (RT-6.18 step 6): the host
+    serves the OpenCode session whose relay came first (OPENCODE_SESSION_ID);
+    a hook call naming another one is refused, so a second OpenCode process
+    or a restarted one never sets this bot's presence or reads its posts. A
+    call without the header (an older plugin, another harness) is served."""
+    own = (os.environ if environ is None else environ).get("OPENCODE_SESSION_ID", "")
+    if not own or not sent or hmac.compare_digest(sent.encode(), own.encode()):
+        return ""
+    return ("this bus serves another OpenCode session: " + _ONE_AGENT_HOOKS)
+
+
+def _hosted() -> Any:
+    """hosted.py when this process is a keyless session's host process (RT-6.18),
+    else None: the plain server never imports it (entry.py), and its relay state
+    (the no-relay warning, a waiting plugin) exists only in the host process."""
+    return sys.modules.get(f"{__package__}.hosted")
 
 
 def ring() -> None:
@@ -472,7 +494,7 @@ class HookAPI:
         # RT-6.18 step 6: the hooks of another OpenCode session than the one the
         # host serves are refused, marked so the plugin tells its session.
         sent = headers.get(CLIENT_HEADER, "")
-        if why := hosted.client_session_refusal(sent):
+        if why := client_session_refusal(sent):
             log.warning("hook API %s %s refused: %s", method, url.path, why)
             return 403, {"error": why, "client_session": "refused"}
         if not sent and route is not waiting and os.environ.get("OPENCODE_SESSION_ID") and not self._unnamed_logged:
@@ -675,7 +697,7 @@ async def me(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]
     # keyless session cannot see the file that says so (RT-6.18).
     # relay: a keyless session's host process has had no relay since its start
     # (RT-6.18): the harness most likely lacks the bus plugin.
-    relay = hosted.relay_warning()
+    relay = h.relay_warning() if (h := _hosted()) else ""
     return 200, {"user_id": uid, "username": who.username,
                  "project": project, "crown_until": lease.crown_until(uid),
                  "channel": bool(_UID.fullmatch(uid)) and channel.confirmed(uid),
@@ -1436,7 +1458,8 @@ async def login_shown(client: ChatPort, query: Mapping[str, str], body: Mapping[
 async def waiting(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
     """A harness plugin waits for its first session (RT-6.18 step 11, RT-6.20
     step 1): the host holds back its no-relay warning."""
-    hosted.client_waiting()
+    if h := _hosted():
+        h.client_waiting()
     return 200, {"ok": True}
 
 
