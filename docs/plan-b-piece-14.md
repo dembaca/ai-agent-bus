@@ -52,7 +52,7 @@ removal release and the shutdown release.
 | self-update between sessions (RT-6.32) | `selfupdate.py` | 14d | nothing: the marketplace updates the plugin |
 | the block on self-registration in the sandbox (RT-6.10 step 1) | `sandbox.py` and its callers | 14d | nothing: no one registers in such a session |
 | the channel join in the host hook | `bin/mm-agent-channels.sh` (piece 13 left it, it runs before a server exists) | 14d | channels from the directory (piece 1); the bridge's bot is joined by the bridge (RT-6.44) |
-| the login approval's DM and ask (RT-6.34) | `login_notice.py` (`DMNotifier`, the ask and its settling) | 14c | the approval at this machine only: browser, MCP log and the terminal through the harness's hooks (#198, decided 2026-11-27); **built** with piece 14c-3 |
+| the login approval's DM and ask (RT-6.34) | `login_notice.py` (`DMNotifier`, the ask and its settling) | 14c | the approval at this machine only: browser, MCP log and the terminal through the harness's hooks (#198, decided 2026-11-27) |
 | the bot's identity in the session | `_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py` | 14c | the NATS name (the roster, piece 2) |
 | state files keyed by the bot id | `listen-`, `update-`, `presence-`, `coord-`, `turn-`, the asks, watermark, reminders, gate, stats, crown log (ADR-014 piece 2b "left keyed by the bot id") | 14c | the NATS name; copied once, the source left for the way back, as piece 2b did |
 | the shell clients of registration | `bin/mm-agent-register.sh`, `-unregister.sh`, `-registrar-keys.sh`, the stop hook's unregistration | 14d | nothing: gone |

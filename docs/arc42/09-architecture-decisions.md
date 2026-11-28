@@ -4062,12 +4062,12 @@ which each piece reads for itself.
   `cobsyafi9fdq784jupn9no74yh`): it reaches the human through the
   browser the MCP server opens, the address and code in its MCP log, and
   the agent's own terminal, once per login, through its harness's hooks
-  (#198, RT-6.34 step 4), with no DM and no ask in the home. Built with
-  piece 14c-3: the DM, the ask that pointed to it and their settling are
-  gone (`login_notice.py`, RT-6.34 step 4), and the approval is the
-  browser, the MCP log and the harness's terminal line, also under
-  corral, where the relay shows it and the host keeps it for the line.
-  The reason: the bridge sending these for a session that has no
+  (#198, RT-6.34 step 4), with no DM and no ask in the home. Today the MCP server, before it has
+  NATS credentials, sends the approval by DM under the agent's bot,
+  posts an ask in the home that points to the DM, and settles asks of
+  earlier approvals at its start (`login_notice.py`, RT-6.34); the DM,
+  the ask and their settling go with the end of registration (piece
+  14). The reason: the bridge sending these for a session that has no
   NATS credential yet would need an endpoint where it cannot tell who
   asks, so anyone who reaches it could have a person sent a login code
   of another client of the realm (device-code phishing, RISK-29). The

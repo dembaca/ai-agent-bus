@@ -821,7 +821,7 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     (RT-6.17, RT-6.6), with the ask reminders and the stall check (RT-6.19):
     the hooks call before any relay connects and after one closed. Yields the
     hook API's endpoint."""
-    from . import attest, compose, hookapi, lease, login, login_notice, release, stall
+    from . import attest, compose, hookapi, lease, login, release, stall
 
     async def get_client() -> ChatPort:
         # The services need the chat alone; BusClient is one (compose).
@@ -837,10 +837,7 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
     checking = asyncio.create_task(release.check_loop())
     # The Keycloak login, when CB_LOGIN_* is set; the session never waits for it (RT-6.34).
     # The relay in the sandbox holds it and hands this process tokens (#154, login_relay.py).
-    logging_in = login.start_relayed()
-    # One release only (piece 14c-3): an ask an earlier version left open for a login approval
-    # is settled with the bot's own mark. TODO: remove in the shutdown release (RT-6.34).
-    settling = asyncio.create_task(login_notice.settle_old_login_asks(get_client))
+    logging_in = login.start_relayed(get_client)
     # A home that runs over NATS (CB_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
     nats = asyncio.create_task(compose.start_nats(client))
     # Plan B piece 14a (RT-6.18 step 13): started without a bot, this process registers one only
@@ -862,7 +859,6 @@ async def services(key: str, client: BusClient) -> AsyncIterator[str]:
         await server._final_stats_on_nats()  # the last STATS part on NATS too (RT-6.43 step 7)
         await compose.stop_nats(client)
         task.cancel()
-        settling.cancel()
         if logging_in is not None:
             login.stop()
         attested.cancel()

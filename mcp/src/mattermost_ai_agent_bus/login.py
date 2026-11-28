@@ -52,7 +52,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from urllib.parse import SplitResult, urlsplit
 
 import httpx
@@ -61,6 +61,9 @@ import nkeys
 from . import keystore, owners, session_file
 from .config import env
 from .sandbox import corral_sandbox
+
+if TYPE_CHECKING:
+    from .port import ChatPort
 
 log = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -253,14 +256,14 @@ class DeviceGrant:
 
 
 class Notifier(Protocol):
-    """Tells the responsible human at this machine; the texts are in login_notice."""
+    """Tells the responsible human; the DM and ask texts are in login_notice."""
 
     async def start(self) -> None:
-        """At the start of the login: nothing to settle since piece 14c-3."""
+        """At the start of the login: settle an ask an earlier session left open."""
         ...
 
     async def waiting(self, grant: DeviceGrant) -> None:
-        """The approval link and code at this machine (a browser, else stderr). Raises NotifyError."""
+        """The approval link and code to the human, in a DM only; the ask in the home. Raises NotifyError."""
         ...
 
     async def settled(self, outcome: str) -> None:
@@ -429,7 +432,7 @@ class Login:
                 wait = self._cooldown_until - self._now()
                 if wait > 0:
                     # The first error, where this process saw it: "failed" alone hides
-                    # whether Keycloak was down or no way reached the human.
+                    # whether Keycloak was down or no DM could go out.
                     cause = f" ({self._cooldown_cause})" if self._cooldown_cause else ""
                     raise LoginError(f"the last approval {self._cooldown_why}{cause}; "
                                      f"a new one starts in {int(wait) + 1} s")
@@ -437,7 +440,7 @@ class Login:
                     await self._approve(human)
                 except LoginError as exc:
                     # Any failure, not only a denial: else every call would
-                    # ask for a new approval and leave a new session open in Keycloak.
+                    # send a new DM and leave a new session open in Keycloak.
                     if self._cooldown_until <= self._now():
                         if isinstance(exc, NoRole):
                             await self._io(self._cool_down, "lacked the realm role", human)
@@ -965,20 +968,27 @@ def current() -> Running | None:
     return _current
 
 
-def start() -> asyncio.Task[None] | None:
+def start(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[None] | None:
     """Start the login in the background when configured; the session never
     waits for it. One per process: a second call returns the running task.
     None when the login is off. The human sees the approval at this machine
-    (a browser, else stderr) and in the agent's terminal through the harness's
-    hooks (#198, #154): no DM, no ask (RT-6.34)."""
+    (a browser, else stderr) and, while this session has a bot, in a DM with its ask
+    in the home (#154, RT-6.34); a session decided to hold no bot has the machine only
+    (piece 14c-3)."""
     global _current, _task
     if _current is not None:
         return _task
     settings = settings_from_env()
     if settings is None:
         return None
-    from .login_notice import Shown
-    notifier = Shown(settings.issuer)
+    from . import nobot
+    from .login_notice import Combined, DMNotifier, Shown
+
+    shown = Shown(settings.issuer)
+    # The DM and its ask stay while a bot is there or not yet decided (RT-6.34); a session
+    # that decided to hold no bot (piece 14a, `nobot.held`) has neither - the owner's
+    # decision is the approval at this machine only once no agent has a bot (piece 14c-3).
+    notifier = shown if nobot.held() else Combined(shown, DMNotifier(get_client, owners.responsible_human))
     # Outside corral an earlier version's token and key move over once (#154);
     # under corral the host's state directory is not reachable.
     _current = Login(settings, store=default_store(), notifier=notifier, migrate=not corral_sandbox())
@@ -986,21 +996,25 @@ def start() -> asyncio.Task[None] | None:
     return _task
 
 
-def start_relayed() -> asyncio.Task[None] | None:
+def start_relayed(get_client: Callable[[], Awaitable[ChatPort | None]]) -> asyncio.Task[None] | None:
     """The host process of a keyless corral session (RT-6.18): no login of its
     own and no store on the host; the relay in the sandbox holds the login and
-    hands this process access tokens (login_relay.py, #154). The relay shows the
-    approval at this machine; this process keeps it for the hooks' terminal line
-    (`pending_line`). No DM, no ask (RT-6.34, piece 14c-3). None when the login
-    is off."""
+    hands this process access tokens (login_relay.py, #154). This process still
+    DMs the human the approval the sandbox shows. None when the login is off."""
     global _current, _task
     if _current is not None:
         return _task
     settings = settings_from_env()
     if settings is None:
         return None
+    from . import nobot
+    from .login_notice import DMNotifier
     from .login_relay import RelayedLogin
-    _current = RelayedLogin(settings)
+
+    # With a bot the host DMs the approval the relay shows; a session without one has no DM
+    # and no ask, only the relay's own display and the host's terminal line (piece 14c-3).
+    notifier = None if nobot.held() else DMNotifier(get_client, owners.responsible_human)
+    _current = RelayedLogin(settings, notifier=notifier)
     _task = asyncio.create_task(_current.run())
     return _task
 
