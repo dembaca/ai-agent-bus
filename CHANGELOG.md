@@ -27,6 +27,7 @@ before 0.5.0 are described in the git history.
   failed registration no longer says the session runs over NATS alone: it needs a bot,
   registering failed, restart. Inert until piece 14c-2c flips the decision: with a bot
   nothing else changes and every session still registers; part of the cutover release.
+  A name that goes while a route runs ends the route with the same 503, never a stale bot id.
 - **The session's identity without a bot: plan B piece 14c-2a** (#244, RT-6.6 step 13,
   RT-6.38 step 10, RT-6.2 step 9, ADR-014). Every place that decides "is this me, my
   state, may I act" (the crown, asks, the read watermark, the gate, receipts, the inbox,

@@ -65,11 +65,19 @@ def key_now(client: Any) -> str:
     return str(getattr(client, "bot_id", "") or "")
 
 
+class NoName(RuntimeError):
+    """A session that decided to run without a bot has no NATS name (its bus is down or going
+    down): it has no identity then, and never a stale or inherited bot id (review of #342)."""
+
+
 async def self_key(client: Any) -> str:
     """The session's own key: the bot's Mattermost id when there is a bot (its session, then
-    CB_MM_BOT_USER_ID, then users/me, as lease._user_id always read it), else its NATS name."""
-    if bot_less(client) and (name := nats_name(client)):  # before the environment value: a stale
-        return name  # CB_MM_BOT_USER_ID must not split the identity of a session without a bot
+    CB_MM_BOT_USER_ID, then users/me, as lease._user_id always read it), else its NATS name;
+    a session decided without a bot that has no name (yet) has no key: NoName."""
+    if bot_less(client):  # before the environment value: a stale CB_MM_BOT_USER_ID must not give
+        if name := nats_name(client):  # a session without a bot another key than its name
+            return name
+        raise NoName("no NATS name yet")
     session = getattr(client, "session", None)
     if session:
         return str(session.user_id)
@@ -82,7 +90,9 @@ async def self_key(client: Any) -> str:
 async def self_me(client: Any) -> Me:
     """The session's own Me: users/me with a bot (unchanged), else id the NATS name and
     username the name it is mentioned by (_shown)."""
-    if bot_less(client) and (name := nats_name(client)):
+    if bot_less(client):
+        if not (name := nats_name(client)):
+            raise NoName("no NATS name yet")
         return Me(id=name, username=_shown(client, name))
     me: Me = await client.get_me()
     return me

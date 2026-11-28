@@ -441,3 +441,29 @@ async def test_real_nats_a_session_without_a_bot_has_a_hook_api(
     finally:
         await port.stop()
 
+async def test_a_name_that_goes_mid_route_is_a_503_never_a_stale_bot_id(
+        bl: BotLess, serve: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.17 (review of #342): `served` is checked once; if the bus stops during a long route
+    the session has no key: identity.NoName, a 503 with the reason, and never the env's
+    CB_MM_BOT_USER_ID as the key of asks, watermark and reminded."""
+    monkeypatch.setenv("CB_MM_BOT_USER_ID", "u" * 26)  # a stale or inherited bot id
+    assert await identity.self_key(bl.port) == NAME_ME  # the name first, as before
+    bl.fake.name = ""
+    with pytest.raises(identity.NoName):
+        await identity.self_key(bl.port)
+    with pytest.raises(identity.NoName):
+        await identity.self_me(bl.port)
+    with pytest.raises(identity.NoName):
+        await hookapi._uid(bl.port)
+    monkeypatch.setattr(hookapi, "served", lambda client: True)  # the race: served, then gone
+    _, h = await serve(bl.port)
+    keyed = ("/v1/me", "/v1/last-post", "/v1/ask-reactions", "/v1/stat", "/v1/reminded", "/v1/turn-end",
+             "/v1/wake", "/v1/handoff")  # the routes that key by the session's own identity
+    for method, path, body in ROUTES:
+        if path.split("?")[0] in keyed:
+            r = await h.request(method, path, json=body)
+            assert r.status_code == 503 and r.json()["no_bot"] == hookapi.NO_NAME, (path, r.status_code)
+    r = await h.get("/v1/me")
+    assert r.status_code == 503 and r.json()["no_bot"] == hookapi.NO_NAME
+    assert bl.calls == []
+

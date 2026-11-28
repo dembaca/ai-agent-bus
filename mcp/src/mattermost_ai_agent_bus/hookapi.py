@@ -529,6 +529,8 @@ class HookAPI:
             return 400, {"error": str(exc)}
         except Forbidden as exc:
             return 403, {"error": str(exc)}
+        except identity.NoName:  # the name went while the route ran (a bus stop, a restart)
+            return 503, {"error": "no bus session", "no_bot": NO_NAME}
         except Exception as exc:  # noqa: BLE001 — Mattermost failed: the hook fails open
             log.info("hook API %s %s: %s", method, url.path, type(exc).__name__)
             return 502, {"error": "bus unreachable"}
