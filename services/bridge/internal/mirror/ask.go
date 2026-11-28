@@ -137,27 +137,42 @@ func (c *personCache) put(name, id string, now time.Time) {
 // mentionLimit counts the mentions kept per sender in the last hour.
 type mentionLimit struct {
 	mu   sync.Mutex
-	kept map[string][]time.Time
+	kept map[string][]keptMention
 }
 
-// take says whether sender may have one more mention kept now, and counts it.
-func (l *mentionLimit) take(sender string, now time.Time) bool {
+// keptMention is one unit spent at at, for the message id: a retry of the same
+// message spends nothing more (#287).
+type keptMention struct {
+	at time.Time
+	id string
+}
+
+// take says whether sender may have the mention of message id kept now, and
+// counts it once: the same message again, as a retry after a failed create is,
+// is let through without a second unit.
+func (l *mentionLimit) take(sender, id string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.kept == nil {
-		l.kept = map[string][]time.Time{}
+		l.kept = map[string][]keptMention{}
 	}
 	recent := l.kept[sender][:0]
 	for _, t := range l.kept[sender] {
-		if now.Sub(t) < time.Hour {
+		if now.Sub(t.at) < time.Hour {
 			recent = append(recent, t)
+		}
+	}
+	for _, t := range recent {
+		if t.id == id {
+			l.kept[sender] = recent
+			return true
 		}
 	}
 	if len(recent) >= MentionsPerHour {
 		l.kept[sender] = recent
 		return false
 	}
-	l.kept[sender] = append(recent, now)
+	l.kept[sender] = append(recent, keptMention{now, id})
 	return true
 }
 
@@ -207,7 +222,7 @@ func (m *Mirror) withoutAsk(props map[string]any) map[string]any {
 // rule is left out and logged, the post goes without it. An error is a
 // lookup that failed for a while (a 5xx, a 429, the network): the reader
 // tries the message again; any other refusal counts as no person.
-func (m *Mirror) ask(ctx context.Context, sender string, msg message.Msg) (string, []any, error) {
+func (m *Mirror) ask(ctx context.Context, sender, msgID string, msg message.Msg) (string, []any, error) {
 	text, props := msg.Text, msg.Props
 	kind := m.askKind(msg)
 	if kind == "" {
@@ -249,7 +264,7 @@ func (m *Mirror) ask(ctx context.Context, sender string, msg message.Msg) (strin
 			"home", m.Home, "agent", sender)
 		return "", cards, nil
 	}
-	if !m.mentions.take(sender, time.Now()) {
+	if !m.mentions.take(sender, msgID, time.Now()) {
 		m.Log.Warn("bridge: an ask's mention is plain: the sender's mentions this hour are used up",
 			"home", m.Home, "agent", sender, "limit", MentionsPerHour)
 		return "", cards, nil

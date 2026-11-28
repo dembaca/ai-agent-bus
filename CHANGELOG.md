@@ -68,6 +68,22 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A retried ask no longer spends its mention twice, and an undecodable lookup answer
+  is no longer retried for ever** (#287, RT-6.11). In the bridge's mirror of an ask,
+  which runs with every plan B switch off for a home over NATS, the sender's limit of
+  20 kept mentions an hour was taken before the copy was created, so a create that
+  failed and was tried again used a second unit; the same message now counts once.
+  A 200 answer of Mattermost's username lookup whose body does not decode was taken as
+  a failure to retry, which stopped the home's mirror; it now counts as no person and
+  the mention is plain. Only an answer that cannot be decoded is no person (the same
+  holds for the lookup of a post and its author before an agent's reply or reaction);
+  a body cut short or a read that fails mid-answer is retried, as no answer is.
+- **The bridge refuses a history window the client could never read** (#278, RT-6.43).
+  With piece 5 (history) on, a channel read whose one `create_at` holds posts adding up
+  to more than the 4 MiB the MCP client takes of one answer was answered over that cap,
+  and the client refused every retry. The bridge now answers a `too large` error and logs
+  it. This changes nothing with piece 5 off.
+
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
   RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
   the reaction's stream sequence over the copy's entry in the map from Mattermost posts

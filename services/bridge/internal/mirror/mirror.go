@@ -184,7 +184,7 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 	in := msg.Props
 	if asks {
 		// Plan B piece 6: the ask's card and its one mention; its own keys never pass.
-		if keep, cards, err = m.ask(ctx, sender, msg); err != nil {
+		if keep, cards, err = m.ask(ctx, sender, id, msg); err != nil {
 			return err
 		}
 		m.logOutsider(ctx, cid, sender, keep)

@@ -113,12 +113,22 @@ const (
 	maxPartBytes = 128 << 10
 	// maxAnswerBytes bounds all parts of one answer together.
 	maxAnswerBytes = 512 << 10
+	// maxClientBytes is the most the MCP client takes from one answer's parts
+	// together (MAX_TOTAL in requests.py, counted over the parts as sent), and
+	// partEnvelope what each part's envelope adds to its result: a run of equal
+	// create_at that would go over it is refused, not answered (#278).
+	maxClientBytes = 4 << 20
+	partEnvelope   = 1 << 10
 	// requestTimeout bounds one read, so one slow channel stalls no other
 	// agent's request for longer.
 	requestTimeout = 30 * time.Second
 	// userCacheMax bounds the bot marks kept between reads.
 	userCacheMax = 4096
 )
+
+// errRunTooLarge is the answer for a window whose one create_at holds more
+// posts than the client takes in one answer.
+var errRunTooLarge = errors.New("too large: the posts of one millisecond are more than an answer may carry")
 
 // errNotChannel is the answer for a channel the agent did not announce a
 // membership of. It names neither the channel's switch nor its posts.
@@ -294,7 +304,7 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 		}
 	}
 
-	return h.parts(p, cid, shaped, limit, capped, readThrough), nil
+	return h.parts(p, cid, shaped, limit, capped, readThrough)
 }
 
 // maxThreadPages bounds one thread read's pages (200 posts each): a thread of
@@ -560,7 +570,7 @@ func drop(p mm.Post) bool {
 // parts splits the shaped posts into the answer's parts, each within the count
 // and byte bounds, and marks the last with next and more while posts remain.
 func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, capped bool,
-	readThrough int64) []requests.Reply {
+	readThrough int64) ([]requests.Reply, error) {
 	var (
 		chunks [][]answerPost
 		cur    []answerPost
@@ -613,6 +623,7 @@ func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, ca
 		chunks = [][]answerPost{{}} // a read with nothing: one empty part
 	}
 	out := make([]requests.Reply, 0, len(chunks))
+	wire := 0
 	for i, chunk := range chunks {
 		r := result{V: 1, Channel: p.Channel, ChannelID: cid, Thread: p.Thread, Posts: chunk}
 		if i == len(chunks)-1 && more {
@@ -639,12 +650,20 @@ func (h *Handler) parts(p payload, cid string, posts []answerPost, limit int, ca
 			h.log().Warn("history: the answer does not marshal", "error", err)
 			continue
 		}
+		wire += len(body) + partEnvelope
+		if wire > maxClientBytes {
+			// A run of one create_at is never cut, so it can only be refused: the
+			// client would refuse every retry of this window anyway.
+			h.log().Warn("history: a run of equal create_at is over the client's answer bound",
+				"channel", p.Channel, "bytes", wire)
+			return nil, errRunTooLarge
+		}
 		out = append(out, requests.Reply{Result: body})
 	}
 	if len(out) == 0 {
 		out = append(out, requests.Reply{Result: json.RawMessage(`{"v":1}`)})
 	}
-	return out
+	return out, nil
 }
 
 // log is the handler's logger.
