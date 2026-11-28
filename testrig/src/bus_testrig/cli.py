@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -167,11 +168,15 @@ def _nats_run(args: argparse.Namespace) -> int:
     faults: list[str | None] = ([None, *NATS_FAULTS] if args.fault == "all"
                                 else [None if args.fault == "none" else args.fault])
     runs: list[runner.Run] = []
+    # The rig strips the host's CB_* from the sessions; plan B's test switch is the one
+    # it hands on, read from its own environment (CB_PLANB_TEST=2: the roster from NATS).
+    planb = os.environ.get(natsrig.PLANB_ENV, "")
     try:
         for fault in faults:
             run = asyncio.run(natsrig.nats_bus_run(
                 count=args.count or 10, fault=fault, fault_sec=args.fault_sec,
-                stall_sec=args.stall_sec, send_interval=args.send_interval or 0.05))
+                stall_sec=args.stall_sec, send_interval=args.send_interval or 0.05,
+                planb=planb))
             run.commit = _commit()
             runs.append(run)
     except (RuntimeError, OSError) as exc:
@@ -181,8 +186,43 @@ def _nats_run(args: argparse.Namespace) -> int:
     print(json.dumps(reports[0] if len(reports) == 1 else reports, indent=2, sort_keys=True))
     if args.summary:
         print(runner.summary(runs))
-    bad = [run for run in runs if _untrustworthy(run, expect_loss=args.expect_loss)]
+    bad = [run for run in runs if _untrustworthy(run, expect_loss=args.expect_loss)
+           or _told_gone(run)]
     return EXIT_BAD_RUN if bad else EXIT_OK
+
+
+def _told_gone(run: runner.Run) -> bool:
+    """With the roster from NATS (#252): whether a live agent was told as gone, which
+    must never happen, or the run never saw a roster check, so its 0 measured nothing.
+
+    Every agent of a run is live: a cut, a restart, a hang or a frozen line makes the
+    roster unreadable, never an agent gone. `kill-client` is the one fault that really
+    stops an agent (the receiver, for the window), so its count is reported, not failed.
+    A check shows as the canary in `not_reachable`; a run whose sends never brought one
+    back did not check the roster at all, and its 0 is no measurement."""
+    if not run.roster_on:
+        return False
+    from .natsrig import NOBODY
+
+    if not sum(run.roster_checks.values()):
+        print(f"bus-testrig: --fault {run.fault}: no post_message answer named the canary "
+              f"{NOBODY}, so no roster check ran and told_gone measured nothing",
+              file=sys.stderr)
+        return True
+    if run.fault != "none" and not run.roster_checks.get("after"):
+        # Sends fail during the window, so a check after it is the proof the roster
+        # was read again once the fault was over.
+        print(f"bus-testrig: --fault {run.fault}: no roster check after the fault's window, "
+              "so told_gone measured nothing about the recovery", file=sys.stderr)
+        return True
+    if run.told_gone and run.fault != "kill-client":
+        first = run.told_gone[0]
+        print(f"bus-testrig: --fault {run.fault}: a live agent was told as gone "
+              f"{len(run.told_gone)} time(s), first {first['name']} ({first['why']}) by "
+              f"{first['via']} in the phase {first['phase']}; it must be 0 (#252)",
+              file=sys.stderr)
+        return True
+    return False
 
 
 def _coord_run(args: argparse.Namespace) -> int:
