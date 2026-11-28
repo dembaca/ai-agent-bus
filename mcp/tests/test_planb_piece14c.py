@@ -9,6 +9,8 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -266,8 +268,8 @@ def test_a_repeated_latch_moves_nothing(state: Path, monkeypatch: pytest.MonkeyP
 
 
 def test_without_a_predecessor_the_copy_source_is_the_bot_id(state: Path) -> None:
-    assert session_file._copy_source(UID, NAME) == (UID, None)
-    assert session_file._copy_source("", NAME) == (None, None)
+    assert session_file._copy_source(UID, NAME) == (UID, [])
+    assert session_file._copy_source("", NAME) == (None, [])
 
 
 # --- the takeover across a restart (owner's decision on #328: CB_LOGIN_NKEY stays ephemeral) ---
@@ -288,10 +290,13 @@ def _harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, harness: str, sid:
 def _restart(monkeypatch: pytest.MonkeyPatch, *, release: bool = True) -> None:
     """The process ends (its lock with it, unless `release` is False: it still runs) and a new
     one starts, with a new NATS name."""
-    for fd in session_file._key_fds.values():
+    for fd in [*session_file._key_fds.values(), *([session_file._tie_fd] if session_file._tie_fd is not None else [])]:
         if release:
             os.close(fd)
     monkeypatch.setattr(session_file, "_key_fds", {})
+    monkeypatch.setattr(session_file, "_tie_fd", None)
+    monkeypatch.setattr(session_file, "_tie_refused", "")
+    monkeypatch.setattr(session_file, "_claims", set())
     monkeypatch.setattr(session_file, "_nats_name", None)
     monkeypatch.setattr(session_file, "_mirrors", {})
 
@@ -454,15 +459,15 @@ def test_without_a_bot_the_newest_gone_name_of_the_tie_is_taken(state: Path, tmp
 def test_two_latches_racing_for_one_predecessor(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _harness(monkeypatch, tmp_path, "claude")
     _name_run(state, NAME, UID, "run 1")
-    first, fd = session_file._copy_source(UID, NAME_B)
-    assert first == NAME and fd is not None
+    first, held = session_file._copy_source(UID, NAME_B)
+    assert first == NAME and len(held) == 1
     # The second start meanwhile: the predecessor's lock is held, so it falls back.
-    assert session_file._copy_source(UID, NAME_C) == (UID, None)
+    assert session_file._copy_source(UID, NAME_C) == (UID, [])
     session_file._mark(state / f"copied-{NAME}.env", add=[f"CB_TAKEN_BY={NAME_B}"])
-    os.close(fd)
+    os.close(held[0])
     # A start that listed the predecessor before the mark re-reads it under the lock.
     monkeypatch.setattr(session_file, "_candidates", lambda bot, name: [NAME])
-    assert session_file._copy_source(UID, NAME_D) == (UID, None)
+    assert session_file._copy_source(UID, NAME_D) == (UID, [])
 
 
 def test_a_missing_lock_is_gone_only_for_an_old_marker(state: Path, tmp_path: Path,
@@ -470,6 +475,8 @@ def test_a_missing_lock_is_gone_only_for_an_old_marker(state: Path, tmp_path: Pa
     _harness(monkeypatch, tmp_path, "claude")
     _name_run(state, NAME, UID, "run 1")
     (state / f"key-{NAME}.lock").unlink()
+    session = state / "mcp-x.env"
+    session.write_text(f"CB_MM_BOT_USER_ID={UID}\n")
     assert session_file._claim(NAME) is None  # a process may still be starting
     _age(state / f"copied-{NAME}.env", session_file.GONE_SEC + 60)
     fd = session_file._claim(NAME)
@@ -477,27 +484,26 @@ def test_a_missing_lock_is_gone_only_for_an_old_marker(state: Path, tmp_path: Pa
     os.close(fd)
 
 
-def test_a_crash_in_the_counter_move_loses_and_doubles_nothing(state: Path, tmp_path: Path,
-                                                              monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_first_start_after_the_upgrade_takes_a_lockless_predecessor(state: Path, tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """f5eed5's low 2 on #328: a predecessor without a lock file (the plugin before, or a lock
+    the sweep removed) is gone once its marker is older than a process's start (GONE_SEC, an
+    hour, not a day), or at once when none of its bots has a session file left."""
+    assert session_file.GONE_SEC == 3600
     _harness(monkeypatch, tmp_path, "claude")
     _name_run(state, NAME, UID, "run 1")
-    (state / f"stats-{NAME_B}.jsonl").write_text('{"k":"early"}\n')  # dst exists: the claim path
-    real = session_file.append_private
-
-    def crash(path: Path, text: str) -> None:
-        raise OSError("crash")
-
-    monkeypatch.setattr(session_file, "append_private", crash)
+    (state / f"key-{NAME}.lock").unlink()
+    _age(state / f"copied-{NAME}.env", 120)
+    fd = session_file._claim(NAME)  # its bot has no session file: gone
+    assert fd is not None and (state / f"key-{NAME}.lock").exists()
+    os.close(fd)
+    (state / f"key-{NAME}.lock").unlink()
+    (state / "mcp-x.env").write_text(f"export CB_MM_BOT_USER_ID='{UID}'\n")
+    assert session_file._claim(NAME) is None  # its bot runs and the marker is young
+    _age(state / f"copied-{NAME}.env", session_file.GONE_SEC + 1)
     monkeypatch.setenv("CB_PLANB_TEST", "2")
     session_file.latch(NAME_B, HOME, UID)
-    left = list(state.glob(f"stats-{NAME_B}.jsonl.moving-*"))
-    assert len(left) == 1 and not (state / f"stats-{NAME}.jsonl").exists()
-    monkeypatch.setattr(session_file, "append_private", real)
-    _restart(monkeypatch)
-    session_file.latch(NAME_C, HOME, UID)
-    lines = (state / f"stats-{NAME_C}.jsonl").read_text().splitlines()
-    assert sorted(lines) == ['{"k":"early"}', '{"k":"run 1"}']
-    assert not list(state.glob("*.moving-*"))
+    assert (state / f"asks-{NAME_B}.env").read_text() == "run 1\n"
 
 
 def test_a_move_without_a_target_is_one_rename(state: Path) -> None:
@@ -505,3 +511,182 @@ def test_a_move_without_a_target_is_one_rename(state: Path) -> None:
     src.write_text("a\n")
     ino = src.stat().st_ino
     assert session_file._move(src, dst) and dst.stat().st_ino == ino and not src.exists()
+
+
+# --- plan B piece 14c-1b: the takeover hardened (#244) ------------------------------------
+
+def _hold_for(path: Path, sec: float, how: int = fcntl.LOCK_SH) -> threading.Thread:
+    """Hold a flock on `path` for `sec` seconds in a thread, as the sweep's probe does for an
+    instant (a shared lock) or another start's claim (an exclusive one)."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, how | fcntl.LOCK_NB)
+
+    def release() -> None:
+        time.sleep(sec)
+        os.close(fd)
+
+    t = threading.Thread(target=release)
+    t.start()
+    return t
+
+
+def test_a_lock_held_for_an_instant_is_waited_out(state: Path, tmp_path: Path) -> None:
+    """RT-6.2 step 9: a probe or a claim that holds key-<name>.lock for an instant costs the
+    starting server neither its name nor its predecessor: _hold_key and _claim try again
+    (LOCK_RETRIES times, LOCK_RETRY_SEC apart) before they give up."""
+    assert (session_file.LOCK_RETRIES, session_file.LOCK_RETRY_SEC) == (3, 0.05)
+    t = _hold_for(state / f"key-{NAME}.lock", 0.06)
+    assert session_file._hold_key(NAME) == ""
+    t.join()
+    (state / f"copied-{NAME_B}.env").write_text("")
+    t = _hold_for(state / f"key-{NAME_B}.lock", 0.06, fcntl.LOCK_EX)
+    fd = session_file._claim(NAME_B)
+    t.join()
+    assert fd is not None
+    os.close(fd)
+
+
+def test_a_lock_held_for_longer_still_refuses(state: Path) -> None:
+    fd = _hold(state, NAME)
+    try:
+        started = time.monotonic()
+        assert session_file._hold_key(NAME) == "another running MCP server keys its state by the same NATS name"
+        assert time.monotonic() - started >= 3 * 0.05
+        assert session_file._claim(NAME) is None
+    finally:
+        os.close(fd)
+
+
+def test_two_servers_without_a_bot_on_one_workspace_tie(state: Path, tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.2 step 9: without a bot on the workspace tie the first server holds
+    tie-<hash>.lock for its run and takes the gone predecessor over; a second server in the
+    same workspace does not get it: fresh state under its own name, nothing taken, no CB_TIE
+    (so no later start mixes it in), and bus_info says so."""
+    _harness(monkeypatch, tmp_path, "workspace")
+    _name_run(state, NAME, "", "run 1")
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    session_file.latch(NAME_B, HOME, "")
+    assert (state / f"asks-{NAME_B}.env").read_text() == "run 1\n"
+    assert (state / f"tie-{session_file.tie().partition(':')[2]}.lock").exists()
+    assert session_file.tie_refused() == ""
+    _name_run(state, NAME_D, "", "a gone one the first did not take")
+    _restart(monkeypatch, release=False)  # the first server still runs
+    session_file.latch(NAME_C, HOME, "")
+    assert session_file.state_key("") == NAME_C
+    assert not (state / f"asks-{NAME_C}.env").exists() and not (state / f"stats-{NAME_C}.jsonl").exists()
+    assert "CB_TAKEN_BY" not in (state / f"copied-{NAME_D}.env").read_text()
+    assert "CB_TIE=" not in (state / f"copied-{NAME_C}.env").read_text()
+    assert session_file.tie_refused() == "another MCP server without a bot runs in this workspace"
+    assert any("takes no earlier state over" in n and "another MCP server without a bot" in n
+               for n in lease.nats_notes())
+
+
+def test_a_counters_file_that_is_not_utf8_is_skipped(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                     caplog: pytest.LogCaptureFixture) -> None:
+    """RT-6.2 step 9: a kept file that is not UTF-8 blocks no latch: a warning, the file stays
+    where it is, every other kind is copied and the key is latched."""
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    (state / f"stats-{NAME}.jsonl").write_bytes(b'{"k":"\xff\xfe"}\n')
+    (state / f"remind-{NAME}.env").write_bytes(b"\xff\n")
+    (state / f"stats-{NAME}.jsonl.moving-999999").write_bytes(b"\xc3\x28\n")
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    with caplog.at_level("WARNING"):
+        session_file.latch(NAME_B, HOME, UID)
+    assert session_file.state_key(UID) == NAME_B
+    assert (state / f"asks-{NAME_B}.env").read_text() == "run 1\n"
+    assert (state / f"stats-{NAME}.jsonl").read_bytes() == b'{"k":"\xff\xfe"}\n'
+    assert (state / f"stats-{NAME}.jsonl.moving-999999").exists()
+    assert not (state / f"remind-{NAME_B}.env").exists()
+    assert sum("is not UTF-8" in r.getMessage() for r in caplog.records) == 3
+
+
+# A child process runs the latch and is SIGKILLed before its n-th file operation (a rename,
+# replace, unlink, truncate or write), or in "half" mode halfway through that write.
+_KILLED_LATCH = r'''
+import os, signal, sys
+from mattermost_ai_agent_bus import session_file
+at, half, name, uid = int(sys.argv[1]), sys.argv[2] == "half", sys.argv[3], sys.argv[4]
+count = 0
+def step(data=None, fd=None):
+    global count
+    count += 1
+    if count == at:
+        if data is not None and half and len(data) > 1:
+            real_write(fd, bytes(data[:len(data) // 2]))
+        os.kill(os.getpid(), signal.SIGKILL)
+for fn in ("rename", "replace", "unlink", "truncate"):
+    def wrap(*a, _real=getattr(os, fn), **k):
+        step()
+        return _real(*a, **k)
+    setattr(os, fn, wrap)
+real_write = os.write
+def write(fd, data):
+    step(data, fd)
+    return real_write(fd, data)
+os.write = write
+session_file.latch(name, "work", uid)
+print("done")
+'''
+
+
+def _killed_latch(state: Path, tmp_path: Path, at: int, mode: str, name: str, uid: str) -> bool:
+    """Run the latch of `name` in a child killed at its `at`-th file operation: whether it
+    finished before that."""
+    import subprocess
+    import sys
+
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), "XDG_STATE_HOME": str(state.parent),
+           "CB_PLANB_TEST": "2", "CLAUDE_CODE_SESSION_ID": "s-1", "CB_WORKSPACE": str(tmp_path),
+           "CB_MM_BOT_USER_ID": uid, "PYTEST_CURRENT_TEST": os.environ.get("PYTEST_CURRENT_TEST", "x")}
+    r = subprocess.run([sys.executable, "-c", _KILLED_LATCH, str(at), mode, name, uid], env=env,
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode in (0, -9), r.stderr
+    return r.returncode == 0
+
+
+def _scenario(state: Path, kind: str) -> list[str]:
+    """The state before the killed start; the counter lines the session has in all."""
+    for f in state.iterdir():
+        f.unlink()
+    if kind == "bot":  # no predecessor: the bot id's counters and a claim an older kill left
+        (state / f"stats-{UID}.jsonl").write_text('{"k":"bot 1"}\n{"k":"bot 2"}\n')
+        (state / f"stats-{UID}.jsonl.moving-999999").write_text('{"k":"left"}\n')
+        (state / f"asks-{UID}.env").write_text("run 1\n")
+        return ['{"k":"bot 1"}', '{"k":"bot 2"}', '{"k":"left"}']
+    _name_run(state, NAME, UID, "run 1")
+    _age(state / f"copied-{NAME}.env", 60)
+    if kind == "append":  # a claim an older kill left (or #328's target-side one): two inputs, the journaled append
+        (state / f"stats-{NAME}.jsonl.moving-999999").write_text('{"k":"left 1"}\n{"k":"left 2"}\n')
+        return ['{"k":"left 1"}', '{"k":"left 2"}', '{"k":"run 1"}']
+    return ['{"k":"run 1"}']
+
+
+@pytest.mark.parametrize(("kind", "mode"), [("rename", "whole"), ("append", "whole"), ("append", "half"),
+                                            ("bot", "whole"), ("bot", "half")])
+def test_a_kill_anywhere_in_the_takeover_loses_and_doubles_nothing(state: Path, tmp_path: Path,
+                                                                   monkeypatch: pytest.MonkeyPatch,
+                                                                   kind: str, mode: str) -> None:
+    """RT-6.2 step 9 (f5eed5's low 1 on #328): a start SIGKILLed before any file operation of
+    its latch (between the claim and the rename, between the journal and the append, halfway
+    through the append, between the append and the claim's removal, between the marks), then
+    the next start: every counter line is in the new name's file exactly once, no claim is
+    left, no takeover stays unfinished, and the kept state came along."""
+    _harness(monkeypatch, tmp_path, "claude")
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    killed = 0
+    for at in range(1, 60):
+        expected = _scenario(state, kind)
+        if _killed_latch(state, tmp_path, at, mode, NAME_B, UID):
+            break
+        killed += 1
+        _restart(monkeypatch)
+        session_file.latch(NAME_C, HOME, UID)
+        lines = (state / f"stats-{NAME_C}.jsonl").read_text().splitlines()
+        assert sorted(lines) == sorted(expected), (at, lines)
+        assert not list(state.glob("*.moving-*")), at
+        assert not [m.name for m in state.glob("copied-*.env") if "CB_TAKING=" in m.read_text()], at
+        assert (state / f"asks-{NAME_C}.env").read_text() == "run 1\n", at
+        _restart(monkeypatch)
+    assert killed >= 5
