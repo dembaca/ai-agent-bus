@@ -6091,6 +6091,30 @@ kept 30 days.
   beyond 7 days, `stats_report` reading NATS), and a fill the console can
   show.
 
+**Addition, 2026-11-28: the own posts by hour** (issue #290, for the
+console's "24 h" bars, #284). A part covers up to a day, so its
+`post_words` cannot say in which hour a post was made. Each part now also
+carries `post_hours`: hour since the epoch (UTC, as text), bus word, count;
+only the hours and words with posts (RT-6.9 step 2). Absolute hours, not
+offsets from the part's start, so a part published late (kept after a
+failed publish) still lands in the right hours. Counts only, no
+characters: the bars count posts. The cadence stays one part a day and one
+at the session's end. Why: `STATS` holds 64 MiB over 365 days, about 184,000
+bytes a day for all agents; at 300 to 500 agents that is 368 to 613 bytes per
+agent and day, which one daily part already passes, so hourly parts (8 / 5
+days in 64 MiB, and 21 days of one session under the cap of 500 per subject)
+or parts every 6 hours (45 / 27 days) do not fit (RT-6.45 step 1). Within a
+line, the hours give way first: a part that would pass 8000 bytes leaves out
+its oldest hours, so no part that fit before goes unpublished. An older
+reader ignores the key (an object of objects of numbers passes its rule for
+unknown keys); a newer reader of an older line finds no hours and says so.
+Alternatives: parts every hour, rejected for the size above; a small hourly
+line of its own on a subject that keeps only its newest message (a rollup),
+rejected since `STATS` refuses every `allow_*` and an agent would need a
+second right. What this gives up: a running session's hours reach the
+console only with its part, up to a day later. Open for the owner: a larger
+`max_bytes` and a shorter cadence, together.
+
 ---
 
 **Addition, 2026-11-28: Agents is the start page** (issue #283; the owner

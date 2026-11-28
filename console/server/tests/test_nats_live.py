@@ -51,7 +51,7 @@ PRESENCE_STREAM = {
     "duplicate_window": 100 * 1_000_000,
 }
 STATS_STREAM = {"name": "STATS", "subjects": ["stats.>"], "retention": "limits",
-                "max_msgs_per_subject": 500, "no_ack": True}
+                "max_msgs_per_subject": 500, "max_msg_size": 8192, "no_ack": True}
 
 
 def free_port() -> int:
@@ -187,6 +187,30 @@ async def test_the_login_reads_the_fleet_its_consumers_deliver(rig) -> None:
     await until(lambda: r.view.stats_lines >= 1, what="the STATS line")
     await admin.publish("presence.dembaca.agent-two", encode_presence("online"))
     await until(lambda: card(r, "agent-two").get("state") == "online", what="a change")
+
+
+async def test_a_line_with_hourly_buckets_passes_the_real_stream(rig) -> None:
+    """#290, RT-6.43 steps 7 and 8: a part with `post_hours` for a whole day, every bus word
+    in every hour, as the MCP server publishes it (stats.nats_body), passes the STATS
+    stream's 8 KiB per message and reaches the console's book with its hours."""
+    from mattermost_ai_agent_bus import stats
+
+    admin: NatsClient = rig["admin"]
+    r: PersonReader = rig["good"]
+    hour = int(time.time()) // 3600
+    hours = {str(hour - i): dict.fromkeys(stats.POST_WORDS, 999) for i in range(24)}
+    body = stats.nats_body({"v": "0.104.0", "sid": "3f9a1c2b7d4e", "part": 1, "min": 1440,
+                            "post_words": {"ACK": [24, 2400]}, "post_hours": hours})
+    assert body is not None and len(body) > 5000
+    await admin.publish("stats.agent-one", body)
+    await admin.flush()
+    await make_consumers(admin, r)
+    await publish_record(admin, r)
+    r.renew_sec = 600.0
+    r.start()
+    await until(lambda: r.view.stats_lines >= 1, what="the STATS line")
+    held = [line for _at, _seq, line in r.view.stats.within(86400)]
+    assert [line["post_hours"] for line in held] == [hours]
 
 
 async def test_a_renewal_keeps_the_consumers_position(rig) -> None:
