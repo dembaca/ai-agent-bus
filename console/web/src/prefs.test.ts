@@ -19,11 +19,22 @@ describe("what the console remembers per person (#283)", () => {
   afterEach(() => { vi.unstubAllGlobals() })
 
   it("keeps the panel, the grouping, the folded groups and the scope per person", () => {
-    savePrefs("dembaca", { panel: "folded", by: "owner", scope: "everyone", folded: { "owner:carol": false } })
+    savePrefs("dembaca", { panel: "folded", by: "owner", scope: "everyone", folded: { "owner:carol": false }, range: "7d" })
     expect(loadPrefs("dembaca")).toEqual({ panel: "folded", by: "owner", scope: "everyone",
-      folded: { "owner:carol": false } })
+      folded: { "owner:carol": false }, range: "7d" })
     expect(loadPrefs("carol")).toEqual(DEFAULT_PREFS)  // another person on the same browser
     expect(loadPrefs(null)).toEqual(DEFAULT_PREFS)     // not known yet
+  })
+
+  it("remembers the Stats range per person, 7 d by default, and drops an unknown one (#284)", () => {
+    expect(DEFAULT_PREFS.range).toBe("7d")
+    savePrefs("dembaca", { ...DEFAULT_PREFS, range: "90d" })
+    expect(loadPrefs("dembaca").range).toBe("90d")
+    expect(loadPrefs("carol").range).toBe("7d")
+    window.localStorage.setItem("choirbus.console.x", JSON.stringify({ range: "3y" }))
+    expect(loadPrefs("x").range).toBe("7d")
+    window.localStorage.setItem("choirbus.console.x", JSON.stringify({ range: 7 }))
+    expect(loadPrefs("x").range).toBe("7d")
   })
 
   it("drops what is no longer a known word, never trusts it", () => {

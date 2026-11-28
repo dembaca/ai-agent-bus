@@ -200,6 +200,60 @@ def test_the_report_the_fixture_states() -> None:
     assert report == FIXTURE["report"]
 
 
+def test_the_activity_card_the_fixture_states() -> None:
+    """#284: the activity card of `/v1/stats?range=7d` (`reports()[0]`) from a protocol line
+    that carries `post_words`: seven daily bars, the four groups, the words of the hover."""
+    from mattermost_ai_agent_bus import stats
+    from console_server.stats_view import StatsBook
+    from test_asks_stats import STATS_CONSUMER
+
+    line = {"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 2, "rt": "claude-code", "kind": "session",
+            "min": 1440, "post_words": {"ACK": [3, 30], "PROGRESS": [2, 40], "RESULT": [1, 90],
+                                        "DONE": [1, 20], "ask": [1, 60], "TASK": [1, 70], "plain": [2, 80]}}
+    book = StatsBook()
+    body = stats.nats_body(line)
+    assert body is not None
+    assert book.on_delivery(f"stats.{FIXTURE['card']['name']}", body,
+                            f"$JS.ACK.STATS.{STATS_CONSUMER}.1.1.1.1763980800000000000.0",
+                            "STATS", STATS_CONSUMER)
+    assert book.reports("7d")[0] == FIXTURE["activity"]
+
+
+def test_the_24h_activity_cards_the_fixture_states() -> None:
+    """#284, #290: "24 h" draws 24 hourly bars from the line that carries `post_hours` and says
+    how many lines carried hours (`lines` of `of`); with none it is n/a with its reason."""
+    from mattermost_ai_agent_bus import stats
+    from console_server.stats_view import StatsBook
+    from test_asks_stats import STATS_CONSUMER, ack
+
+    at = 1763980800 + 1800
+    base = {"v": "0.104.0", "sid": "3f9a1c2b7d4e", "part": 2, "rt": "claude-code", "kind": "session", "min": 1440}
+    withh = base | {"post_words": {"ACK": [3, 30], "DONE": [1, 20], "ask": [1, 60], "plain": [2, 80]},
+                    "post_hours": {"489999": {"ACK": 3, "DONE": 1}, "490000": {"ask": 1, "plain": 2}}}
+    without = base | {"sid": "8e21b0c4a9f3", "part": 1, "post_words": {"ACK": [1, 10]}}
+
+    def book(*lines: tuple[str, dict]) -> StatsBook:
+        b = StatsBook()
+        for i, (name, line) in enumerate(lines, 1):
+            body = stats.nats_body(line)
+            assert body is not None
+            assert b.on_delivery(f"stats.{name}", body, ack("STATS", STATS_CONSUMER, i, at), "STATS", STATS_CONSUMER)
+        return b
+
+    assert book(("agent-a", withh), ("agent-b", without)).reports("24h")[0] == FIXTURE["activity24h"]
+    assert book(("agent-b", without)).reports("24h")[0] == FIXTURE["activityNoHours"]
+
+
+def test_the_card_of_a_range_not_held_the_fixture_states() -> None:
+    """#284: a previous range that starts before the oldest line held is n/a with its reason,
+    every figure null, never 0."""
+    from console_server.stats_view import StatsBook
+    from test_asks_stats import A, LINE, NOW, book_with
+
+    book: StatsBook = book_with((A, LINE, NOW - 600))
+    assert book.reports("7d")[3] == FIXTURE["asksBefore"]
+
+
 def test_the_agent_stats_row_the_fixture_states() -> None:
     """/v1/agent-stats (#201): the row as the server sends it, one per agent, from the
     same protocol line as the report above — the token sums of both windows and the

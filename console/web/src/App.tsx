@@ -10,7 +10,7 @@ import { AgentList } from "./ui/AgentList"
 import { Asks } from "./ui/Asks"
 import { Detail } from "./ui/Detail"
 import { Glance } from "./ui/Glance"
-import { Reports } from "./ui/Reports"
+import { Stats } from "./ui/Stats"
 import { isOpen, statsByAgent } from "./ui/agents"
 import { agentOf, asPlace, loadedPlace, neighbour, pushPlace, replacePlace, type Place } from "./nav"
 import { DEFAULT_PREFS, loadPrefs, savePrefs, type Prefs } from "./prefs"
@@ -327,7 +327,7 @@ export function App({ api }: { api: ConsoleApi }) {
               </div>
             )}
             {view === "asks" && <Asks asks={asks} cards={cards} onOpen={openAsk} />}
-            {view === "stats" && <Reports api={api} onFail={fail} />}
+            {view === "stats" && <Stats api={api} onFail={fail} range={prefs.range} onRange={(range) => setPrefs({ range })} />}
           </div>
         </div>
       </main>

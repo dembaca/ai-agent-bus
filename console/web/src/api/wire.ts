@@ -29,6 +29,10 @@ let shapes: {
   page: ThreadPage, events: FixtureEvShape,
   ask: Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
   report: ReportShape
+  activity: ReportShape
+  activity24h: ReportShape
+  activityNoHours: ReportShape
+  asksBefore: ReportShape
   agentStats: AgentStatsRow[]
   groups: GroupsAnswer
 } | null = null
@@ -37,8 +41,9 @@ type ReportFieldShape = Omit<Report["fields"][number], "unit"> & { unit: string 
 type ReportSegmentShape = Omit<ReportSegment, "category"> & { category: string }
 type ReportStackShape = Omit<ReportStack, "segments" | "raw">
   & { segments: ReportSegmentShape[]; raw: ReportSegmentShape[] }
-type ReportShape = Omit<Report, "window" | "fields" | "stacks">
-  & { window: string; fields: ReportFieldShape[]; stacks?: ReportStackShape[] }
+type ReportShape = Omit<Report, "fields" | "stacks" | "activity">
+  & { fields: ReportFieldShape[]; stacks?: ReportStackShape[]
+      activity?: Omit<NonNullable<Report["activity"]>, "bucket"> & { bucket: string } }
 
 if (!import.meta.env.PROD) {
   type CardShape = Omit<AgentCard, "state" | "harness" | "role">
@@ -57,8 +62,28 @@ if (!import.meta.env.PROD) {
   if (ask.kind !== "approval" && ask.kind !== "question") {
     throw new Error(`wire fixture: unknown ask kind ${ask.kind}`)
   }
-  if (!["live", "24 h", "7 d", "90 d"].includes(report.window)) {
-    throw new Error(`wire fixture: unknown report window ${report.window}`)
+  // its bars hold different words, which the JSON's inferred union cannot tell: a cast, the checks follow
+  const activity = fixture.activity as unknown as ReportShape
+  if (!report.window || activity.id !== "activity" || !activity.activity
+      || !["hour", "day", "week", "month"].includes(activity.activity.bucket)) {
+    throw new Error("wire fixture: the report window or the activity card is missing")
+  }
+  // 24 h (#284, #290): hourly bars and the note's numbers, or n/a with its reason when no line carries hours
+  const activity24h = fixture.activity24h as unknown as ReportShape
+  const activityNoHours = fixture.activityNoHours as unknown as ReportShape
+  const hours = activity24h.activity?.hours
+  if (activity24h.activity?.bucket !== "hour" || activity24h.activity.bars.length !== 24
+      || !hours || hours.lines > hours.of || activity24h.activity.unavailable) {
+    throw new Error("wire fixture: the 24 h activity card lacks its hourly bars or its hours note")
+  }
+  if (!activityNoHours.activity?.unavailable || !activityNoHours.activity.reason
+      || activityNoHours.activity.bars.length > 0 || activityNoHours.activity.hours) {
+    throw new Error("wire fixture: the 24 h card without hours is not n/a with its reason")
+  }
+  const asksBefore: ReportShape = fixture.asksBefore satisfies ReportShape
+  if (asksBefore.id !== "asks-before" || !asksBefore.unavailable
+      || asksBefore.fields.some((f) => f.value !== null)) {
+    throw new Error("wire fixture: the card of a range not held is not all n/a with its reason")
   }
   for (const field of report.fields) {
     if (!["count", "s", "%"].includes(field.unit)) {
@@ -104,7 +129,7 @@ if (!import.meta.env.PROD) {
       }
     }
   }
-  shapes = { card, page, events, ask, report, agentStats, groups }
+  shapes = { card, page, events, ask, report, activity, activity24h, activityNoHours, asksBefore, agentStats, groups }
 }
 
 export const wire_shapes = shapes
