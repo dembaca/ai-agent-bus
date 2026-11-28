@@ -174,6 +174,18 @@ for f in "$STATE_DIR"/*.env; do
     fi
   fi
 
+  # A session started without a bot (DEFERRED=1, plan B piece 14a, RT-6.18 step 13) whose host
+  # process registered none: no token, nothing to unregister. One that registered a bot wrote
+  # its token here, and is unregistered with it below.
+  if [[ "$(field "$f" DEFERRED)" == 1 && -z "$(field "$f" CB_MM_BOT_TOKEN MM_BOT_TOKEN)" ]]; then
+    if [[ "$APPLY" -eq 0 ]]; then
+      echo "would remove $(basename "$f")  (${name}: started without a bot, none registered)"
+    else
+      rm -f "$f"
+      note "no bot  ${name} (started without one, none registered) — removed $(basename "$f")"
+    fi
+    continue
+  fi
   if [[ "$APPLY" -eq 0 ]]; then
     echo "would unregister ${name}  (from $(basename "$f"))"
     continue

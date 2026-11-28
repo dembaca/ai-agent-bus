@@ -415,3 +415,121 @@ async def test_real_nats_no_record_registers_as_before(rig: Any, monkeypatch: py
         assert inner.registrar.calls[0] == "session_start host-proj-abc"
     finally:
         await port.stop()
+
+
+# --- the host process's decision: open, failed, cancelled; the bot in the session file ---------
+
+async def test_until_the_host_process_decides_what_needs_mattermost_says_so() -> None:
+    port, inner, _ = _port(Bus(connected=False))
+    task = asyncio.create_task(nobot.host_decide(port, "host-proj-abc", "", "the-secret", timeout=5))
+    await asyncio.sleep(0.05)
+    assert nobot.status() == nobot.WAITING and inner.no_bot == nobot.WAITING  # type: ignore[attr-defined]
+    assert "not taken yet, up to 60 s after the start" in nobot.WAITING
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert inner.reg_secret is None  # type: ignore[attr-defined] — dropped on a cancel (SIGTERM)
+
+
+async def test_a_cancel_during_the_registration_drops_the_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = Bus()
+    bus.pieces["home"] = ALL - {3}
+    port, inner, _ = _port(bus)
+    started = asyncio.Event()
+    seen: list[Any] = []
+
+    async def slow(name: str, display_name: str | None = None, *, unique: bool = True) -> Any:
+        seen.append(inner.reg_secret)  # type: ignore[attr-defined]
+        started.set()
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(inner.registrar, "session_start", slow)
+    task = asyncio.create_task(nobot.host_decide(port, "host-proj-abc", "", "the-secret", timeout=0))
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()  # what services() does on SIGTERM (hosted.services' finally)
+    await asyncio.gather(task, return_exceptions=True)
+    assert seen == ["the-secret"] and inner.reg_secret is None  # type: ignore[attr-defined]
+
+
+async def test_a_failed_registration_says_so_and_drops_the_secret(mcp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = Bus()
+    bus.pieces["guest"] = ALL - {5}
+    port, inner, _ = _port(bus)
+
+    async def refused(name: str, display_name: str | None = None, *, unique: bool = True) -> Any:
+        raise RuntimeError("registrar refused: http=503")
+
+    monkeypatch.setattr(inner.registrar, "session_start", refused)
+    out = await nobot.host_decide(port, "host-proj-abc", "", "the-secret", timeout=0)
+    assert out == "registration failed (RuntimeError)"
+    assert inner.reg_secret is None  # type: ignore[attr-defined]
+    assert "registering the bot failed" in nobot.status() and "restart the session" in nobot.status()
+    assert inner.no_bot == nobot.status()  # type: ignore[attr-defined] — the routes' error text
+    assert not nobot.held()  # not a decision without a bot
+
+    adapter = MattermostAdapter(base_url="https://mm.example")
+    adapter.no_bot = nobot.status()
+    with pytest.raises(RuntimeError, match="registering the bot failed"):
+        adapter._auth_headers()
+
+    async def no_token() -> Any:  # as the adapter without a token (client._auth_headers)
+        raise RuntimeError(inner.no_bot)  # type: ignore[attr-defined]
+
+    inner.get_me = no_token  # type: ignore[method-assign]
+    mcp(port)
+    info = json.loads(await server.bus_info())
+    assert info["on_bus"] is True and info["bot"] is None
+    assert "registering the bot failed" in info["no_bot"]
+
+
+async def test_bus_info_without_a_client_is_off_the_bus(mcp: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    nobot.hold(MattermostAdapter(base_url="https://mm.example"))
+
+    def stale() -> Any:
+        raise RuntimeError("a stale copy")
+
+    monkeypatch.setattr(server, "_get_client", stale)
+    info = json.loads(await server.bus_info())
+    assert info["on_bus"] is False and info["reason"] == "a stale copy"
+
+
+def _corral_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from mattermost_ai_agent_bus import session_file
+
+    hosted_dir = tmp_path / "hosted" / "sess-x"
+    hosted_dir.mkdir(parents=True)
+    monkeypatch.setattr(session_file, "_hosted_dir", hosted_dir)
+    f = tmp_path / "sess-x.env"
+    f.write_text("MM_REG_BOT_NAME=host-proj-abc\nCB_MM_BOT_TOKEN=\nMM_BOT_TOKEN=\nDEFERRED=1\n")
+    f.chmod(0o600)
+    return f
+
+
+async def test_the_bot_the_host_process_registers_goes_into_the_session_file(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    f = _corral_file(tmp_path, monkeypatch)
+    bus = Bus()
+    bus.pieces["lobby"] = ALL - {2}
+    port, inner, _ = _port(bus)
+    out = await nobot.host_decide(port, "host-proj-abc", "", "the-secret", timeout=0)
+    assert out.startswith("registered")
+    lines = f.read_text().splitlines()
+    info = inner.registrar.info
+    # The last line of a key wins (mm_kv): the stop hook and the sweep unregister with it.
+    assert [ln for ln in lines if ln.startswith("CB_MM_BOT_TOKEN=")][-1] == f"CB_MM_BOT_TOKEN={info.bot_token}"
+    assert f"MM_BOT_USER_ID={info.user_id}" in lines and "DEFERRED=1" in lines
+    assert "the-secret" not in f.read_text()
+    assert f.stat().st_mode & 0o777 == 0o600
+    assert nobot.status() == ""
+
+
+async def test_no_session_file_or_a_symlink_records_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    f = _corral_file(tmp_path, monkeypatch)
+    target = tmp_path / "elsewhere.env"
+    target.write_text("")
+    f.unlink()
+    f.symlink_to(target)
+    nobot.record_token(FakeRegistrar().info)
+    assert target.read_text() == ""
+    f.unlink()
+    nobot.record_token(FakeRegistrar().info)
+    assert not f.exists()

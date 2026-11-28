@@ -22,7 +22,13 @@ before 0.5.0 are described in the git history.
   before. It is kept for the session: a switch turned off later leaves the session
   without Mattermost, and what needs Mattermost fails with a message that says to
   restart. With the switches off, as everywhere today, and for every session whose
-  channels `CB_NATS_HOMES` does not all list, nothing changes. The release that
+  channels `CB_NATS_HOMES` does not all list, nothing changes. Until the host process
+  has decided (up to 60 s) and after a failed registration, `bus_info` (`no_bot`) and
+  what needs Mattermost say so, instead of naming a tool the sandbox does not have. A
+  bot the host process registers goes into the host-side session file at once, so the
+  stop hook, or `bin/mm-agent-sweep.sh` after it, can still unregister it when the
+  exit's own unregister failed. `CB_NATS_HOMES` and `MM_NATS_HOMES` set to different
+  values now refuse the bus in the start hook too, as they did in the MCP server. The release that
   carries this with the release notice from the bridge and the identity by NATS name
   (pieces 14b and 14c) is planned with
   `Needs: bridge and login service at 0.106.0 or newer, release record from the bridge.`

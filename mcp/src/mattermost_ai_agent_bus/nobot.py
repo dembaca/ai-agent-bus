@@ -43,6 +43,14 @@ POLL_SEC = 0.1
 
 # The decision once taken without a bot: why (the error text of what needs Mattermost).
 _held = ""
+# The host process's decision still open, or its registration failed (host_decide): the text of
+# what needs Mattermost meanwhile; '' once registered or decided without a bot.
+_note = ""
+WAITING = ("no Mattermost bot yet: the decision about a Mattermost bot is not taken yet, up to 60 s "
+           "after the start (plan B piece 14, RT-6.18 step 13); try again in a minute, bus_info says "
+           "when it is taken")
+FAILED = ("no Mattermost bot: registering the bot failed ({why}; plan B piece 14, RT-6.18 step 13), so "
+          "this session runs over NATS alone: restart the session")
 
 
 def reason() -> str:
@@ -54,10 +62,33 @@ def held() -> bool:
     return bool(_held)
 
 
+def status() -> str:
+    """Why this session has no Mattermost bot now: decided without one (`reason`), the host
+    process's decision still open (WAITING), or its registration failed (FAILED); '' with a
+    bot, and outside a host process before `session_start` decided (bus_info's no_bot)."""
+    return _held or _note
+
+
 def reset() -> None:
     """Tests only."""
-    global _held
-    _held = ""
+    global _held, _note
+    _held = _note = ""
+
+
+def _set_note(client: Any, text: str) -> None:
+    """The host process's open or failed decision, on the adapter too: what needs Mattermost
+    fails with it (client.MattermostAdapter._auth_headers) instead of naming a tool the sandbox
+    does not have."""
+    global _note
+    _note = text
+    _show(client, text)
+
+
+def _show(client: Any, text: str) -> None:
+    try:
+        _inner(client).no_bot = text
+    except AttributeError:  # a fake without the field
+        pass
 
 
 def _port(client: Any) -> Any:
@@ -138,11 +169,7 @@ def hold(client: Any) -> None:
     _held = ("no Mattermost bot in this session: every channel and plan B piece ran over NATS when "
              "it started (plan B piece 14, RT-6.18 step 13, RT-6.10 step 8); this needs Mattermost, "
              "so a switch went off or its record went stale since: restart the session to register one")
-    inner = _inner(client)
-    try:
-        inner.no_bot = _held
-    except AttributeError:  # a fake without the field
-        pass
+    _show(client, _held)
     log.info("registration: no Mattermost bot for this session, every channel and piece runs over NATS")
 
 
@@ -153,6 +180,7 @@ async def register_now(client: Any, name: str, display: str) -> dict[str, Any]:
     from . import attest, stats
 
     info = await client.session_start(name, display or None, unique=False)
+    record_token(info)
     stats.set_user(info.user_id)
     setup = await client.finish_session_setup()
     await attest.start(client)
@@ -165,27 +193,64 @@ async def register_now(client: Any, name: str, display: str) -> dict[str, Any]:
     return dict(setup)
 
 
+def record_token(info: Any) -> None:
+    """The bot the host process registered, in the corral session file the moment the
+    registrar answered (RT-6.18 step 13): the host-side 0600 file preStart wrote and marked
+    DEFERRED=1, appended to (the last line of a key wins, as mm_kv reads it), never through a
+    symlink. postEnd unregisters the bot with it when the exit work did not, and
+    mm-agent-sweep.sh when postEnd could not either (the registrar unreachable, the process
+    killed): the state directory hosted/<key>/ alone would not do, postEnd removes it. Nothing
+    without corral (no such file), and nothing once postEnd removed the file."""
+    from . import session_file
+
+    path = session_file.corral_session_file()
+    if path is None:
+        return
+    vals = (info.username, info.user_id, info.bot_token)
+    if not all(isinstance(v, str) and v and not any(c in v for c in "\0\r\n") for v in vals):
+        log.warning("registration: the registrar's answer is not one line each; not in the session file")
+        return
+    if path.is_symlink() or not path.is_file():
+        log.warning("registration: no session file to record the bot in (%s)", path.name)
+        return
+    user, uid, tok = vals
+    try:
+        session_file.append_private(path, (
+            "# registered by the host process (plan B piece 14a, RT-6.18 step 13)\n"
+            f"CB_MM_BOT_USERNAME={user}\nMM_BOT_USERNAME={user}\n"
+            f"CB_MM_BOT_USER_ID={uid}\nMM_BOT_USER_ID={uid}\n"
+            f"CB_MM_BOT_TOKEN={tok}\nMM_BOT_TOKEN={tok}\nMATTERMOST_TOKEN={tok}\n"))
+    except OSError as exc:
+        log.warning("registration: the bot is not in the session file: %s", type(exc).__name__)
+
+
 async def host_decide(client: Any, name: str, display: str, secret: str,
                       timeout: float | None = None) -> str:
     """The host process of a session preStart started without a bot (RT-6.18 step 13): decide,
     then register with the registration secret preStart passed, or forget it. Returns what it
-    did, for the log; never raises."""
+    did, for the log; never raises. Until it is done, and after a failed registration, what
+    needs Mattermost fails with WAITING or FAILED (`status`, the adapter's no_bot)."""
     inner = _inner(client)
+    _set_note(client, WAITING)
     try:
         why = await decide(client, timeout)
         if not why:
+            _set_note(client, _held)
             return "no bot: every channel and piece runs over NATS"
         log.info("registration: a bot is needed (%s): registering %s", why, name)
         inner.reg_secret = secret or None
+        _show(client, "")  # session_start refuses while it is set; bus_info still says WAITING
         try:
             await register_now(client, name, display)
         finally:
             inner.reg_secret = None  # the host process keeps no registration secret (RT-6.18)
+        _set_note(client, "")
         return f"registered ({why})"
     except asyncio.CancelledError:
         inner.reg_secret = None
         raise
     except Exception as exc:  # noqa: BLE001 — the session goes on without a bot, NATS only
         inner.reg_secret = None
+        _set_note(client, FAILED.format(why=type(exc).__name__))
         log.warning("registration failed: %s: the session goes on without a bot", exc)
         return f"registration failed ({type(exc).__name__})"

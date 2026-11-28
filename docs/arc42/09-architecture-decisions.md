@@ -4967,7 +4967,13 @@ which each piece reads for itself.
         stale or is switched off later leaves a session started without a
         bot without Mattermost (what needs it fails with a text that says
         to restart), never with a late token; the bot a host process
-        registers is not kept for `claude --continue`; a session that may
+        registers is not kept for `claude --continue` (the start hook marks
+        its session file `DEFERRED=1`), but its token goes into that
+        host-side session file at once, so the stop hook or
+        `mm-agent-sweep.sh` can still unregister it when the exit's own
+        unregister failed; until the decision and after a failed
+        registration, `bus_info` and what needs Mattermost say so in their
+        own text; a session that may
         be fully switched starts its NATS bus without a bot id and links
         the bot once registered. Everything a session holding no bot still
         sends to Mattermost is the audit of every tool, hook route and

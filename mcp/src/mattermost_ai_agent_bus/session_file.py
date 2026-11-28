@@ -183,6 +183,16 @@ def host_state_dir() -> Path:
     return Path(base) / "mm-agent-bus"
 
 
+def corral_session_file() -> Path | None:
+    """The corral session file of this host process: `<host state dir>/<key>.env`, beside its
+    own state directory `<host state dir>/hosted/<key>/`, the 0600 file preStart wrote and
+    postEnd and mm-agent-sweep.sh read (RT-6.18). Never in a sandbox: the host's state
+    directory. None outside a keyless session's host process."""
+    if _hosted_dir is None:
+        return None
+    return _hosted_dir.parent.parent / f"{_hosted_dir.name}.env"
+
+
 # The workspace the client named in roots/list, when the environment names none.
 _roots_dir: str | None = None
 # Where the workspace may come from, before roots and cwd (RT-6.17 step 2).

@@ -459,9 +459,11 @@ elif mm_bot_deferrable; then
   MM_REG_BOT_NAME="$NAME"
   mm_env_set CB_MM_BOT_USERNAME MM_BOT_USERNAME ""
   mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID ""
-  # The session file without a token: the stop hook ends the host process, whose exit work
-  # unregisters the bot it registered, if any.
-  mm_write_session_file || no_bus "could not write the session file"
+  # The session file without a token, marked DEFERRED=1: a bot the host process registers goes
+  # into it (nobot.record_token), so postEnd, or mm-agent-sweep.sh after it, can unregister it
+  # when the host's exit work did not; without one postEnd removes the file.
+  { mm_write_session_file && printf 'DEFERRED=1\n' >>"$CB_AGENT_SESSION_FILE"; } ||
+    no_bus "could not write the session file"
   log "no bot registered here: every channel of this session is in CB_NATS_HOMES, so its host process registers ${NAME} only if a channel or plan B piece is off (plan B piece 14, RT-6.18 step 13)"
 else
   KEPT_SID=""
@@ -711,4 +713,6 @@ jq -nc \
      status: [$status]
    }' 4< <(printf '%s' "$BUS_KEY")
 
-log "session ${CB_MM_BOT_USERNAME:+bot ${CB_MM_BOT_USERNAME}}${CB_MM_BOT_USERNAME:-without a bot yet} ready, its MCP server on the host (pid ${HOST_PID}); host copy $(mm_tree_version "$ROOT"), $(mm_release_kind "$ROOT")"
+who="bot ${CB_MM_BOT_USERNAME}"
+[[ "$DEFER" -eq 0 ]] || who="without a bot yet"
+log "session ${who} ready, its MCP server on the host (pid ${HOST_PID}); host copy $(mm_tree_version "$ROOT"), $(mm_release_kind "$ROOT")"

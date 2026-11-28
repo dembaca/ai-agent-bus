@@ -1153,13 +1153,16 @@ async def bus_info() -> str:
     list is empty, approvals over the bus are off. Off the bus (no chat URL, no
     bot yet, stale copy) it says so in on_bus/reason instead of failing.
     """
+    client: BusClient | None = None
     try:
         client = _get_client()
         me = await client.get_me()
     except RuntimeError as exc:
-        if nobot.held():  # plan B piece 14a: on the bus over NATS alone (RT-6.18 step 13)
+        # Plan B piece 14a: on the bus over NATS alone (RT-6.18 step 13), decided so, the host
+        # process's decision still open, or its registration failed (nobot.status).
+        if client is not None and (no_bot := nobot.status()):
             return _out("bus_info", {
-                "version": VERSION, "on_bus": True, "bot": None, "no_bot": nobot.reason(),
+                "version": VERSION, "on_bus": True, "bot": None, "no_bot": no_bot,
                 "home": client.work_channel_name, "guests": list(getattr(client, "guest_channel_names", ())),
                 "lobby": client.channel_name,
                 **({"over_nats": over} if (over := lease.nats_visibility()) else {}),
