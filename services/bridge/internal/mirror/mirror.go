@@ -37,6 +37,10 @@ const MaxPost = 16000
 type Post struct {
 	ID     string `json:"id"`             // the Mattermost post id
 	RootID string `json:"root,omitempty"` // the Mattermost root, when it answers one
+	// Reaction marks the entry of a reaction or an unreaction: it holds the
+	// reacted post's id so the map still answers for the reaction's sequence,
+	// but it is no way back, which stays the post's own (the Store's Save).
+	Reaction bool `json:"reaction,omitempty"`
 }
 
 // Refused is Mattermost refusing a message for good (4xx, but not 429: a rate
@@ -67,16 +71,21 @@ type Sink interface {
 type Store interface {
 	Position(ctx context.Context, home string) (uint64, bool, error)
 	Post(ctx context.Context, home string, seq uint64) (Post, bool, error)
-	// Save remembers a mirror and moves the home's position.
+	// Save remembers a mirror and moves the home's position. A message that
+	// became a post also gets the way back from the post to its sequence; a
+	// Post with Reaction set gets none, so a reaction never replaces the way
+	// back of the post it reacted to.
 	Save(ctx context.Context, home string, seq uint64, p Post) error
 	// Reaction adds or removes one sender's reaction of a home's message and
 	// emoji, and returns how many senders reacted; the bridge's bot reacts on
 	// 1 and unreacts on 0.
-	Reaction(ctx context.Context, home string, seq uint64, emoji, sender string, add bool) (int, error)
+	// The message is named by ref: its stream sequence in decimal (SeqRef),
+	// or a Mattermost post named by its id (MMRef, plan B piece 7).
+	Reaction(ctx context.Context, home, ref, emoji, sender string, add bool) (int, error)
 	// OwnReaction says whether the sender's own bot holds its reaction
 	// (RT-6.44); SetOwnReaction records or clears that, beside the counts.
-	OwnReaction(ctx context.Context, home string, seq uint64, emoji, sender string) (bool, error)
-	SetOwnReaction(ctx context.Context, home string, seq uint64, emoji, sender string, on bool) error
+	OwnReaction(ctx context.Context, home, ref, emoji, sender string) (bool, error)
+	SetOwnReaction(ctx context.Context, home, ref, emoji, sender string, on bool) error
 }
 
 // Links resolves an agent's name to the Mattermost username of its bot, when
@@ -113,6 +122,16 @@ type Mirror struct {
 	Store  Store
 	Links  Links
 	Bots   Bots // optional: the agents' own bots; nil posts everything with Sink
+	// Plan B piece 6 (RT-6.11, ask.go): the switches per channel and the lookup
+	// of a person's username; without them asks are mirrored like any post.
+	// Piece 7 (target.go) reads the posts a message names by Mattermost id
+	// with Targets; without it nothing such is written.
+	Targets   Targets
+	Switches  Switches
+	People    People
+	Directory Directory
+	people    personCache
+	mentions  mentionLimit
 }
 
 // Handle mirrors one message; sender is the subject's last token, seq the
@@ -135,18 +154,52 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 		m.Log.Info("bridge: shown_as not resolved", "agent", sender, "error", err)
 		shown = ""
 	}
+	linked := shown
 	if shown == "" {
 		shown = sender
 	}
+	// Plan B piece 7 (target.go): a Mattermost post named by its id is checked
+	// before anything is looked up or written; one that fails is skipped.
+	var mmTarget Target
+	if named := msg.MMRoot + msg.MMRef; named != "" {
+		t, ok, err := m.target(ctx, cid, sender, linked, named)
+		if err != nil {
+			return err
+		}
+		if ok && msg.MMRoot != "" && t.RootID != "" {
+			// A reply to a reply joins its thread: the thread's root passes the
+			// same check, so no reply lands in another agent's thread.
+			_, ok, err = m.target(ctx, cid, sender, linked, t.RootID)
+			if err != nil {
+				return err
+			}
+		}
+		if !ok {
+			return m.save(ctx, seq, Post{})
+		}
+		mmTarget = t
+	}
 	id := fmt.Sprintf("n1:%s:%d", m.Home, seq)
-	props := m.senderProps(msg.Props)
+	keep, cards, asks := "", []any(nil), msg.Kind == message.Post && (m.asksOn() || msg.MMRoot != "")
+	in := msg.Props
+	if asks {
+		// Plan B piece 6: the ask's card and its one mention; its own keys never pass.
+		if keep, cards, err = m.ask(ctx, sender, id, msg); err != nil {
+			return err
+		}
+		m.logOutsider(ctx, cid, sender, keep)
+		in = m.withoutAsk(msg.Props)
+	}
+	props := m.senderProps(in)
 	props[m.Prefix+"nats_id"] = id
 	props[m.Prefix+"shown_as"] = shown
 	p := Post{}
 	switch msg.Kind {
 	case message.Post:
 		root := ""
-		if msg.Root != nil {
+		if msg.MMRoot != "" {
+			root = mmTarget.ThreadRoot()
+		} else if msg.Root != nil {
 			if r, ok, err := m.Store.Post(ctx, m.Home, *msg.Root); err != nil {
 				return err
 			} else if ok {
@@ -155,19 +208,35 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 				props[m.Prefix+"nats_root"] = fmt.Sprintf("n1:%s:%d", m.Home, *msg.Root)
 			}
 		}
+		if cards != nil {
+			props["attachments"] = cards
+		}
 		var pid string
 		if own := m.own(ctx, sender); own != nil {
 			// The agent's own bot shows who wrote it: no attribution line.
-			pid, err = own.Create(ctx, cid, Cut(DefuseMentions(unmark(msg.Text))), root, props)
+			pid, err = own.Create(ctx, cid, Cut(DefuseMentionsExcept(unmark(msg.Text), keep)), root, props)
 			m.failed(sender, err)
 		} else {
-			pid, err = m.Sink.Create(ctx, cid, Attribution(shown, msg.Text), root, props)
+			pid, err = m.Sink.Create(ctx, cid, attribution(shown, msg.Text, keep), root, props)
 		}
 		if err != nil {
 			return err
 		}
 		p = Post{ID: pid, RootID: root}
 	case message.Reaction, message.Unreaction:
+		if msg.MMRef != "" {
+			// Plan B piece 7: counted under the Mattermost id; the map keeps no way
+			// back from that post to this message.
+			if msg.Kind == message.Reaction {
+				err = m.react(ctx, sender, MMRef(mmTarget.ID), mmTarget.ID, msg.Emoji)
+			} else {
+				err = m.unreact(ctx, sender, MMRef(mmTarget.ID), mmTarget.ID, msg.Emoji)
+			}
+			if err != nil {
+				return err
+			}
+			return m.save(ctx, seq, Post{})
+		}
 		target, ok, err := m.Store.Post(ctx, m.Home, *msg.Ref)
 		if err != nil {
 			return err
@@ -178,16 +247,18 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 			return m.save(ctx, seq, Post{})
 		}
 		if msg.Kind == message.Reaction {
-			err = m.react(ctx, sender, *msg.Ref, target.ID, msg.Emoji)
+			err = m.react(ctx, sender, SeqRef(*msg.Ref), target.ID, msg.Emoji)
 		} else {
-			err = m.unreact(ctx, sender, *msg.Ref, target.ID, msg.Emoji)
+			err = m.unreact(ctx, sender, SeqRef(*msg.Ref), target.ID, msg.Emoji)
 		}
 		if err != nil {
 			return err
 		}
 		// A reaction makes no post of its own; keep the target so the map
-		// still answers for the sequence, and move on.
-		p = target
+		// still answers for the sequence, and move on. The way back from the
+		// post to its sequence stays the post's: Reaction keeps it from being
+		// overwritten with this reaction's (#297).
+		p = Post{ID: target.ID, RootID: target.RootID, Reaction: true}
 	default:
 		return errors.New("bridge: unknown message kind")
 	}
@@ -226,7 +297,7 @@ func Revoked(err error) bool {
 // react adds the sender's reaction: under its own bot, recorded so the
 // removal goes to that bot whatever state it is in then; else under the
 // bridge bot, which reacts once for all senders without one.
-func (m *Mirror) react(ctx context.Context, sender string, ref uint64, post, emoji string) error {
+func (m *Mirror) react(ctx context.Context, sender, ref, post, emoji string) error {
 	if own := m.own(ctx, sender); own != nil {
 		err := own.React(ctx, post, emoji)
 		m.failed(sender, err)
@@ -259,7 +330,7 @@ func (m *Mirror) react(ctx context.Context, sender string, ref uint64, post, emo
 // bridge bot's reaction goes when that count reaches 0. A reaction or post
 // already gone (404) counts as removed; anything else is retried, each step
 // idempotent.
-func (m *Mirror) unreact(ctx context.Context, sender string, ref uint64, post, emoji string) error {
+func (m *Mirror) unreact(ctx context.Context, sender, ref, post, emoji string) error {
 	had, err := m.Store.OwnReaction(ctx, m.Home, ref, emoji, sender)
 	if err != nil {
 		return err
@@ -338,11 +409,16 @@ func (m *Mirror) senderProps(in map[string]any) map[string]any {
 const SenderMark = "▍"
 
 func Attribution(shown, text string) string {
+	return attribution(shown, text, "")
+}
+
+// attribution is Attribution keeping the mention of keep (an ask's, ask.go).
+func attribution(shown, text, keep string) string {
 	// The sender line is ours and marked; the text cannot move it. Mentions in
 	// the text would notify people through the bridge's bot, so every @ gets a
 	// zero-width space after it. Cut after defusing, so the limit holds for what
 	// is posted.
-	return SenderMark + "**" + shown + "**\n\n" + Cut(DefuseMentions(unmark(text)))
+	return SenderMark + "**" + shown + "**\n\n" + Cut(DefuseMentionsExcept(unmark(text), keep))
 }
 
 // unmark replaces SenderMark in a mirrored text, under the bridge bot and an

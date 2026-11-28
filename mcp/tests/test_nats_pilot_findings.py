@@ -22,6 +22,12 @@ class _Side:
     def ambiguous(self) -> list[str]:
         return []
 
+    def people_unheard(self) -> list[str]:
+        return []
+
+    def permission_unrelayed(self) -> bool:
+        return False
+
     async def prime(self) -> None:
         return None
 

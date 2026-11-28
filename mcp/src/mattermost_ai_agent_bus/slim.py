@@ -313,6 +313,7 @@ def _one(p: Post, users: dict[str, str], channels: dict[str, str],
         out["replies"] = p.reply_count
     if p.files:
         out["files"] = [files.hint(f) for f in p.files]  # RT-6.23: get_file fetches one
+        files.saw(p.files, p.channel_id)  # piece 8: the file's channel, read without Mattermost
     if facts and p.id in facts:
         got = facts[p.id]
         if got.get("reactions"):

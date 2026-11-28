@@ -49,6 +49,7 @@ from nats.errors import AuthorizationError, InvalidUserCredentialsError
 
 from . import a2a, planb
 from .login import LoginError, NKey
+from .model import StatusMark
 from .session_file import NONCE_RE
 
 log = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ CLOSE_SEC = 5.0
 
 MAX_BODY = 65536  # the BUS stream's max_msg_size
 HEARTBEAT_SEC = 30.0
+PRESENCE_SOON_SEC = 2.0  # plan B piece 9: the least time after an early presence (presence_soon)
 PRESENCE_FRESH_SEC = 90.0  # a holder's last presence must be younger than this
 OWN_ECHO_SEC = 75.0  # the echo of this agent's own presence must be younger than this (monotonic), else the view is unknown
 GAP_RECONNECT_SEC = 30.0  # at most one reconnect for a gap within this time
@@ -230,6 +232,18 @@ class Message:
     ref: int | None = None  # reaction: stream sequence of the post
     emoji: str | None = None
     props: dict[str, Prop] = field(default_factory=dict)
+    # Plan B piece 7 (RT-6.42 step 13): a Mattermost post named by its id instead of a sequence,
+    # a person's or the sender's own from before the switch. Sent only while the piece is on,
+    # never beside `root` or `ref`; absent from the body otherwise.
+    mm_root: str | None = None  # post: the Mattermost id of the post it replies to
+    mm_ref: str | None = None  # reaction: the Mattermost id of the post it reacts to
+
+
+_MM_POST = re.compile(r"[a-z0-9]{26}")  # a Mattermost post id
+
+
+def _mm_post(v: object) -> bool:
+    return isinstance(v, str) and bool(_MM_POST.fullmatch(v))
 
 
 def _seq(v: object) -> bool:
@@ -261,11 +275,15 @@ def _check(m: Message, props_prefix: str = a2a.DEFAULT_PREFIX) -> None:
             raise MessageError("props keys start with the bus's props prefix (CB_PROPS_PREFIX)")
         if not _wellformed(k) or (isinstance(v, str) and not _wellformed(v)):
             raise MessageError("props are not valid Unicode")
+    if m.mm_root is not None and (m.kind != "post" or m.root is not None or not _mm_post(m.mm_root)):
+        raise MessageError("mm_root is a Mattermost post id, on a post without root")
+    if m.mm_ref is not None and (m.kind == "post" or m.ref is not None or not _mm_post(m.mm_ref)):
+        raise MessageError("mm_ref is a Mattermost post id, on a reaction without ref")
     if m.kind == "post":
         if m.ref is not None or m.emoji is not None:
             raise MessageError("a post has no ref or emoji")
     else:
-        if not _seq(m.ref):
+        if not _seq(m.ref) and m.mm_ref is None:
             raise MessageError("a reaction needs ref")
         if not isinstance(m.emoji, str) or not m.emoji:
             raise MessageError("a reaction needs an emoji")
@@ -287,8 +305,13 @@ def _dumps(obj: object, ensure_ascii: bool = True) -> str:
 
 def encode(m: Message, props_prefix: str = a2a.DEFAULT_PREFIX) -> bytes:
     _check(m, props_prefix)
-    body = _dumps({"v": 1, "kind": m.kind, "text": m.text, "root": m.root, "ref": m.ref,
-                   "emoji": m.emoji, "props": m.props}, ensure_ascii=False).encode()
+    obj: dict[str, Any] = {"v": 1, "kind": m.kind, "text": m.text, "root": m.root, "ref": m.ref,
+                           "emoji": m.emoji, "props": m.props}
+    if m.mm_root is not None:  # plan B piece 7 only: without it the body is as before
+        obj["mm_root"] = m.mm_root
+    if m.mm_ref is not None:
+        obj["mm_ref"] = m.mm_ref
+    body = _dumps(obj, ensure_ascii=False).encode()
     if len(body) > MAX_BODY:
         raise MessageError(f"message is {len(body)} bytes, more than {MAX_BODY}")
     return body
@@ -343,7 +366,8 @@ def decode(data: bytes, props_prefix: str = a2a.DEFAULT_PREFIX) -> Message:
     if not isinstance(props, dict):
         raise MessageError("props is not an object")
     m = Message(kind=obj.get("kind"), text=obj.get("text", ""), root=obj.get("root"),  # type: ignore[arg-type]
-                ref=obj.get("ref"), emoji=obj.get("emoji"), props=props)
+                ref=obj.get("ref"), emoji=obj.get("emoji"), props=props,
+                mm_root=obj.get("mm_root"), mm_ref=obj.get("mm_ref"))
     _check(m, props_prefix)
     return m
 
@@ -472,14 +496,17 @@ _CARD_KEYS = ("harness", "model", "task", "branch", "asks", "last_post", "usage"
 
 
 def encode_presence(status: str, bot: str = "", bot_name: str = "",
-                    card: PresenceCard | None = None, dm: bool = False) -> bytes:
+                    card: PresenceCard | None = None, dm: bool = False,
+                    shown: Mapping[str, Any] | None = None) -> bytes:
     """The presence body; `bot` is the agent's Mattermost bot id (RT-6.37) and `name` that
     bot's username, the name people and coordinator("who") know the agent by (the operator
     console shows it, ADR-015); each left out when ''. `card`: the HELLO card's data
     (harness, model, task, branch, open asks) and the last post's time, bounded by clean_card;
     a field it does not state (None) is left out. `dm`: this session's home runs plan B's
     agent DMs over NATS (piece 3), so a DM addressed to the agent goes over NATS; left out when
-    False, which every sender reads as "stay on Mattermost".
+    False, which every sender reads as "stay on Mattermost". `shown`: the status the bridge
+    shows under the agent's bridge bot (plan B piece 9), bounded by clean_shown; left out when
+    None or out of bounds, which the bridge reads as "not mine to show".
     """
     if status not in _STATUSES:
         raise MessageError("unknown status")
@@ -496,7 +523,35 @@ def encode_presence(status: str, bot: str = "", bot_name: str = "",
             value = getattr(clean, key)
             if value is not None:
                 body[key] = value
+    if shown is not None:
+        clean_status = clean_shown(shown)
+        if clean_status is not None:
+            body["shown"] = clean_status
     return _dumps(body).encode()
+
+
+# Plan B piece 9: the emoji a `shown` status may carry, the states' own; never the crown's,
+# which the bridge sets by the claims (RT-6.38).
+SHOWN_EMOJIS = frozenset(a2a.status_emoji(m) for m in (StatusMark.WORKING, StatusMark.LISTENING,
+                                                        StatusMark.IDLE, StatusMark.BUS))
+SHOWN_TEXT_MAX = 100  # Mattermost's custom status text
+
+
+def clean_shown(shown: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A `shown` status bounded as the bridge reads it (plan B piece 9): `home` the channel it
+    is shown for (the session's home; the bridge shows it only there), `emoji` one of
+    SHOWN_EMOJIS, `text` a card line of at most SHOWN_TEXT_MAX characters, `until` its end in
+    epoch seconds, `crown` only when True (this session's mirror holds its home's crown).
+    None when a field is out of bounds: dropped, never repaired."""
+    home, emoji, until = shown.get("home"), shown.get("emoji"), card_epoch(shown.get("until"))
+    text = card_text(shown.get("text"), SHOWN_TEXT_MAX)
+    if (not isinstance(home, str) or not CHANNEL_RE.fullmatch(home) or emoji not in SHOWN_EMOJIS
+            or not text or until is None):
+        return None
+    out: dict[str, Any] = {"home": home, "emoji": emoji, "text": text, "until": until}
+    if shown.get("crown") is True:
+        out["crown"] = True
+    return out
 
 
 def decode_presence_card(data: bytes) -> PresenceCard:
@@ -987,8 +1042,21 @@ def decode_bridge_signal(data: bytes, channel: str) -> float:
 def decode_bridge_signal_full(data: bytes, channel: str) -> tuple[float, str]:
     """Strict: the bridge's v1 signal for `channel`, `people` true; returns its `exp` and
     its optional `bot_prefix` ("" without one; one that is no username's start raises)."""
+    exp, prefix, _ = decode_bridge_signal_pieces(data, channel)
+    return exp, prefix
+
+
+def decode_bridge_signal_pieces(data: bytes, channel: str) -> tuple[float, str, frozenset[int]]:
+    """decode_bridge_signal_full and the signal's optional `pieces`: the plan B pieces whose
+    bridge half runs for the channel (piece 6, asks, RT-6.11 step 7), each a plan B piece,
+    each once; none without the key."""
     obj = _obj(data)
-    _exact(obj, _BRIDGE_KEYS, ("bot_prefix",))
+    _exact(obj, _BRIDGE_KEYS, ("bot_prefix", "pieces"))
+    pieces = obj.get("pieces", [])
+    if not isinstance(pieces, list) or len(pieces) > planb.MAX_PIECE or any(
+            isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= planb.MAX_PIECE for n in pieces) \
+            or len(set(pieces)) != len(pieces):
+        raise MessageError("pieces is not a list of plan B pieces")
     if obj["home"] != channel:
         raise MessageError("signal of another channel")
     if obj["people"] is not True:
@@ -997,7 +1065,7 @@ def decode_bridge_signal_full(data: bytes, channel: str) -> tuple[float, str]:
     prefix = obj.get("bot_prefix", "")
     if "bot_prefix" in obj and (not isinstance(prefix, str) or not BOT_PREFIX_RE.fullmatch(prefix)):
         raise MessageError("bot_prefix is no username's start")
-    return float(_int(obj, "exp")), prefix
+    return float(_int(obj, "exp")), prefix, frozenset(pieces)
 
 
 def decode_planb(data: bytes, channel: str) -> frozenset[int]:
@@ -1407,6 +1475,8 @@ class NatsBus:
         # Notices already told (replay, redelivery): (anchor, kind, sid, iat) -> monotonic.
         self._notice_seen: dict[tuple[str, str, str, float], float] = {}
         self.on_person_gap: Callable[[str], None] | None = None  # a gap on a person's consumer (RT-6.42)
+        # A person's direct message to this agent (plan B piece 10, RT-6.13): `where` is DM_SINCE.
+        self.on_person_dm: PersonCallback | None = None
         self._heartbeat_sec = heartbeat_sec
         self._gap_sec = gap_reconnect_sec
         self._connect_timeout = connect_timeout
@@ -1478,6 +1548,10 @@ class NatsBus:
         # in every presence the bus sends; the MCP server sets it. None or a failing source
         # states nothing, which every sender reads as "stay on Mattermost".
         self.dm_source: Callable[[], bool] | None = None
+        # Plan B piece 9: the status the bridge shows for this agent, stated in every presence
+        # (`shown`); None or a failing source states none, and the bridge shows nothing of it.
+        self.shown_source: Callable[[], Mapping[str, Any] | None] | None = None
+        self._presence_soon = asyncio.Event()  # presence_soon: the heartbeat sends now
         self._dm: dict[str, bool] = {}  # agent -> its newest presence states DMs over NATS
         # The open asks for the ask record (RT-6.43 step 5): the MCP server sets it (a hosted
         # one maybe after start); `human` is the asked human's username, mapped here through
@@ -1506,6 +1580,7 @@ class NatsBus:
         # channel -> the bot prefix its newest signal that had one named (RT-6.36 step 4); kept
         # when a later signal has none or the signal runs out: the copies made stay in the channel
         self._bridge_prefix: dict[str, str] = {}
+        self._bridge_pieces: dict[str, frozenset[int]] = {}  # channel -> plan B pieces its signal names
         # channel -> (stream sequence, server time, pieces) of the plan B switches (RT-6.39 step 5)
         self._planb: dict[str, tuple[int, float, frozenset[int]]] = {}
         # the map before the presence consumer was made anew: read while the replay runs (#244)
@@ -1871,7 +1946,12 @@ class NatsBus:
 
     async def _heartbeat(self) -> None:
         while True:
-            await asyncio.sleep(self._heartbeat_sec)
+            try:
+                await asyncio.wait_for(self._presence_soon.wait(), self._heartbeat_sec)
+            except asyncio.TimeoutError:
+                pass
+            soon = self._presence_soon.is_set()
+            self._presence_soon.clear()
             nc = self._nc
             if nc is not None and self._connected:
                 try:
@@ -1879,6 +1959,24 @@ class NatsBus:
                 except Exception as exc:
                     log.warning("nats bus: heartbeat: %s", type(exc).__name__)
             self._check_own_echo()
+            if soon:
+                await asyncio.sleep(PRESENCE_SOON_SEC)  # a burst of changes sends one a while
+
+    def presence_soon(self) -> None:
+        """Plan B piece 9: the status this presence states changed, so the next presence goes
+        out now (PRESENCE_SOON_SEC after the last early one at most), not at the next
+        heartbeat. Safe from any thread: the event is set in the bus's own loop."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return  # not started: the first presence states it
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            self._presence_soon.set()
+        else:
+            loop.call_soon_threadsafe(self._presence_soon.set)
 
     def _check_own_echo(self) -> None:
         """The echo of the own presence missing past OWN_ECHO_SEC while connected (a stream
@@ -1978,6 +2076,20 @@ class NatsBus:
 
     async def unreact(self, channel: str, ref: int, emoji: str) -> None:
         body = encode(Message("unreaction", ref=ref, emoji=emoji), self._s.props_prefix)
+        await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
+
+    async def post_mm(self, channel: str, text: str, mm_root: str,
+                      props: dict[str, Prop] | None = None) -> None:
+        """Plan B piece 7 (RT-6.42 step 13): a reply in the thread of the Mattermost post
+        `mm_root` (a person's), which the bridge posts there once it checked the post is in
+        `channel`."""
+        body = encode(Message("post", text, props=props or {}, mm_root=mm_root), self._s.props_prefix)
+        await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
+
+    async def react_mm(self, channel: str, mm_ref: str, emoji: str, remove: bool = False) -> None:
+        """Plan B piece 7: a reaction, or its removal, on the Mattermost post `mm_ref`."""
+        body = encode(Message("unreaction" if remove else "reaction", emoji=emoji, mm_ref=mm_ref),
+                      self._s.props_prefix)
         await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
 
     def _dm_subject(self, recipient: str) -> str:
@@ -2155,7 +2267,13 @@ class NatsBus:
                 dm = bool(self.dm_source())
             except Exception as exc:  # noqa: BLE001 — in doubt off: the safe side for a DM
                 log.info("nats bus: the DM flag was not read (%s): not stated", type(exc).__name__)
-        return encode_presence(status, self._bot, self._bot_name, card, dm=dm)
+        shown = None
+        if self.shown_source is not None:
+            try:
+                shown = self.shown_source()
+            except Exception as exc:  # noqa: BLE001 — a display, never a reason to look offline
+                log.info("nats bus: the shown status was not read (%s): not stated", type(exc).__name__)
+        return encode_presence(status, self._bot, self._bot_name, card, dm=dm, shown=shown)
 
     def link_bot(self, bot_id: str, username: str = "") -> None:
         """The Mattermost bot this agent's presence names (RT-6.37), and its username for
@@ -2311,6 +2429,14 @@ class NatsBus:
                 await asyncio.wait_for(self._chan_event.wait(), timeout)
         return self.channel_ids()
 
+    def bridge_pieces(self, channel: str) -> frozenset[int]:
+        """The plan B pieces the bridge's fresh signal for the channel names (RT-6.42 step 7):
+        those whose bridge half runs there, so far piece 6 (asks, RT-6.11 step 7); none while
+        no fresh signal names the channel (people_switched)."""
+        if not self.people_switched(channel):
+            return frozenset()
+        return self._bridge_pieces.get(channel, frozenset())
+
     def bridge_prefix(self, channel: str) -> str:
         """The bot prefix of the bridge's signal for the channel (RT-6.36 step 4): the bridge
         posts each agent's copies there under `<prefix><agent name>`; "" while no signal
@@ -2443,6 +2569,11 @@ class NatsBus:
         self._see(ack.time)
         gap = self._gaps.observe(where, ack.consumer_seq)  # every delivery counts, dropped or not
         tokens = subject.split(".")
+        if where == DM_SINCE and tokens[:4] == [self._s.bus, "hu", "dm", self.name]:
+            # Plan B piece 10 (RT-6.13): a person's direct message to this very agent, which the
+            # bridge carries on the DM consumer's second filter, `<bus>.hu.dm.<name>.<anchor>`.
+            await self._on_person_dm_deliver(tokens, ack, data, gap)
+            return
         sender = tokens[-1]
         expect = [self._s.bus, "ch", where] if where != DM_SINCE else [self._s.bus, "dm", self.name]
         if tokens[:-1] != expect or not self.agent_ok(sender):
@@ -2476,6 +2607,46 @@ class NatsBus:
             log.warning("nats bus: event callback failed: %s", type(exc).__name__)
             return  # not handed: the cursor stays before it
         self._handed(where, ack.stream_seq, at)
+
+    async def _on_person_dm_deliver(self, tokens: list[str], ack: Any, data: bytes, gap: bool) -> None:
+        """A person's direct message to this agent (plan B piece 10, RT-6.13) from `<name>_dm`:
+        the subject is `<bus>.hu.dm.<name>.<anchor>`, the person its last token, never the
+        body's; the body is a person's event of format v1 (decode_person, strict). It shares
+        the DM consumer's sequence: a gap is the DMs' gap, a repeat after a restart from `since`
+        is dropped, and it is handed like a DM so the cursor passes it."""
+        at = int(ack.time * 1000)
+        if len(tokens) != 5:
+            log.warning("nats bus: dropped a person's direct message with an unexpected subject")
+            return
+        anchor = tokens[4] if tokens[4] == UNBOUND else owner_of_token(tokens[4])
+        if not anchor:
+            log.warning("nats bus: dropped a person's direct message: the sender is no anchor")
+            return
+        if gap:
+            self._gap(DM_SINCE)
+        if DM_SINCE in self._stale:
+            return
+        self._stream_reset(DM_SINCE, ack.consumer_seq, ack.stream_seq, at)
+        if ack.stream_seq <= self._last_seq.get(DM_SINCE, 0):
+            return  # a repeat after a restart from `since`
+        try:
+            message = decode_person(data)
+        except MessageError as exc:
+            log.warning("nats bus: dropped a malformed person's direct message (seq %d): %s", ack.stream_seq, exc)
+            self._handed(DM_SINCE, ack.stream_seq, at)
+            return
+        callback = self.on_person_dm
+        if callback is not None:
+            try:
+                res = callback(PersonEvent(DM_SINCE, anchor, ack.stream_seq, ack.time, message))
+                if inspect.isawaitable(res):
+                    await res
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("nats bus: person's direct message callback failed: %s", type(exc).__name__)
+                return  # not handed: the cursor stays before it
+        self._handed(DM_SINCE, ack.stream_seq, at)
 
     def _person_handler(self, channel: str) -> Callable[[Any], Awaitable[None]]:
         async def handle(msg: Any) -> None:
@@ -2600,6 +2771,12 @@ class NatsBus:
             return frozenset()  # off is fail-safe: a record no credential renewed is no longer read
         return got[2]
 
+    def planb_held(self, channel: str) -> frozenset[int]:
+        """The pieces of the plan B record this bus holds for `channel`, stale or not (plan B
+        piece 10, RT-6.13 step 7): a piece in a record that went stale is not known off."""
+        got = self._planb.get(channel) or self._planb_prev.get(channel)
+        return got[2] if got is not None else frozenset()
+
     async def _on_presence_msg(self, msg: Any) -> None:
         ack = parse_ack(msg.reply, PRESENCE_STREAM, f"{self.name}_presence")
         if ack is None:
@@ -2691,12 +2868,14 @@ class NatsBus:
                 seq0, at0, _exp = self._bridge_signal.get(t[2], (0, 0.0, 0.0))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     try:
-                        exp, prefix = decode_bridge_signal_full(msg.data, t[2])
+                        exp, prefix, pieces = decode_bridge_signal_pieces(msg.data, t[2])
                         exp = min(exp, ack.time + SIGNAL_MAX_SEC)
                         if prefix:
                             self._bridge_prefix[t[2]] = prefix
+                        self._bridge_pieces[t[2]] = pieces
                     except MessageError:
                         exp = 0.0
+                        self._bridge_pieces.pop(t[2], None)
                         log.warning("nats bus: a bridge signal that does not decode (seq %d): people on "
                                     "Mattermost", ack.stream_seq)
                     self._bridge_signal[t[2]] = (ack.stream_seq, ack.time, exp)

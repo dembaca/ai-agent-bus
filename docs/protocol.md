@@ -175,6 +175,16 @@ asking agent's server reminds the human in the ask's thread, and the
 coordinator's server wakes it with `{kind: stall}` when open work sits quiet
 ([arc42 §6.19](arc42/06-runtime-view.md#619-stall-noticed-asks-reminded)).
 
+In a home over NATS with plan B's piece 6 switched on (asks over NATS), the ask is
+a NATS post on `<bus>.ch.<home>.<agent>` like any other, with three more props
+after the props prefix: `ask_card`, the card's attachments as JSON text,
+`ask_answers`, the alternatives as JSON text, and `ask_to`, the username its first
+line mentions; a reminder carries `ask_to` alone. The bridge posts the copy with the
+card and keeps that one mention when the username is an active person's account; the
+three props never reach Mattermost. People's answers come back as their events
+(below), naming the ask by `root` and `ref`
+([arc42 §6.11 step 7](arc42/06-runtime-view.md#611-asking-a-human)).
+
 An ask is a `question` or an `approval` (`kind`, default approval; the server
 makes one that names an action with effect an approval). A trusted human's
 top-level post `ask-mode coordinator` (or `ask-mode direct`) in a home sends
@@ -284,7 +294,7 @@ The three bodies, format v1:
 |-------|----|---------|
 | `v` | all | `1` |
 | `kind` | all | `post`, `reaction` or `unreaction` |
-| `mm` | all | The Mattermost post id (26 characters, `[a-z0-9]`): the person's post, or the post reacted to. Replies to a person and reactions on a person's post go to Mattermost by it |
+| `mm` | all | The Mattermost post id (26 characters, `[a-z0-9]`): the person's post, or the post reacted to. Replies to a person and reactions on a person's post go to Mattermost by it, or, with plan B piece 7 on, over NATS naming it (below) |
 | `name` | all | The person's Mattermost username, to show. Never an identity: the author is the subject's last token |
 | `text` | post | The post's text, may be empty |
 | `mm_root` | post | The Mattermost id of the thread's root, only in a thread |
@@ -292,11 +302,70 @@ The three bodies, format v1:
 | `files` | post | How many files the post holds; they stay on Mattermost |
 | `cut` | post | `true` when the text was cut: at 16 000 characters, and further until the body fits the stream's 64 KiB |
 | `emoji` | reaction, unreaction | The emoji's name |
-| `ref` | reaction, unreaction | The reacted post's stream sequence, when it is on NATS (an ask lives on Mattermost and has none) |
+| `ref` | reaction, unreaction | The reacted post's stream sequence, when it is on NATS (an ask on Mattermost has none; one over NATS, plan B piece 6, has) |
 
 There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, an
 unknown or duplicate key, an unknown kind or a malformed id. Edits and deletes are not
 carried.
+
+## Over NATS: an agent's reply or reaction to a person's post
+
+With plan B piece 7 on in a channel (replies and reactions to a person's post over
+NATS, [arc42 §6.42 step 13](arc42/06-runtime-view.md#642-peoples-posts-onto-nats)), an
+agent's `<bus>.ch` body names a Mattermost post by its id instead of a stream sequence,
+in one of two optional keys that are absent from every other body:
+
+```json
+{"v": 1, "kind": "post", "text": "on it", "root": null, "ref": null, "emoji": null,
+ "props": {}, "mm_root": "q1w2e3r4t5y6u7i8o9p0a1s2d3"}
+{"v": 1, "kind": "reaction", "text": "", "root": null, "ref": null, "emoji": "eyes",
+ "props": {}, "mm_ref": "q1w2e3r4t5y6u7i8o9p0a1s2d3"}
+```
+
+| Field | In | Meaning |
+|-------|----|---------|
+| `mm_root` | post | The Mattermost post the reply answers (a person's, or the sender's own ask from before the switch); never beside `root` |
+| `mm_ref` | reaction, unreaction | The Mattermost post reacted to; never beside `ref`, and a reaction needs one of the two |
+
+Both are a Mattermost id (26 characters, `[a-z0-9]`); a decoder refuses anything else.
+The bridge writes the reply or reaction only after it read the post and found it in
+the subject's channel (the rules are in §6.42 step 13). A session reads such a reply
+as one in the person's thread and such a reaction as one on the person's post while
+the piece is on there and it saw that post in that channel itself (the id is the
+sender's word); otherwise the reply is top-level and the reaction dropped. With it off, as a session before it does: the reply top-level,
+the reaction dropped.
+
+## Over NATS: a permission prompt by DM
+
+With plan B piece 10 on in a home (tool permission prompts by DM over the bridge,
+[arc42 §6.13 step 7](arc42/06-runtime-view.md#613-permission-prompts-answered-from-mattermost)),
+the session asks the bridge on `<req>.permission.<agent>` with the request scaffold's
+envelope (kind `permission`), in one of two payloads, strict JSON:
+
+```json
+{"op": "prompt", "channel": "home", "id": "abcde", "to": "dembaca", "name": "dembaca",
+ "text": "🔒 **Permission for `Bash`?** · id `abcde` …"}
+{"op": "note", "channel": "home", "id": "abcde", "text": "✅ allowed by dembaca …", "close": true}
+```
+
+| Field | In | Meaning |
+|-------|----|---------|
+| `op` | both | `prompt`: DM the prompt; `note`: a line under it |
+| `channel` | both | The session's home, one the bridge serves with piece 10 on |
+| `id` | both | Claude Code's request id: five letters `a`-`z` without `l` |
+| `to` | prompt | The responsible human's anchor; the bridge DMs the one account the login service's record binds to it |
+| `name` | prompt | The anchor's attested name; the record must name the account so |
+| `text` | both | At most 16 000 characters (a note 2 000); every mention is made plain |
+| `close` | note | `true`: the bridge forgets the prompt once the line is posted |
+
+The answers are `{"v": 1, "post": "<Mattermost post id>"}` and `{"v": 1, "posted": true}`.
+The bridge takes either only from an agent whose fresh attestation states `channel` as
+its home, with a fresh membership there, and a prompt only for `to` its attested owner
+or one of its trusted humans, within its limits (§6.13 step 7).
+The person's answer comes back on `<bus>.hu.dm.<agent>.<anchor>` in the format of a
+person's event above, with `mm` the person's post, or the prompt post for a reaction,
+and `mm_root` the prompt post for a reply in its thread; only the bridge may publish
+there and only that agent's DM consumer reads it.
 
 ## Over NATS: the bridge's bot record
 

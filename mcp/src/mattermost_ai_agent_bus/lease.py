@@ -306,6 +306,26 @@ class NatsSource(Protocol):
 
     def ambiguous(self) -> list[str]: ...
 
+    def people_unheard(self) -> list[str]:
+        """Plan B piece 11 (RT-6.42 step 12): the channels whose people this session does not
+        hear now, the switch on and no fresh signal of the bridge; sorted."""
+        ...
+
+    def permission_unrelayed(self) -> bool:
+        """Plan B piece 10 (RT-6.13 step 7): the switch on and no fresh signal of the bridge
+        that relays permission prompts: they stay in the terminal."""
+        ...
+
+    def presence_soon(self) -> None:
+        """Plan B piece 9: the next presence goes out now, not at the next heartbeat."""
+        ...
+
+    async def header_line(self, home: str, line: str) -> bool:
+        """Plan B piece 9: the bus line sent to the bridge for the home's header
+        (`<req>.header.<agent>`); True when the bridge changed the header. Raises when the
+        bridge refused it or did not answer."""
+        ...
+
 
 @dataclass(frozen=True)
 class NatsState:
@@ -437,7 +457,8 @@ async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, st
 
 def nats_notes() -> list[str]:
     """What bus_info says about the crown over NATS (RT-6.38 steps 7 and 8): the home that
-    has no NATS side, a link tag that fits more than one fresh name."""
+    has no NATS side, a link tag that fits more than one fresh name; and the channels whose
+    people are not heard (plan B piece 11, RT-6.42 step 12)."""
     out: list[str] = [_left_out] if _left_out else []
     state = nats_state()
     if state.kind == "down":
@@ -446,6 +467,16 @@ def nats_notes() -> list[str]:
     if _nats_source is not None and state.kind != "none":
         out.extend(f"the link tag {tag} fits more than one fresh NATS name: no bot is linked by it (RT-6.37)"
                    for tag in _nats_source.ambiguous())
+        out.extend(f"people in ~{ch} are not heard now: no fresh signal of the bridge reaches this session "
+                   "for it (the bridge or NATS is down), and plan B piece 11 reads nothing of them on "
+                   "Mattermost; their posts and reactions, an answer to an ask too, reach you over NATS once "
+                   f"NATS is up and the bridge carries ~{ch} again (what it missed, up to 10 minutes back) "
+                   "(RT-6.42)"
+                   for ch in _nats_source.people_unheard())
+        if _nats_source.permission_unrelayed():
+            out.append(f"plan B piece 10 is on in ~{_nats_home}, but no fresh signal of the bridge says it relays "
+                       "tool permission prompts there (the bridge is down, older, or its switch is not read yet): "
+                       "your permission prompts stay in your terminal, none goes to Mattermost (RT-6.13)")
     return out
 
 
@@ -584,6 +615,59 @@ def _rfc3339(epoch: int) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
+# --- plan B piece 9: the status shown by the bridge (ADR-014 phase 5) --------------------
+
+# The status this server would show, as its presence states it for the bridge (home, emoji,
+# text, until, crown); None while the agent is offline or nothing was shown yet.
+_shown: dict[str, Any] | None = None
+_mirror_warned: set[str] = set()
+
+
+def status_mirrored(name: str) -> bool:
+    """Plan B piece 9 (RT-6.6 step 1): the home `name` runs over NATS with a NATS side and
+    its switch `planb.on(9, name)` is on, so the bridge shows this agent's status, presence
+    and crown under the agent's bridge bot (RT-6.44) and this server writes none of them to
+    Mattermost; the bus line of the header goes to the bridge too (step 7). It needs the
+    roster from NATS (piece 2): the registrar bot's status carries the link today (RT-6.37),
+    so with piece 2 off the status stays on the registrar's bot, logged once. A switch that
+    cannot be read is off (planb.on), so nothing moves by doubt."""
+    if not name or not is_nats_home(name) or _nats_source is None or not planb.on(9, name):
+        return False
+    if planb.on(2, name):
+        return True
+    if name not in _mirror_warned:
+        _mirror_warned.add(name)
+        log.warning("plan B piece 9 is on in ~%s but piece 2 is not: the status stays on the "
+                    "registrar's bot (it carries the link, RT-6.37)", name)
+    return False
+
+
+def presence_shown() -> dict[str, Any] | None:
+    """What this agent's presence states as its status (`shown`, RT-6.37 step 6) for the
+    bridge to show (piece 9): only while the status is mirrored, so with the switch off the
+    presence is as before."""
+    shown = _shown
+    if shown is None or not _nats_home or not status_mirrored(_nats_home):
+        return None
+    return dict(shown)
+
+
+def _show_by_bridge(shown: dict[str, Any] | None) -> None:
+    """Keep the status for the presence. A change other than the expiry goes out at once
+    (presence_soon); a renewal goes with the next heartbeat, well before the old expiry."""
+    global _shown
+    before, _shown = _shown, shown
+
+    def bare(s: dict[str, Any] | None) -> dict[str, Any] | None:
+        return None if s is None else {k: v for k, v in s.items() if k != "until"}
+
+    if bare(before) != bare(shown) and _nats_source is not None:
+        try:
+            _nats_source.presence_soon()
+        except Exception as exc:  # noqa: BLE001 — the next heartbeat carries it
+            log.debug("status: presence not sent early: %s", exc)
+
+
 async def set_status(client: ChatPort, state: str, label: str = "") -> None:
     """Show what this agent is doing (RT-6.6 step 1): working, listening (label:
     until epoch), idle, bus (no turn hooks), offline, or renew (the state last
@@ -676,6 +760,7 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         log.info("crown mirror dropped: another agent holds the crown over NATS")
         crownlog.note("lost", "nats")
         crown = 0
+    base_emoji, base_text = emoji, text  # the state without the crown (plan B piece 9)
     grace = 0
     if since and crown > now and now < (end := _silent_end(uid, state)):
         # #64 (decided 2026-11-24): silence alone changes the display; a silent holder
@@ -715,11 +800,17 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
             # RT-6.6 step 4 (#64): the take waits in this server's file only; the status says
             # so, and no peer of this home claims a free crown while it shows (_taker_waits).
             text = f"{text} · {_take_mark(now)}"
+    mirrored = status_mirrored(client.work_channel_name)
+    crowned = bool(emoji) and emoji == a2a.status_emoji(StatusMark.COORDINATOR)
     if text:
         # The version (RT-6.30): last, and cut first, before the label; the
-        # roster then reads it from the HELLO card.
-        text = status_text(text, named, usage.segments(), client.work_channel_name,
-                           version=release.segment(), link=_nats_link() if _nats_link else "")
+        # roster then reads it from the HELLO card. Shown by the bridge (plan B piece 9), the
+        # text has no link (the bridge marks its bot itself) and no crown: the bridge sets
+        # that by the claims (RT-6.38).
+        head = base_text if mirrored and crowned else text
+        text = status_text(head, named, usage.segments(), client.work_channel_name,
+                           version=release.segment(),
+                           link="" if mirrored else _nats_link() if _nats_link else "")
         usage.shown()
     if coord is not None and coord.is_file():
         # The beat records the home too (ADR-002, #258): a file from before has none.
@@ -730,6 +821,13 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         _write(coord, "".join(f"CROWN_UNTIL={crown}\n" if ln.startswith("CROWN_UNTIL=") else f"{ln}\n"
                               for ln in lines) + stamp)
 
+    if mirrored:
+        # Plan B piece 9: the bridge shows it under the agent's bridge bot, with the presence
+        # and the crown by the claims (RT-6.38); no Mattermost call here. Offline: the bye.
+        _show_by_bridge({"home": client.work_channel_name.lstrip("~").lower(), "emoji": base_emoji,
+                         "text": text[:STATUS_MAX], "until": until, "crown": crowned} if emoji else None)
+        life.shown(bool(since))
+        return
     try:
         await client.set_presence(uid, presence)
     except Exception as exc:  # noqa: BLE001 — fail open
@@ -1869,6 +1967,13 @@ async def _header(client: ChatPort, cid: str, uid: str, line: str | None = None,
     global _header_logged
     try:
         line = line if line is not None else await _bus_line(client, uid, now)
+        if status_mirrored(client.work_channel_name) and _nats_source is not None:
+            # Plan B piece 9: the bridge writes the line with this agent's bridge bot, only
+            # while the claims say it holds the crown, and keeps the rest of the header; no
+            # Mattermost read or write here. A refusal is tried again at the next heartbeat.
+            await _nats_source.header_line(client.work_channel_name.lower(), line)
+            _header_line[cid] = line
+            return
         current = await client.channel_header(cid)
         new = with_bus_header(current, line)
         if new != current:

@@ -2,8 +2,9 @@
 // phase 5): an agent asks for what is not a channel message (a history read,
 // file parts, the header line) on <req>.<kind>.<agent>, and the bridge answers
 // on deliver.<agent>.req.<request id>. Nothing is kept: a lost message fails
-// the request, and this phase's answer says only that the piece is not built.
-// A piece plugs in as one entry of Handler.Handlers.
+// the request, and a kind without a piece answers that it is not built. A
+// piece plugs in as one entry of Handler.Handlers and may answer in parts
+// (1..n, `last` on the last), which a caller reads until it has them all.
 package requests
 
 import (
@@ -22,9 +23,10 @@ import (
 )
 
 // kindOK says whether kind is one of the scaffold's: the history read, file
-// parts and the header line (ADR-014 phase 5).
+// parts, the header line and a tool permission prompt's DM (ADR-014 phase 5,
+// plan B piece 10, RT-6.13).
 func kindOK(kind string) bool {
-	return kind == "history" || kind == "file" || kind == "header"
+	return kind == "history" || kind == "file" || kind == "header" || kind == "permission"
 }
 
 // agentRE is an agent name as the bus writes it: the subject's last token.
@@ -37,7 +39,7 @@ var requestRE = regexp.MustCompile(`^[a-z0-9]{16}$`)
 // history read and a header line carry an anchor, never the messages
 // themselves; only a file part carries bytes, and then one part of a file.
 const (
-	maxBody     = 64 << 10 // history and header
+	maxBody     = 64 << 10 // history, header and permission
 	maxFileBody = 1 << 20  // file
 )
 
@@ -47,6 +49,9 @@ const (
 const (
 	queueLen    = 64
 	workerCount = 4
+	// busyWorkers bounds the "busy" answers in flight: they run off the receive
+	// loop too, since each one decodes and flush-checks a publish.
+	busyWorkers = 8
 )
 
 // The per-agent rate: a request a second (Handler.Rate, defaultRate when
@@ -76,14 +81,13 @@ const clipRunes = 80
 // message is its own, but one answer is no place for a megabyte.
 const answerErrorRunes = 256
 
-// Request is the body an agent publishes on <req>.<kind>.<agent>. Part and
-// Last let a piece answer in parts (file parts, a long history read).
+// Request is the body an agent publishes on <req>.<kind>.<agent>. The answer
+// carries Part and Last, the request not: a piece answers in parts and the
+// bridge numbers them.
 type Request struct {
 	V       int             `json:"v"`
 	Request string          `json:"request"`
 	Kind    string          `json:"kind"`
-	Part    int             `json:"part"`
-	Last    bool            `json:"last"`
 	Payload json.RawMessage `json:"payload"`
 }
 
@@ -102,21 +106,19 @@ type Answer struct {
 // notBuilt is this phase's answer: the scaffold answers, the pieces do not.
 const notBuilt = "not built"
 
-// Reply is what a piece answers for one request: its result as raw JSON and
-// the part it is. A piece sets Part and Last itself - a file download or a long
-// history read sends parts 1..n and marks the last one - and the bridge never
-// fills them from the request. Part below 1 counts as 1.
+// Reply is one part of a piece's answer: its result as raw JSON. A piece that
+// answers in parts returns more than one, in order; the bridge numbers them
+// from 1 and marks the last, so a piece never counts them and a caller reading
+// parts until `last` gets every one (the MCP client does).
 type Reply struct {
 	Result json.RawMessage
-	Part   int
-	Last   bool
 }
 
 // Piece answers one validated request of one kind. It returns the answer's
-// result and part, or the error that answer carries instead; the agent is the
-// subject's last token, never a body field. It is the Handler.Handlers entry's
-// type, named for the doc.
-type Piece = func(ctx context.Context, agent string, req Request) (Reply, error)
+// parts in order (usually one), or the error that answer carries instead; the
+// agent is the subject's last token, never a body field. It is the
+// Handler.Handlers entry's type, named for the doc.
+type Piece = func(ctx context.Context, agent string, req Request) ([]Reply, error)
 
 // Handler answers requests on <Prefix>.>: it validates each message strictly,
 // hands it to the piece for its kind, and publishes the answer. A kind
@@ -175,11 +177,12 @@ type job struct {
 // runner is a Handler's state for one Run: the connection, the workers' queue
 // and what the rate limit and the warnings have seen.
 type runner struct {
-	h    *Handler
-	log  *slog.Logger
-	nc   *nats.Conn
-	rate int
-	jobs chan job
+	h      *Handler
+	log    *slog.Logger
+	nc     *nats.Conn
+	rate   int
+	jobs   chan job
+	busyCh chan struct{} // bounds the busy answers in flight, off the receive loop
 
 	mu     sync.Mutex
 	tokens map[string]*bucket
@@ -215,6 +218,7 @@ func (h *Handler) Run(ctx context.Context, nc *nats.Conn) error {
 	r := &runner{
 		h: h, log: log, nc: nc, rate: rate,
 		jobs:   make(chan job, queueLen),
+		busyCh: make(chan struct{}, busyWorkers),
 		tokens: map[string]*bucket{},
 		warned: map[string]time.Time{},
 	}
@@ -316,7 +320,7 @@ func (r *runner) accept(m *nats.Msg) {
 		if r.throttle("rate:" + agent) {
 			r.log.Warn("requests: throttled, the agent asks too fast", "agent", clip(agent), "rate", r.rate)
 		}
-		r.busy(m, agent, kind)
+		r.sendBusy(m, agent, kind)
 		return
 	}
 	req, err := r.h.body(m, kind, agent)
@@ -333,7 +337,7 @@ func (r *runner) accept(m *nats.Msg) {
 		if r.throttle("queue:" + agent) {
 			r.log.Warn("requests: busy, the workers' queue is full", "agent", clip(agent))
 		}
-		r.sendAnswer(agent, Answer{V: 1, Request: req.Request, Kind: kind, Part: 1, Last: true,
+		r.busyJob(agent, Answer{V: 1, Request: req.Request, Kind: kind, Part: 1, Last: true,
 			Error: "busy: the bridge's queue is full, ask again"})
 	}
 }
@@ -350,25 +354,30 @@ func (r *runner) work(ctx context.Context) {
 
 // answer runs the piece for one request and publishes its answer. A request
 // that cannot be answered is logged and left unanswered: the agent's request
-// then fails, never a wrong answer.
+// then fails, never a wrong answer. A piece's parts go out in order, numbered
+// 1..n with `last` on the last, so a caller that reads until `last` has the
+// whole answer; an error is one part, the last.
 func (r *runner) answer(ctx context.Context, j job) {
-	a := Answer{V: 1, Request: j.req.Request, Kind: j.req.Kind, Part: j.req.Part, Last: j.req.Last}
+	a := Answer{V: 1, Request: j.req.Request, Kind: j.req.Kind, Part: 1, Last: true}
 	switch piece := r.h.Handlers[j.req.Kind]; {
 	case piece == nil:
 		// The scaffold: one answer, so part 1 is the last.
-		a.Part, a.Last = 1, true
 		a.Error = notBuilt
 	default:
-		reply, err := piece(ctx, j.agent, j.req)
+		parts, err := piece(ctx, j.agent, j.req)
 		if err != nil {
 			a.Error = clipN(err.Error(), answerErrorRunes)
-		} else {
-			a.Result = reply.Result
-			a.Part, a.Last = reply.Part, reply.Last
-			if a.Part < 1 {
-				a.Part = 1
-			}
+			break
 		}
+		if len(parts) == 0 {
+			a.Error = "the piece answered nothing"
+			break
+		}
+		for i, part := range parts {
+			a.Result, a.Part, a.Last = part.Result, i+1, i == len(parts)-1
+			r.sendAnswer(j.agent, a)
+		}
+		return
 	}
 	r.sendAnswer(j.agent, a)
 }
@@ -483,7 +492,7 @@ func (h *Handler) subject(subject string) (agent, kind string, err error) {
 	}
 	kind, agent = tokens[1], tokens[2]
 	if !kindOK(kind) {
-		return "", "", fmt.Errorf("kind %q is not history, file or header", kind)
+		return "", "", fmt.Errorf("kind %q is not history, file, header or permission", kind)
 	}
 	if !agentRE.MatchString(agent) {
 		return "", "", fmt.Errorf("agent %q is no agent name", agent)
@@ -521,7 +530,39 @@ func (h *Handler) body(m *nats.Msg, kind, agent string) (Request, error) {
 // busy answers a request the rate refused. The request id is in the body, so
 // the envelope is decoded for it - but only up to maxBody, so a flood pays the
 // rate check and at most a small decode; a larger body is only logged.
-func (r *runner) busy(m *nats.Msg, agent, kind string) {
+// sendBusy answers a rate-refused request off the receive loop: the decode and the
+// flush-check of a busy answer are the slow part, and a flood must not hold the
+// subscription. A full busy pool only logs, never blocks the loop.
+func (r *runner) sendBusy(m *nats.Msg, agent, kind string) {
+	select {
+	case r.busyCh <- struct{}{}:
+		go func() {
+			defer func() { <-r.busyCh }()
+			r.busyAnswer(m, agent, kind)
+		}()
+	default:
+		if r.throttle("busy:" + agent) {
+			r.log.Warn("requests: busy, no answer went out", "agent", clip(agent))
+		}
+	}
+}
+
+// busyJob is the same for a validated request, whose answer is already built.
+func (r *runner) busyJob(agent string, a Answer) {
+	select {
+	case r.busyCh <- struct{}{}:
+		go func() {
+			defer func() { <-r.busyCh }()
+			r.sendAnswer(agent, a)
+		}()
+	default:
+		if r.throttle("busy:" + agent) {
+			r.log.Warn("requests: busy, no answer went out", "agent", clip(agent))
+		}
+	}
+}
+
+func (r *runner) busyAnswer(m *nats.Msg, agent, kind string) {
 	if len(m.Data) > maxBody {
 		return
 	}

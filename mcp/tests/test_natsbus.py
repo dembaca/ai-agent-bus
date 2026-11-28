@@ -1136,7 +1136,8 @@ def _consumer_specs(agent: str, channels: list[str], since: dict[str, int]) -> l
         out.append(("BUS", c["durable_name"], c))
         filters += [f"presence.crown.{ch}.*", f"presence.member.{ch}.*", f"presence.planb.{ch}.v1"]
     filters.append(f"presence.directory.{agent}.v1")  # its channel record (RT-6.39 step 6)
-    dm = cfg(f"{agent}_dm", f"deliver.{agent}.dm", [f"bus.dm.{agent}.*"])
+    # the DMs and, since plan B piece 10 (RT-6.13), a person's DM to this agent
+    dm = cfg(f"{agent}_dm", f"deliver.{agent}.dm", [f"bus.dm.{agent}.*", f"bus.hu.dm.{agent}.*"])
     if since.get("@dm"):  # the same as the channels: restart after the last DM seen
         dm["deliver_policy"], dm["opt_start_seq"] = "by_start_sequence", since["@dm"] + 1
     out.append(("BUS", dm["durable_name"], dm))
@@ -2648,7 +2649,7 @@ async def test_a_request_goes_to_the_bridge_and_its_answer_comes_back(rig: Rig) 
         out = await requests.request(bus, "history", {"channel": "home"}, timeout=5)
     finally:
         await sub.unsubscribe()
-    assert out["result"] == {"ok": True}
+    assert out == {"ok": True}  # one part: its result
     subject, body = asked[0]
     assert subject == f"req.history.{bus.name}"
     assert body["v"] == 1 and body["kind"] == "history"
@@ -2804,6 +2805,150 @@ def test_decode_planb_is_strict() -> None:
     with pytest.raises(natsbus.MessageError):
         natsbus.decode_planb(b'{"v":1,"channel":"home","pieces":"1"}', "home")
 
+
+def test_each_request_kind_gets_its_own_default_timeout() -> None:
+    """#270's review: a history read may take the bridge up to 30 s, the other kinds
+    are quick - the default follows the kind, a caller's timeout wins."""
+    from mattermost_ai_agent_bus import requests
+
+    assert requests.default_timeout("history") == requests.HISTORY_SEC == 35.0
+    assert requests.default_timeout("file") == requests.default_timeout("header") == requests.REQUEST_SEC
+    assert requests.HISTORY_SEC > 30  # above the bridge's own read deadline
+
+
+async def test_request_itself_takes_the_kinds_default_timeout(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#270's delta check: not only `default_timeout` knows the kind's wait - the call
+    itself asks for it when the caller names none, and a caller's timeout wins."""
+    from mattermost_ai_agent_bus import requests
+
+    seen: list[str] = []
+    real = requests.default_timeout
+
+    def spy(kind: str) -> float:
+        seen.append(kind)
+        return real(kind)
+
+    monkeypatch.setattr(requests, "default_timeout", spy)
+    bus, _ = await rig.agent("alice")
+
+    async def bridge(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "result": {}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=bridge)
+    try:
+        await requests.request(bus, "history")
+        await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
+    assert seen == ["history"]
+
+
+async def test_a_multi_part_answer_is_collected_until_its_last_part(rig: Rig) -> None:
+    """ADR-014 phase 5: an answer may come in parts (a file download, a long history
+    read). The call reads until a part says last and returns them in part order; a
+    gap, or a stream that never ends, is an error, never a silent short answer."""
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+
+    async def bridge(msg: Any) -> None:
+        body = json.loads(msg.data)
+        for part, last in ((1, False), (2, True)):
+            await rig.admin.publish(
+                f"deliver.{bus.name}.req.{body['request']}",
+                json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                            "part": part, "last": last, "result": {"part": part}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=bridge)
+    try:
+        out = await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
+    assert out == {"parts": [{"part": 1}, {"part": 2}]}
+
+
+async def test_a_part_gap_or_a_missing_last_is_an_error(rig: Rig) -> None:
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+
+    async def gap(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "part": 2, "last": True, "result": {}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=gap)
+    try:
+        with pytest.raises(requests.RequestError, match="expected 1"):
+            await requests.request(bus, "history", timeout=5)
+    finally:
+        await sub.unsubscribe()
+
+    async def never_last(msg: Any) -> None:
+        body = json.loads(msg.data)
+        await rig.admin.publish(
+            f"deliver.{bus.name}.req.{body['request']}",
+            json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                        "part": 1, "last": False, "result": {}}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=never_last)
+    try:
+        with pytest.raises(requests.RequestError, match="stopped after part 1"):
+            await requests.request(bus, "history", timeout=1)
+    finally:
+        await sub.unsubscribe()
+
+
+async def test_an_answer_over_the_part_or_byte_cap_is_an_error(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#270's review: one request, one deadline, and a cap on how many parts and
+    bytes an answer may add up to - a bridge that never says last must not make the
+    session read forever."""
+    from mattermost_ai_agent_bus import requests
+
+    bus, _ = await rig.agent("alice")
+
+    async def too_many(msg: Any) -> None:
+        body = json.loads(msg.data)
+        for part in range(1, 6):
+            await rig.admin.publish(
+                f"deliver.{bus.name}.req.{body['request']}",
+                json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                            "part": part, "last": False, "result": part}).encode())
+
+    monkeypatch.setattr(requests, "MAX_PARTS", 3)
+    sub = await rig.admin.subscribe("req.>", cb=too_many)
+    try:
+        with pytest.raises(requests.RequestError, match="more than 3 parts"):
+            await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
+
+    monkeypatch.setattr(requests, "MAX_TOTAL", 40)
+    monkeypatch.setattr(requests, "FILE_TOTAL", 40)  # plan B piece 8: the kind "file" has its own cap
+
+    async def too_big(msg: Any) -> None:
+        body = json.loads(msg.data)
+        for part in (1, 2):
+            await rig.admin.publish(
+                f"deliver.{bus.name}.req.{body['request']}",
+                json.dumps({"v": 1, "request": body["request"], "kind": body["kind"],
+                            "part": part, "last": part == 2,
+                            "result": "x" * 30}).encode())
+
+    sub = await rig.admin.subscribe("req.>", cb=too_big)
+    try:
+        with pytest.raises(requests.RequestError, match="file answer is larger than its kind may be"):
+            await requests.request(bus, "file", timeout=5)
+    finally:
+        await sub.unsubscribe()
 
 # --- #274: names without a prefix, and the reserved tokens (RT-6.36 step 8) ----------------------
 

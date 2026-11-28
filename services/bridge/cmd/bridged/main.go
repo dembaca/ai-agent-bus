@@ -28,11 +28,14 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/agentbots"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/commands"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/files"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/history"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/permission"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/reader"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
@@ -89,14 +92,72 @@ func run(log *slog.Logger) error {
 	}
 	h := &health{}
 	var wg sync.WaitGroup
+	permissionDMs := false // set once the permission handler is wired (plan B piece 10)
+	// Plan B's switches per channel, as the login service writes them from the channel
+	// directory (RT-6.39 step 5), through the bridge's own consumer bridge_planb made at
+	// every start: the mirror reads piece 6 (asks, RT-6.11) and piece 7 (replies and
+	// reactions to a person's post, RT-6.42 step 13), piece 4 decides how a person's post
+	// binds (inbound.ProofPiece, #266), and pieces 5, 9 and 12 read them too.
+	planb := &presence.Switches{}
+	// Plan B piece 9 (piece9.go): the agents' bots show their status, and the
+	// crown holder's header line is written with its own bot; nil without
+	// the agents' own bots.
+	p9 := newPiece9(cfg, log, client, bots, snapshot, planb)
 	// The request scaffold (ADR-014 phase 5): requests on <req>.<kind>.<agent>
-	// get this phase's "not built" answer on deliver.<agent>.req.<request id>.
-	// A lost message fails the request; the handler retries a refused
-	// subscription once a minute and only reports why it is not answering, so
-	// an image rolled out before the lab's NATS rights leaves requests
-	// unanswered and never stops the bridge; /healthz names the failure.
+	// get this phase's "not built" answer on deliver.<agent>.req.<request id>
+	// until a piece is wired in; piece 5 answers the history read and piece 8
+	// the files. A lost
+	// message fails the request; the handler retries a refused subscription
+	// once a minute and only reports why it is not answering, so an image
+	// rolled out before the lab's NATS rights leaves requests unanswered and
+	// never stops the bridge; /healthz names the failure.
 	if cfg.ReqPrefix != "" {
-		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix}
+		handlers := p9.handlers()
+		// Plan B piece 10 (RT-6.13): a tool permission prompt is DMed to the agent's
+		// responsible human, with the agent's own bot when it has one, else the
+		// bridge bot; the human's reply or reaction there goes back over NATS on
+		// <bus>.hu.dm.<agent>.<anchor token>. A proof of the binding in a home with
+		// piece 4 on needs the admin token (without it, no prompt is sent there).
+		// Whose request it is and whom it may reach come from the login service's
+		// attestations of the agents, read through the bridge's own consumer.
+		attests := &presence.Attestations{Now: snapshot.ServerNow}
+		ar := &presence.AttestReader{Log: log, Deliver: cfg.Deliver + ".attest", Stream: "PRESENCE", Into: attests}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := ar.Run(ctx, nc); err != nil && ctx.Err() == nil {
+				log.Error("bridge: the attestations stopped", "error", err)
+			}
+		}()
+		perm := &permission.Handler{Log: log, Homes: cfg.Homes, Switches: planb, Accounts: accounts,
+			Bridge: client, Publisher: inbound.Confirmed{NC: nc}, BusPrefix: cfg.BusPrefix,
+			Presence: snapshot, Attest: attests}
+		if cfg.AdminToken != "" {
+			perm.Users = mm.New(cfg.MMURL, cfg.AdminToken)
+		}
+		if bots != nil {
+			perm.Bots = permissionBots{bots}
+		}
+		handlers["permission"] = perm.Piece
+		permissionDMs = true
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			perm.Run(ctx)
+		}()
+		hist := &history.Handler{Log: log, Team: cfg.MMTeam, Presence: snapshot,
+			Switches: planb, People: accounts}
+		if bots != nil {
+			hist.Bots = bots
+		}
+		handlers["history"] = hist.Piece
+		fh := &files.Handler{Log: log, Team: cfg.MMTeam, Presence: snapshot,
+			Switches: planb, People: accounts}
+		if bots != nil {
+			fh.Bots = bots
+		}
+		handlers["file"] = fh.Piece
+		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix, Handlers: handlers}
 		h.requests = rq
 		wg.Add(1)
 		go func() {
@@ -106,18 +167,26 @@ func run(log *slog.Logger) error {
 			}
 		}()
 	}
-	// Plan B's switches per channel, as the login service writes them from the
-	// channel directory (RT-6.39 step 5), through the bridge's own consumer
-	// bridge_planb made at every start: piece 4 decides how a person's post
-	// binds (inbound.ProofPiece, #266).
-	planb := &presence.Switches{}
 	pr := &presence.Reader{Log: log, Deliver: cfg.Deliver + ".presence", Into: snapshot}
 	pbr := &presence.PlanBReader{Log: log, Deliver: cfg.Deliver + ".planb", Stream: "PRESENCE", Into: planb}
+	pr.Shown = p9.shownStore()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		if err := pbr.Run(ctx, nc); err != nil && ctx.Err() == nil {
 			log.Error("bridge: plan B switches stopped", "error", err)
+		}
+	}()
+	// The memberships the history read checks (RT-6.37, RT-6.42 step 11),
+	// through the bridge's own consumer made at every start: the operator's
+	// presence consumer carries only presence.*.*, and a restart must have
+	// every membership the stream still holds.
+	mr := &presence.MembersReader{Log: log, Deliver: cfg.Deliver + ".members", Stream: "PRESENCE", Into: snapshot}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := mr.Run(ctx, nc); err != nil && ctx.Err() == nil {
+			log.Error("bridge: the memberships stopped", "error", err)
 		}
 	}()
 	wg.Add(1)
@@ -134,7 +203,8 @@ func run(log *slog.Logger) error {
 		cid := channelOnce(cfg.MMTeam, home, client)
 		lk := &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
 			Window: 90 * time.Second, TTL: 30 * time.Second}
-		mr := &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv, Links: lk}
+		mr := &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv, Links: lk,
+			Switches: planb, People: client, Directory: accounts, Targets: client}
 		if bots != nil {
 			mr.Bots = bots
 		}
@@ -183,11 +253,15 @@ func run(log *slog.Logger) error {
 	// the account's binding, which only a system admin's token can compare
 	// (auth_service, auth_data; RT-6.42 step 3, #266): the admin bot's. Without
 	// it, every person of such a home goes out under "-" (one warning when the
-	// bridge first meets one); with piece 4 off, the record alone binds.
+	// bridge first meets one); with piece 4 off, the record alone binds. The
+	// signal names pieces 6 and 7 while each is on (RT-6.11 step 7, RT-6.42 step 13).
 	in.Switches = planb
 	if cfg.AdminToken != "" {
 		in.Users = mm.New(cfg.MMURL, cfg.AdminToken)
 	}
+	// The signal names piece 10 (RT-6.13) while its switch is on, once the
+	// permission handler above is wired.
+	in.PermissionDMs = permissionDMs
 	if bots != nil {
 		in.BotPrefix = cfg.BotPrefix
 	}
@@ -214,6 +288,7 @@ func run(log *slog.Logger) error {
 			bots.RunRecords(ctx, agentbots.RecordEvery)
 		}()
 	}
+	p9.run(ctx, &wg, nc)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", h)

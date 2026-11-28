@@ -300,6 +300,8 @@ def wire_nats(port: Any) -> None:
     for a hosted session (hosted._load_server)."""
     port.card_source = _presence_card
     port.ask_source = _open_asks
+    port.unmention = _unmention_text  # plan B piece 6: a post that goes on to Mattermost (RT-6.11)
+    port.on_permission = _permission_answer  # plan B piece 10: the verdict over NATS (RT-6.13)
     asks.on_change = port.asks_changed
     stats.nats_publish = port.publish_stats
 
@@ -1512,6 +1514,12 @@ async def _unmention(client: ChatPort, text: str) -> tuple[str, list[str]]:
     out = _in_prose(text, lambda p: _MENTION_RE.sub(
         lambda m: m.group(1) if m.group(1) in person else m.group(0), p))
     return out, sorted(set(person.values())) + everyone
+
+
+async def _unmention_text(client: Any, text: str) -> str:
+    """_unmention's text alone, with `client`'s lookup: plan B piece 6 checks a post that goes on
+    to Mattermost again with the Mattermost adapter's (NatsPort._for_mattermost, RT-6.11)."""
+    return (await _unmention(client, text))[0]
 
 
 async def _unasked(client: ChatPort, text: str, uid: str) -> list[str]:
@@ -3347,6 +3355,15 @@ async def _permission_request(params: dict[str, Any]) -> None:
     permission.note("request received", rid, tool)  # RT-6.13 step 6: the relay log
     try:
         client = _get_client()
+        port = compose.nats_port_of(client)
+        if port is not None and port.piece10():
+            await _permission_over_nats(port, params, rid, tool)
+            return
+        if port is not None and port.permission_undecided():
+            # RT-6.13 step 7: a switch that cannot be told off keeps the terminal, never Mattermost.
+            log.info("permission prompt %s stays in the terminal: plan B's switch is not read", rid)
+            permission.note("not relayed", rid, tool, "plan B switch not read")
+            return
         responsible, _ = await _responsible_and_trusted(client)
         trusted = await client.trusted_humans()
         to = next((i for i, n in trusted.items()
@@ -3372,6 +3389,94 @@ async def _permission_request(params: dict[str, Any]) -> None:
         permission.note("posting failed", rid, tool, type(exc).__name__)
 
 
+async def _permission_over_nats(port: Any, params: dict[str, Any], rid: str, tool: str) -> None:
+    """Plan B piece 10 (RT-6.13 step 7): the bridge DMs the prompt to the responsible human,
+    the session makes no Mattermost call. Without a bridge whose fresh signal names piece 10,
+    or without the responsible human among the attested trusted ones, nothing goes out: the
+    terminal stays, never a fallback to Mattermost. A failed request raises to the caller."""
+    if not port.permission_bridge():
+        log.warning("permission prompt %s stays in the terminal: no fresh signal of the bridge relays "
+                    "prompts (plan B piece 10)", rid)
+        permission.note("not relayed", rid, tool, "no bridge for piece 10")
+        return
+    target = port.permission_target(config.env("CB_RESPONSIBLE_HUMAN"))
+    if target is None:
+        log.info("permission prompt %s stays in the terminal: the responsible human is not attested", rid)
+        permission.note("not relayed", rid, tool, "responsible human not attested")
+        return
+    anchor, name = target
+    text = permission.prompt(params)
+    stats.record("post", chars=len(text), w="other")
+    post_id = await port.permission_prompt(rid, anchor, name, text)
+    _relay.add(rid, post_id, tool, to=anchor, name=name)
+    permission.note("dm posted", rid, tool, "over the bridge")
+
+
+async def _permission_line(port: Any, rid: str, text: str) -> None:
+    """A line under a prompt the bridge DMed, which closes it there (RT-6.13 step 7); a failure
+    is logged, never raised."""
+    stats.record("post", chars=len(text), w="other")  # RT-6.9: the server's own post
+    try:
+        await port.permission_note(rid, text, close=True)
+    except Exception as exc:  # noqa: BLE001 — a note, never the verdict
+        log.info("permission prompt %s: no line under it: %s", rid, type(exc).__name__)
+
+
+async def _permission_answer(anchor: str, message: natsbus.PersonMessage) -> None:
+    """A person's direct message the bridge carried (plan B piece 10, RT-6.13 step 7): a verdict
+    only from the very person the prompt went to, one of this session's attested trusted
+    anchors who approves (RT-6.42 step 9), within the prompt's 24 h; anything else approves
+    nothing and reaches no agent. Never a Mattermost call."""
+    port = compose.nats_port_of(_get_client())
+    if port is None:
+        return
+    if message.kind == "reaction":
+        rid = _relay.for_post(message.mm)
+        if rid is None:
+            permission.note("unknown id", "", reason="a reaction on a post that is no open prompt")
+            return
+        behavior = {"yes": "allow", "no": "deny"}.get(asks.answer_of(message.emoji or "") or "")
+        if behavior is None:
+            return  # another emoji on a prompt: a remark
+    elif message.kind == "post":
+        parsed = permission.parse(message.text)
+        if parsed is None:
+            permission.note("not a verdict", "", reason="a direct message that is no yes or no with an id")
+            return
+        behavior, rid = parsed
+    else:
+        return  # an unreaction withdraws nothing: the first answer went to Claude Code
+    pending = _relay.get(rid)
+    if pending is None or not pending.to:
+        permission.note("unknown id", rid, reason=f"{behavior} for an id that is not open")
+        await _permission_line(port, rid, f"No open permission prompt `{rid}`: answered in the terminal, "
+                                          "or more than 24 h old.")
+        return
+    if anchor != pending.to:
+        permission.note("verdict refused", rid, pending.tool, "not the responsible human")
+        return
+    if (message.kind == "post" and message.mm_root is not None and message.mm_root != pending.post_id) \
+            or (message.kind == "reaction" and message.mm != pending.post_id):
+        # A reply counts in the prompt's own thread only. A top-level `yes <id>` names the id
+        # alone: one bridge serves the home, and it carries such a post only from the DM of
+        # that very prompt (RT-6.13 step 7).
+        permission.note("verdict refused", rid, pending.tool, "not under the prompt")
+        return
+    if not port.permission_approves(anchor):
+        permission.note("verdict refused", rid, pending.tool, "not a trusted approver")
+        return
+    if _relay.take(rid) is None:  # expired since the check above
+        return
+    await _pusher.verdict(rid, behavior)
+    who = pending.name or "?"
+    permission.note("verdict sent", rid, pending.tool,
+                    f"{behavior} by {who}" + ("" if _pusher.connection is not None else ", no connection"))
+    word = f"{a2a.symbol(Mark.ALLOWED)} allowed" if behavior == "allow" else f"{a2a.symbol(Mark.DENIED)} denied"
+    await _permission_line(port, rid, f"{word} by {who} · `{rid}` sent to Claude Code; it applies unless the "
+                                      "terminal answered first.")
+    _done_typing()
+
+
 async def _push_intercept(item: dict[str, Any]) -> bool:
     """A trusted human's verdict on a relayed prompt goes to Claude Code, not
     to the agent (RT-6.13). Anyone else's `yes <id>` is data like any post, and so is
@@ -3383,8 +3488,8 @@ async def _push_intercept(item: dict[str, Any]) -> bool:
         client = _get_client()
         if item.get("kind") == "reaction":
             rid = _relay.for_post(item.get("ask") or "")
-            if rid is None:
-                return False
+            if rid is None or (open_ := _relay.get(rid)) is None or open_.to:
+                return False  # a prompt the bridge DMed answers over NATS alone (plan B piece 10)
             behavior = {"yes": "allow", "no": "deny"}.get(item.get("answer") or "")
             if behavior is None:
                 return True  # another emoji on a prompt: a remark, no wake-up
@@ -3393,6 +3498,10 @@ async def _push_intercept(item: dict[str, Any]) -> bool:
             if parsed is None:
                 return False
             behavior, rid = parsed
+            if (open_ := _relay.get(rid)) is not None and open_.to:
+                # A prompt the bridge DMed (plan B piece 10): its verdict comes over NATS from
+                # the person it went to, never from a post read on Mattermost (RT-6.13 step 7).
+                return False
             if rid not in _relay:  # never sent, answered, or more than 24 h old
                 if item.get("kind") != "dm":
                     return False  # in a channel it may be another agent's prompt
@@ -3430,6 +3539,11 @@ async def permissions_obsolete(client: ChatPort) -> None:
     uid = ""
     for rid, pending in _relay.take_all().items():
         permission.note("closed at turn end", rid, pending.tool, "answered in the terminal")
+        if pending.to:  # plan B piece 10: the bridge writes the line, never Mattermost (RT-6.13 step 7)
+            if (port := compose.nats_port_of(client)) is not None:
+                await _permission_line(port, rid, f"{a2a.symbol(Mark.DESKTOP)} Answered in the terminal · "
+                                                  f"`{rid}`: this prompt is closed.")
+            continue
         try:
             uid = uid or (await client.get_me()).id
             text = f"{a2a.symbol(Mark.DESKTOP)} Answered in the terminal · `{rid}`: this prompt is closed."

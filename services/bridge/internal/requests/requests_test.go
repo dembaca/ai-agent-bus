@@ -170,11 +170,11 @@ func TestAPiecesResultIsTheAnswer(t *testing.T) {
 	srv, nc := start(t)
 	ch := watch(t, nc)
 	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
-		Handlers: map[string]Piece{"history": func(_ context.Context, agent string, req Request) (Reply, error) {
+		Handlers: map[string]Piece{"history": func(_ context.Context, agent string, req Request) ([]Reply, error) {
 			if agent != "alice" || req.Request != goodID || !strings.Contains(string(req.Payload), "anchor") {
 				t.Errorf("the piece got %q, %+v", agent, req)
 			}
-			return Reply{Result: json.RawMessage(`{"messages":[{"id":"m1"}]}`), Part: 2, Last: false}, nil
+			return []Reply{{Result: json.RawMessage(`{"messages":[{"id":"m1"}]}`)}}, nil
 		}}})
 	// not built is the scaffold's answer only
 	publish(t, nc, "req.file.alice",
@@ -188,7 +188,7 @@ func TestAPiecesResultIsTheAnswer(t *testing.T) {
 		t.Fatalf("a kind without a piece: %+v", a)
 	}
 
-	// a piece's own part and last
+	// one part is part 1 and the last, whatever the request said
 	publish(t, nc, "req.history.alice",
 		fmt.Sprintf(`{"v":1,"request":%q,"kind":"history","part":2,"last":false,"payload":{"anchor":"x"}}`, goodID))
 	m = want(t, ch, time.Second)
@@ -196,34 +196,34 @@ func TestAPiecesResultIsTheAnswer(t *testing.T) {
 	if err := json.Unmarshal(m.Data, &a); err != nil {
 		t.Fatal(err)
 	}
-	if a.Error != "" || string(a.Result) != `{"messages":[{"id":"m1"}]}` || a.Part != 2 || a.Last {
+	if a.Error != "" || string(a.Result) != `{"messages":[{"id":"m1"}]}` || a.Part != 1 || !a.Last {
 		t.Fatalf("the piece's answer: %s", m.Data)
 	}
 }
 
-// A piece sends its answer in parts and marks the last one itself: part 1 is
-// not the last, part 2 is, and the bridge takes both from the piece.
-func TestAPieceMarksTheLastPartItself(t *testing.T) {
+// A piece answers in parts; the bridge numbers them 1..n and marks the last,
+// so a caller that reads until `last` has the whole answer.
+func TestTheBridgeNumbersAPiecesParts(t *testing.T) {
 	srv, nc := start(t)
 	ch := watch(t, nc)
 	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
-		Handlers: map[string]Piece{"file": func(_ context.Context, _ string, req Request) (Reply, error) {
-			return Reply{Result: json.RawMessage(fmt.Sprintf(`{"part":%d}`, req.Part)),
-				Part: req.Part, Last: req.Part == 2}, nil
+		Handlers: map[string]Piece{"file": func(context.Context, string, Request) ([]Reply, error) {
+			return []Reply{{Result: json.RawMessage(`{"part":1}`)},
+				{Result: json.RawMessage(`{"part":2}`)}}, nil
 		}}})
-	for _, part := range []int{1, 2} {
-		id := fmt.Sprintf("0123456789abc%03d", part)
-		publish(t, nc, "req.file.alice",
-			fmt.Sprintf(`{"v":1,"request":%q,"kind":"file","part":%d,"last":false,"payload":{}}`, id, part))
+	publish(t, nc, "req.file.alice", body("file", goodID))
+	for part := 1; part <= 2; part++ {
 		m := want(t, ch, time.Second)
 		var a answer
 		if err := json.Unmarshal(m.Data, &a); err != nil {
 			t.Fatal(err)
 		}
-		if a.Part != part || a.Last != (part == 2) {
+		if a.Part != part || a.Last != (part == 2) ||
+			string(a.Result) != fmt.Sprintf(`{"part":%d}`, part) {
 			t.Fatalf("part %d: %s", part, m.Data)
 		}
 	}
+	none(t, ch, 100*time.Millisecond)
 }
 
 // A piece's error is the answer's error, and there is no result beside it.
@@ -231,8 +231,8 @@ func TestAPiecesErrorIsTheAnswer(t *testing.T) {
 	srv, nc := start(t)
 	ch := watch(t, nc)
 	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
-		Handlers: map[string]Piece{"history": func(context.Context, string, Request) (Reply, error) {
-			return Reply{Result: json.RawMessage(`{"ignored":true}`)}, errors.New("no anchor in the request")
+		Handlers: map[string]Piece{"history": func(context.Context, string, Request) ([]Reply, error) {
+			return []Reply{{Result: json.RawMessage(`{"ignored":true}`)}}, errors.New("no anchor in the request")
 		}}})
 
 	publish(t, nc, "req.history.alice", body("history", goodID))
@@ -241,7 +241,7 @@ func TestAPiecesErrorIsTheAnswer(t *testing.T) {
 	if err := json.Unmarshal(m.Data, &a); err != nil {
 		t.Fatal(err)
 	}
-	if a.Error != "no anchor in the request" || len(a.Result) != 0 {
+	if a.Error != "no anchor in the request" || len(a.Result) != 0 || a.Part != 1 || !a.Last {
 		t.Fatalf("the piece's error: %s", m.Data)
 	}
 }
@@ -314,9 +314,9 @@ func TestAFullQueueAnswersBusy(t *testing.T) {
 	var once sync.Once
 	free := func() { once.Do(func() { close(release) }) }
 	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req", Rate: 1000, // the queue, not the rate
-		Handlers: map[string]Piece{"history": func(context.Context, string, Request) (Reply, error) {
+		Handlers: map[string]Piece{"history": func(context.Context, string, Request) ([]Reply, error) {
 			<-release
-			return Reply{Result: json.RawMessage(`{}`), Part: 1, Last: true}, nil
+			return []Reply{{Result: json.RawMessage(`{}`)}}, nil
 		}}})
 	t.Cleanup(free) // before the handler's own cleanup: the workers must be able to return
 
@@ -442,5 +442,28 @@ func TestTheHandlerAnswersItsOwnPrefix(t *testing.T) {
 	m := want(t, ch, time.Second)
 	if want := "deliver.alice.req." + goodID; m.Subject != want {
 		t.Fatalf("answer on %s, want %s", m.Subject, want)
+	}
+}
+
+// RT-6.13, plan B piece 10: "permission" is a scaffold kind; without a piece
+// it gets the "not built" answer, with one its result is the answer.
+func TestRT613PermissionIsAScaffoldKind(t *testing.T) {
+	srv, nc := start(t)
+	ch := watch(t, nc)
+	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
+		Handlers: map[string]Piece{"permission": func(_ context.Context, agent string, req Request) ([]Reply, error) {
+			return []Reply{{Result: json.RawMessage(`{"v":1,"posted":true}`)}}, nil
+		}}})
+	publish(t, nc, "req.permission.alice", body("permission", goodID))
+	m := want(t, ch, time.Second)
+	var a answer
+	if err := json.Unmarshal(m.Data, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != "permission" || a.Error != "" || string(a.Result) != `{"v":1,"posted":true}` {
+		t.Fatalf("the permission answer: %s", m.Data)
+	}
+	if !kindOK("permission") || kindOK("permissions") {
+		t.Fatal("kindOK")
 	}
 }

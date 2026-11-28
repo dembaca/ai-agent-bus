@@ -105,8 +105,11 @@ type Bridge struct {
 	Users interface {
 		GetUser(ctx context.Context, userID string) (mm.User, error)
 	}
-	// Switches says in which homes plan B piece 4 is on; nil: in none, and
-	// every home carries by the account record alone, as before #266.
+	// Switches are plan B's per channel (presence.Switches): in which homes
+	// piece 4 is on (nil: in none, and every home carries by the account record
+	// alone, as before #266), and which pieces the signal names: piece 6
+	// (asks, RT-6.11 step 7, ask.go) and piece 7 (replies and reactions to a
+	// person's post, RT-6.42 step 13, target.go); nil names none.
 	Switches Switches
 	NATS     Publisher
 	Store    Store
@@ -118,7 +121,10 @@ type Bridge struct {
 	// BotPrefix is the agents' bot prefix, set only while the mirror posts
 	// under the agents' own bots (RT-6.44): the signal names it then.
 	BotPrefix string
-
+	// PermissionDMs is set while the bridge answers permission requests
+	// (RT-6.13, plan B piece 10): the signal names piece 10 then, in a home
+	// where its switch is on.
+	PermissionDMs                                  bool
 	Reach, Margin, SignalEvery, SignalValid, Retry time.Duration
 
 	me     string
@@ -290,7 +296,9 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 		Exp    int64  `json:"exp"`
 		// only while on: a host before that release refuses the field
 		BotPrefix string `json:"bot_prefix,omitempty"`
-	}{1, h.name, true, now.Unix(), now.Add(b.SignalValid).Unix(), b.BotPrefix})
+		// the same: only while a piece is on, for a host to wait for (RT-6.42 step 7)
+		Pieces []int `json:"pieces,omitempty"`
+	}{1, h.name, true, now.Unix(), now.Add(b.SignalValid).Unix(), b.BotPrefix, b.pieces(h.name)})
 	if err == nil {
 		err = b.NATS.Publish("presence.bridge."+h.name+".v1", body)
 	}
@@ -301,6 +309,27 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 		// only with nothing queued: a queued event may be older than the slack
 		b.guard(h, b.advance(ctx, h, now.UnixMilli()+b.offset-liveSlack.Milliseconds()))
 	}
+}
+
+// pieces are the plan B pieces whose bridge half runs for the home, each
+// while its switch is on there: piece 6 (asks, RT-6.11 step 7) and piece 7
+// (replies and reactions to a person's post, RT-6.42 step 13), and piece 10
+// (a tool permission prompt's DM, RT-6.13) only while PermissionDMs says its
+// handler is wired.
+func (b *Bridge) pieces(home string) []int {
+	if b.Switches == nil {
+		return nil
+	}
+	var on []int
+	for _, n := range []int{6, 7} { // asks; replies and reactions to a person's post
+		if b.Switches.On(n, home) {
+			on = append(on, n)
+		}
+	}
+	if b.PermissionDMs && b.Switches.On(10, home) { // a permission prompt's DM
+		on = append(on, 10)
+	}
+	return on
 }
 
 // liveSlack is how far behind Mattermost's clock a connected home's watermark
@@ -691,10 +720,20 @@ func (b *Bridge) anchorOf(ctx context.Context, h *home, u mm.User) (string, erro
 	if err != nil {
 		return "", err
 	}
+	return ProvenAnchor(b.Anchors, u.ID, a), nil
+}
+
+// ProvenAnchor is the anchor of the account a (read with an admin token)
+// while the proof holds, "" otherwise: no bot, not deactivated, no guest, and
+// logging in as the binding was proven (userID is the account asked about).
+// anchorOf and the permission DMs (RT-6.13, plan B piece 10) share this rule.
+func ProvenAnchor(acc interface {
+	Bound(userID, authService, authData string) string
+}, userID string, a mm.User) string {
 	if a.IsBot || a.Deactivated || a.Guest {
-		return "", nil
+		return ""
 	}
-	return b.Anchors.Bound(u.ID, a.AuthService, a.AuthData), nil
+	return acc.Bound(userID, a.AuthService, a.AuthData)
 }
 
 // needsProof says whether plan B piece 4 is on in h, so that a post binds by

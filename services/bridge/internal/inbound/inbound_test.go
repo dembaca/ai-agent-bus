@@ -1095,6 +1095,104 @@ func TestOwnerIsTheOneAccountWhoseRecordBindsTheAnchor(t *testing.T) {
 	}
 }
 
+// ADR-014 phase 5 piece 5: Record is the record itself, which a history answer
+// carries beside a person's post, and false for an account that is unbound or
+// has none.
+func TestRecordIsTheAccountsNewestRecord(t *testing.T) {
+	const uid = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	rec := []byte(`{"v":1,"account":"` + uid + `","anchor":"alice","name":"Alice",` +
+		`"approver":true,"token_iat":10,"iat":11,"exp":9999999999}`)
+	acc := newAccounts()
+	acc.one("presence.account.mattermost."+uid+".v1", rec)
+	if _, ok := acc.Record(uid); ok {
+		t.Fatal("a record before the consumer caught up")
+	}
+	acc.caught()
+	got, ok := acc.Record(uid)
+	if !ok || got.Anchor != "alice" || got.Name != "Alice" || !got.Approver ||
+		got.TokenIat != 10 || got.Iat != 11 || got.Exp != 9999999999 {
+		t.Fatalf("the record: %+v %v", got, ok)
+	}
+	if _, ok := acc.Record("bbbbbbbbbbbbbbbbbbbbbbbbbb"); ok {
+		t.Fatal("a record for an account without one")
+	}
+	// unbound: the record is no person's any more
+	acc.one("presence.account.mattermost."+uid+".v1",
+		[]byte(`{"v":1,"account":"`+uid+`","anchor":null,"name":"Alice","approver":true,`+
+			`"token_iat":12,"iat":12,"exp":9999999999}`))
+	if _, ok := acc.Record(uid); ok {
+		t.Fatal("an unbound account's record")
+	}
+}
+
+type allOn map[int]bool
+
+func (a allOn) On(piece int, _ string) bool { return a[piece] }
+func (allOn) CaughtUp() bool                { return true }
+
+// RT-6.11 step 7, plan B piece 6: the signal names piece 6 only while its
+// switch is on, so a host sends an ask over NATS only to a bridge that posts it.
+func TestTheSignalNamesPiece6OnlyWhileItsSwitchIsOn(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		r := newRigWith(t, nil, func(b *Bridge) { b.Switches = allOn{6: on} })
+		r.connect(1)
+		var sig map[string]any
+		if err := json.Unmarshal(waitSignal(t, r.sig).Data, &sig); err != nil {
+			t.Fatal(err)
+		}
+		got, has := sig["pieces"]
+		if list, _ := got.([]any); has != on || (on && (len(list) != 1 || list[0] != float64(6))) {
+			t.Fatalf("on %v: signal %v", on, sig)
+		}
+	}
+}
+
+// RT-6.42 step 13, plan B piece 7: the signal names piece 7 beside piece 6,
+// each only while its switch is on.
+func TestTheSignalNamesPiece7OnlyWhileItsSwitchIsOn(t *testing.T) {
+	for _, tc := range []struct {
+		on   allOn
+		want []any
+	}{{allOn{7: true}, []any{float64(7)}}, {allOn{6: true, 7: true}, []any{float64(6), float64(7)}}, {allOn{}, nil}} {
+		r := newRigWith(t, nil, func(b *Bridge) { b.Switches = tc.on })
+		r.connect(1)
+		var sig map[string]any
+		if err := json.Unmarshal(waitSignal(t, r.sig).Data, &sig); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := sig["pieces"].([]any)
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Fatalf("on %v: signal %v", tc.on, sig)
+		}
+	}
+}
+
+// RT-6.13, plan B piece 10: the signal names piece 10 only while its switch is
+// on in the home AND the permission handler is wired (PermissionDMs).
+func TestTheSignalNamesPiece10OnlyWhileSwitchAndHandlerAreOn(t *testing.T) {
+	for _, tc := range []struct {
+		on      allOn
+		handler bool
+		want    []any
+	}{
+		{allOn{10: true}, true, []any{float64(10)}},
+		{allOn{6: true, 7: true, 10: true}, true, []any{float64(6), float64(7), float64(10)}},
+		{allOn{10: true}, false, nil},
+		{allOn{}, true, nil},
+	} {
+		r := newRigWith(t, nil, func(b *Bridge) { b.Switches, b.PermissionDMs = tc.on, tc.handler })
+		r.connect(1)
+		var sig map[string]any
+		if err := json.Unmarshal(waitSignal(t, r.sig).Data, &sig); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := sig["pieces"].([]any)
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Fatalf("on %v handler %v: signal %v", tc.on, tc.handler, sig)
+		}
+	}
+}
+
 // A person's post by the account uid.
 func postBy(uid, id string, at int64) *mmws.Posted {
 	return &mmws.Posted{PostID: id, UserID: uid, ChannelID: cid, Message: "go ahead", CreateAt: at, UpdateAt: at}

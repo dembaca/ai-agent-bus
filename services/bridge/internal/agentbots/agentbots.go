@@ -8,9 +8,11 @@
 // that the login service's account record binds to the agent's presence
 // owner, and marked as the bridge's in its description. Its token is minted
 // at its first use after each start and kept in memory only; the bot's
-// earlier tokens of the bridge are revoked then. Whatever fails, the caller
-// gets nil and posts with the one bridge bot, as before. The sweep
-// (sweep.go) disables the bots of agents idle longer than the keep time.
+// earlier tokens of the bridge are revoked then. Whatever fails, Bot gets nil
+// and the caller posts with the one bridge bot, as before; Client, which a read
+// in the agent's name asks for, answers the error instead and never falls back.
+// The sweep (sweep.go) disables the bots of agents idle longer than the keep
+// time.
 package agentbots
 
 import (
@@ -168,9 +170,35 @@ func (b *Bots) owner(name string) string {
 	return b.Owners.Owner(ownerAnchor(info.Owner))
 }
 
+// NotInChannel is a read's refusal: the agent's bot is not a member of the
+// channel named, and a read never joins it there (ADR-014 phase 5, piece 5).
+type NotInChannel struct{ Channel string }
+
+func (e *NotInChannel) Error() string { return "the agent's bot is not in " + e.Channel }
+
 // Bot returns a poster for name's own bot, joined to home, or nil: the
 // caller then posts with the bridge bot (RT-6.44).
 func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
+	c, err := b.client(ctx, name, home, true)
+	if err != nil {
+		return nil
+	}
+	return c
+}
+
+// Client returns name's own bot as the client of its token, and the error why
+// it cannot be had: no account record binds its owner, an admin disabled it, a
+// mint failed, a failure before is still within the backoff, or the bot is not
+// a member of channel. It never joins the bot to channel and never falls back
+// to the bridge bot: a read in the agent's name has no other token, and joining
+// is the posting path's (Bot, mirror.Sink) alone (ADR-014 phase 5, RT-6.44).
+func (b *Bots) Client(ctx context.Context, name, channel string) (*mm.Client, error) {
+	return b.client(ctx, name, channel, false)
+}
+
+// client is Bot and Client: join true joins the bot to channel and caches it;
+// false checks the membership and never joins.
+func (b *Bots) client(ctx context.Context, name, channel string, join bool) (*mm.Client, error) {
 	e := b.entry(name)
 	e.posted.Store(b.now().UnixNano())
 	e.mu.Lock()
@@ -183,7 +211,7 @@ func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
 			e.noOwner = true
 			b.Log.Info("agentbots: no account record binds the agent's owner; the bridge bot posts for it", "agent", name)
 		}
-		return nil
+		return nil, errors.New("no account record binds the agent's owner")
 	}
 	e.noOwner = false
 	if e.client != nil && e.owner != owner {
@@ -191,11 +219,11 @@ func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
 		e.client, e.joined = nil, map[string]bool{}
 		b.announce(name, nil, "") // the record of the earlier owner's bot must not stay
 	}
-	if e.client != nil && e.joined[home] {
-		return e.client
+	if e.client != nil && join && e.joined[channel] {
+		return e.client, nil
 	}
 	if !e.failed.IsZero() && b.now().Sub(e.failed) < b.backoff() {
-		return nil
+		return nil, fmt.Errorf("its bot failed before; trying again in %s", b.backoff().String())
 	}
 	if e.client == nil {
 		a, err := b.setUp(ctx, name, owner)
@@ -207,25 +235,36 @@ func (b *Bots) Bot(ctx context.Context, name, home string) mirror.Sink {
 				e.off = true
 				b.Log.Warn("agentbots: bot disabled by an admin, posting as the bridge bot", "agent", name)
 			}
-			return nil
+			return nil, err
 		}
 		if err != nil {
-			return b.fail(e, name, err)
+			return nil, b.fail(e, name, err)
 		}
 		e.off = false
 		tok, err := b.mint(ctx, a)
 		if err != nil {
-			return b.fail(e, name, err)
+			return nil, b.fail(e, name, err)
 		}
 		e.agent, e.owner, e.client = a, owner, mm.New(b.URL, tok).As(a.ID)
 		b.announce(name, &a, owner)
 	}
-	if err := b.Admin.JoinChannels(ctx, e.agent, []string{home}); err != nil {
-		return b.fail(e, name, fmt.Errorf("join %s: %w", home, err))
+	if join {
+		if err := b.Admin.JoinChannels(ctx, e.agent, []string{channel}); err != nil {
+			return nil, b.fail(e, name, fmt.Errorf("join %s: %w", channel, err))
+		}
+		e.joined[channel] = true
+	} else {
+		member, err := b.Admin.MemberOf(ctx, e.agent, channel)
+		switch {
+		case err != nil:
+			return nil, b.fail(e, name, fmt.Errorf("membership of %s: %w", channel, err))
+		case !member:
+			// no backoff: the bot may be added to the channel at any time
+			return nil, &NotInChannel{Channel: channel}
+		}
 	}
-	e.joined[home] = true
 	e.failed = time.Time{}
-	return e.client
+	return e.client, nil
 }
 
 // Unreact removes the reaction emoji of name's own bot from a post (RT-6.44):
@@ -277,10 +316,10 @@ func (b *Bots) Forget(name string) {
 	e.client, e.joined, e.failed = nil, map[string]bool{}, b.now()
 }
 
-func (b *Bots) fail(e *entry, name string, err error) mirror.Sink {
+func (b *Bots) fail(e *entry, name string, err error) error {
 	e.failed = b.now()
-	b.Log.Warn("agentbots: the bridge bot posts for this agent", "agent", name, "error", err)
-	return nil
+	b.Log.Warn("agentbots: the agent's bot is not available", "agent", name, "error", err)
+	return err
 }
 
 // ours is name's bot when it is an active bot with the bridge's mark for
