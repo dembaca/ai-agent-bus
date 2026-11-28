@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 
 WEEK_SEC = 7 * 86400
 DAY_SEC = 86400
-# Lines held at most: the stream keeps 500 per name and 64 MiB in all; a week's lines of a
+# Lines held at most: the stream keeps 500 per name and 1 GiB in all; a week's lines of a
 # large fleet fit, and a flood cannot grow the console's memory without bound.
 MAX_LINES = 50_000
 
