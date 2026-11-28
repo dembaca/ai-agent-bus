@@ -74,6 +74,17 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A NATS home comes back at once after a connection nats-py closed without telling**
+  (#221, #222, RT-6.36 step 2). nats-py 2.16 skips `disconnected_cb` and `closed_cb`
+  when its read loop meets a reset connection while a publish is still pending (a post
+  sent the moment the server died): its close writes the publish to the dead socket and
+  that error ends the close before the callbacks. The bus never woke its reconnect and
+  stayed on the dead client until a flush timed out (5 s, and only when a send came) or
+  the credential was renewed, the ~40 s the rig saw after a `restart`. The end of the
+  read loop with the client closed now wakes the reconnect as well. The rig's byte proxy
+  was not the cause: it refuses only while the nats-server is down, and passes the first
+  connection after a restart on at once.
+
 - **PA retried ask no longer spends its mention twice, and an Bundecodable lookup answer
   is no longer retriece 5'sd follow-upsr ever** (#24487, RT-6.42 step 11). AIn unknown Mattermost post
   id is asked of the bridge's mirror of an ask,

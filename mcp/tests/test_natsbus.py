@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -1914,6 +1915,50 @@ def test_tls_and_plain_servers_are_not_mixed() -> None:
         NatsSettings(servers=("tls://nats.example.org", "nats://127.0.0.1:4222"), home="home")
     assert _settings().tls_context() is None
     assert _settings(servers=("tls://nats.example.org",)).tls_context() is not None
+
+
+class ResettingServer(FakeServer):
+    """A NATS-looking server that counts the connections and can reset the newest one
+    (RST, as a peer whose process died with unread bytes leaves it)."""
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.writers: list[asyncio.StreamWriter] = []
+
+    async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.writers.append(writer)
+        await super()._serve(reader, writer)
+
+    def reset(self) -> None:
+        sock = self.writers[-1].get_extra_info("socket")
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))  # l_onoff 1, l_linger 0
+        self.writers[-1].transport.abort()
+
+
+async def test_a_connection_closed_without_its_callbacks_still_reconnects() -> None:
+    """#221/#222, RT-6.36 step 2: nats-py 2.16 can close a client without calling
+    `disconnected_cb` or `closed_cb`. When its read loop meets a reset connection while a
+    publish is still pending (a post sent the moment the server died), `_close` writes
+    that publish to the dead socket, the write's error ends `_close` before the callbacks,
+    and the read loop swallows it. The bus must reconnect all the same, promptly - before,
+    it stayed on the dead client until a flush timed out or the credential was renewed."""
+    async with ResettingServer() as srv:
+        bus = NatsBus(_settings(servers=(f"nats://127.0.0.1:{srv.port}",)), FakeLogin(), "alice",
+                      lambda e: None, connect_timeout=2, heartbeat_sec=3600)
+        await bus.start()
+        try:
+            nc = bus._nc
+            assert nc is not None and bus._connected and len(srv.writers) == 1
+            # Hold the flusher back, so the publish is still pending when the reset is read.
+            nc._flush_queue = asyncio.Queue()
+            await nc.publish(f"bus.ch.home.{bus.name}", b"in flight")
+            assert nc._pending_data_size > 0
+            srv.reset()
+            await until(lambda: nc.is_closed, timeout=2, what="nats-py saw the reset")
+            await until(lambda: len(srv.writers) == 2 and bus._connected and bus._nc is not nc,
+                        timeout=4, what="no reconnect after a close without callbacks")
+        finally:
+            await bus.stop()
 
 
 # --- a planned renewal waits for a send under way ---------------------------------------------

@@ -1793,6 +1793,7 @@ class NatsBus:
             raise
         del hello
         self._nc = nc
+        self._watch_read_loop(nc)
         self._gaps.reset()
         self._stale.clear()
         self._cancel_gap_timer()  # this connection starts from `since`: the held-back gap is covered
@@ -1834,6 +1835,29 @@ class NatsBus:
             self._wake.set()
         else:
             self._schedule_renew()
+
+    def _watch_read_loop(self, nc: NatsClient) -> None:
+        """Wake the supervisor when `nc`'s read loop ends with the client closed, also
+        when nats-py skipped its callbacks (RT-6.36 step 2, #221): nats-py 2.16 writes a
+        publish still pending at a reset to the dead socket inside `_close`, and that
+        write's error ends `_close` before `disconnected_cb`/`closed_cb`. The client is
+        closed all the same; without this the bus stayed on it until a flush timed out
+        or the credential was renewed. A loop that ends while the client lives (a
+        reconnect of nats-py's own, which this bus turns off) wakes nobody."""
+        task = getattr(nc, "_reading_task", None)
+        if not isinstance(task, asyncio.Task):
+            return
+
+        def ended(done: asyncio.Task[Any]) -> None:
+            if not done.cancelled() and done.exception() is not None:
+                # That write's error, which the loop let escape: retrieved here, so
+                # asyncio does not print it as "never retrieved"; the reconnect is the answer.
+                log.debug("nats bus: the read loop ended: %s", type(done.exception()).__name__)
+            if self._nc is nc and not self._stopping and nc.is_closed:
+                self._connected = False
+                self._wake.set()
+
+        task.add_done_callback(ended)
 
     @staticmethod
     async def _sync(nc: NatsClient, timeout: int = SYNC_SEC) -> None:
