@@ -120,13 +120,15 @@ func (s *KV) Post(ctx context.Context, home string, seq uint64) (mirror.Post, bo
 
 // Save remembers a mirror and moves the home's position. A message that
 // became a Mattermost post also gets the way back (Seq), written first, so a
-// position never runs ahead of it.
+// position never runs ahead of it. A reaction's entry (Reaction) holds the
+// reacted post for the sequence but writes no way back: the post's own stays,
+// so a person's reply or reaction on the copy names the post's sequence (#297).
 func (s *KV) Save(ctx context.Context, home string, seq uint64, p mirror.Post) error {
 	raw, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	if validKey(p.ID) {
+	if validKey(p.ID) && !p.Reaction {
 		if _, err := s.kv.Put(ctx, "m."+home+"."+p.ID, []byte(strconv.FormatUint(seq, 10))); err != nil {
 			return err
 		}
