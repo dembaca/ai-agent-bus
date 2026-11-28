@@ -36,6 +36,19 @@ export interface WireAsk {
   may_answer: boolean | null
   agent_gone: boolean
   thread_id: string
+  /** Only for the asked human and those the asking agent trusts; absent for
+   * everyone else (and from a server before the card). */
+  card?: WireAskCard
+}
+
+/** The ask's card as `/v1/asks` hands it: "" for a part the ask has none of. */
+export interface WireAskCard {
+  context: string
+  recommendation: string
+  where: string
+  decision: string
+  answers: string[]
+  chosen: string | null
 }
 
 /** `GET /v1/me`: the operator in the ADR's spelling, and the console's
@@ -96,6 +109,14 @@ function askOf(row: WireAsk): Ask {
     mayAnswer: row.may_answer,
     agentGone: row.agent_gone,
     threadId: row.thread_id,
+    ...(row.card === undefined ? {} : {
+      context: row.card.context,
+      recommendation: row.card.recommendation,
+      where: row.card.where,
+      decision: row.card.decision,
+      answers: row.card.answers,
+      chosen: row.card.chosen,
+    }),
   }
 }
 

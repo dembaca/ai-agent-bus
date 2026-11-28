@@ -10,6 +10,11 @@ look at. It lives next to the other per-bot state, asks-<uid>.env:
     SEEN=<post_id>:<user_id>:<emoji>   a reaction already handed to the agent
     ANSWERED=<post_id>                 a trusted human answered it (RT-6.9): the
                                        wait is counted once, whatever comes next
+    CHOSEN=<post_id> <answer>          the answer a trusted human's reaction picked,
+                                       for the record on NATS (RT-6.43); kept like TITLE
+    CARD=<post_id> <base64 of json>    the ask's context, recommendation, decision and
+                                       where as posted, for the record on NATS (RT-6.43);
+                                       kept like TITLE
     TITLE=<post_id> <headline>         the ask's bold title: its links show it
                                        (RT-6.15 step 2); kept after resolve for
                                        the newest TITLES asks, open or not
@@ -210,6 +215,42 @@ def kinds(uid: str) -> dict[str, str]:
     return out
 
 
+def chosen_answers(uid: str) -> dict[str, str]:
+    """The answer a trusted human's reaction picked, per ask (the record on NATS)."""
+    out: dict[str, str] = {}
+    for v in _lines(uid, "CHOSEN"):
+        pid, _, word = v.partition(" ")
+        if word.strip():
+            out.pop(pid, None)
+            out[pid] = word.strip()
+    return out
+
+
+CARD_PARTS = ("context", "recommendation", "decision", "where")
+CARD_PART_MAX = 2000  # characters of one part kept in the file (the record takes fewer)
+
+
+def _all_cards(uid: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for v in _lines(uid, "CARD"):
+        pid, _, blob = v.partition(" ")
+        out.pop(pid, None)
+        out[pid] = blob
+    return out
+
+
+def card_of(blob: str) -> dict[str, str]:
+    """An ask's card parts from its CARD line (CARD_PARTS, '' for a missing one); all ''
+    for a line that is no card."""
+    try:
+        data = json.loads(base64.b64decode(blob))
+    except (ValueError, TypeError):
+        data = None
+    if not isinstance(data, dict):
+        data = {}
+    return {k: v if isinstance(v := data.get(k), str) else "" for k in CARD_PARTS}
+
+
 def questions(uid: str) -> dict[str, str]:
     """The questions to the 👑 (RT-6.25), open or not: "<human> <0|1>" each,
     oldest first."""
@@ -224,7 +265,8 @@ def _write(uid: str, asks: dict[str, float], seen: set[str],
            whom: dict[str, str] | None = None, done: set[str] | None = None,
            title: dict[str, str] | None = None, question: dict[str, str] | None = None,
            answers: dict[str, str] | None = None,
-           queue: list[dict[str, Any]] | None = None, kind: dict[str, str] | None = None) -> None:
+           queue: list[dict[str, Any]] | None = None, kind: dict[str, str] | None = None,
+           chosen: dict[str, str] | None = None, card: dict[str, str] | None = None) -> None:
     if whom is None:
         whom = _read_all(uid)[2]
     if done is None:
@@ -241,6 +283,14 @@ def _write(uid: str, asks: dict[str, float], seen: set[str],
     for pid, val in (kind or {}).items():
         ks.pop(pid, None)
         ks[pid] = val
+    picks = chosen_answers(uid)
+    for pid, val in (chosen or {}).items():
+        picks.pop(pid, None)
+        picks[pid] = val
+    cards = _all_cards(uid)
+    for pid, blob in (card or {}).items():
+        cards.pop(pid, None)
+        cards[pid] = blob
     qs = questions(uid)
     for pid, val in (question or {}).items():
         qs.pop(pid, None)
@@ -254,6 +304,8 @@ def _write(uid: str, asks: dict[str, float], seen: set[str],
     lines += [f"ANSWERS={p} {b}" for p, b in list(ans.items())[-TITLES:]]
     lines += [f"QUESTION={p} {v}" for p, v in list(qs.items())[-TITLES:]]
     lines += [f"KIND={p} {v}" for p, v in list(ks.items())[-TITLES:]]
+    lines += [f"CHOSEN={p} {v}" for p, v in list(picks.items())[-TITLES:]]
+    lines += [f"CARD={p} {b}" for p, b in list(cards.items())[-TITLES:]]
     lines += [f"QUEUED={e['target']} " + base64.b64encode(json.dumps(e).encode()).decode()
               for e in (queued(uid) if queue is None else queue)]
     path = _path(uid)
@@ -294,11 +346,15 @@ def is_open(uid: str, post_id: str) -> bool:
 
 def add(uid: str, post_id: str, human: str = "", root_id: str = "", title: str = "",
         *, question: str = "", blocking: bool = False,
-        answers: list[str] | None = None, kind: str = "", at: float = 0) -> None:
+        answers: list[str] | None = None, kind: str = "", at: float = 0,
+        card: dict[str, str] | None = None) -> None:
     """An open ask to `human`; with question, a question to the 👑 `human`
     that falls back to the human `question` names (RT-6.25). kind: ask_human's
     (`question` is kept, an approval needs no line); at: the post's server time
-    (default now)."""
+    (default now); card: its context, recommendation, decision and where as
+    posted (CARD_PARTS, the empty ones left out), for the record on NATS."""
+    # cut here already, so the file stays small; the record cuts to its own bounds
+    parts = {k: v[:CARD_PART_MAX] for k, v in (card or {}).items() if k in CARD_PARTS and v.strip()}
     asks, seen, whom = _read_all(uid)
     asks[post_id] = at or time.time()
     if human or root_id:
@@ -307,25 +363,32 @@ def add(uid: str, post_id: str, human: str = "", root_id: str = "", title: str =
            question={post_id: f"{question.lower()} {int(blocking)}"} if question else None,
            answers={post_id: base64.b64encode(json.dumps(answers).encode()).decode()}
            if answers else None,
-           kind={post_id: "question"} if kind == "question" else None)
+           kind={post_id: "question"} if kind == "question" else None,
+           card={post_id: base64.b64encode(json.dumps(parts).encode()).decode()}
+           if parts else None)
 
 
-def records(uid: str) -> list[tuple[str, int, str, str, str, bool]]:
+def records(uid: str) -> list[tuple[str, int, str, str, str, bool, dict[str, Any]]]:
     """The open asks to someone, for the record on NATS (RT-6.43 step 5), oldest first: post
     id, when (seconds), the asked name ('' for none), the title, the kind (`approval` or
-    `question`) and whether a trusted human answered it. A permission prompt, which names
-    no one here, is left out."""
+    `question`), whether a trusted human answered it, and its card: CARD_PARTS ('' for a
+    missing one), `answers` as posted and `chosen`, the one a reaction picked ('' for none
+    or a reply). A permission prompt, which names no one here, is left out."""
     asks, _, whom = _read_all(uid)
     done = _read_answered(uid)
     heads = titles(uid)
     ks = kinds(uid)
+    picks = chosen_answers(uid)
+    cards = _all_cards(uid)
     out = []
     for pid, at in sorted(asks.items(), key=lambda kv: kv[1]):
         if pid not in whom:
             continue
         human = whom[pid].split(" ")[0]
+        card: dict[str, Any] = card_of(cards.get(pid, ""))
+        card |= {"answers": answers_of(uid, pid), "chosen": picks.get(pid, "")}
         out.append((pid, int(at), "" if human == "-" else human, heads.get(pid, ""),
-                    ks.get(pid) or "approval", pid in done))
+                    ks.get(pid) or "approval", pid in done, card))
     return out
 
 
@@ -364,20 +427,27 @@ def expired(uid: str, post_id: str, at: float = 0, *, thread: bool = False) -> b
     return bool(hits) and all(when - t >= APPROVAL_SEC for t in hits)
 
 
-def answered(uid: str, post_id: str, at: float = 0, *, thread: bool = False) -> tuple[str, int] | None:
+def answered(uid: str, post_id: str, at: float = 0, *, thread: bool = False,
+             chosen: str = "") -> tuple[str, int] | None:
     """A trusted human's answer at `at` (default now) to an ask_human ask: with
     thread, to the asks in the thread with that root. Returns the ask and how
     many seconds it waited, once per ask (RT-6.9); None for a later answer, and
-    for a post that is no ask of an agent to a human (a permission prompt, RT-6.13)."""
+    for a post that is no ask of an agent to a human (a permission prompt, RT-6.13).
+    chosen: the answer a reaction picked, kept for the record on NATS."""
     asks, seen, whom = _read_all(uid)
     done = _read_answered(uid)
-    hits = sorted((t, pid) for pid, t in asks.items()
-                  if pid in whom and pid not in done
-                  and (pid == post_id or (thread and whom[pid].split(" ")[1:] == [post_id])))
+    word = {} if not chosen.strip() else {"": " ".join(chosen.split())}
+    every = sorted((t, pid) for pid, t in asks.items()
+                   if pid in whom
+                   and (pid == post_id or (thread and whom[pid].split(" ")[1:] == [post_id])))
+    hits = [h for h in every if h[1] not in done]
     if not hits:
+        # an ask answered before: a later reaction changes the chosen word (the last wins)
+        if word and every:
+            _write(uid, asks, seen, whom, done, chosen={every[0][1]: word[""]})
         return None
     t, pid = hits[0]
-    _write(uid, asks, seen, whom, done | {pid})
+    _write(uid, asks, seen, whom, done | {pid}, chosen={pid: word[""]} if word else None)
     return pid, max(0, round((at or time.time()) - t))
 
 
