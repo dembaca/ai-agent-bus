@@ -79,6 +79,52 @@ versions and words only, the new names go into the entry's text
 ([docs/env-names.md](docs/env-names.md#the-needs-rule)). A release with a known bad predecessor says
 `Withdrawn: v<x.y.z>[, v<x.y.z>]`. doc-check enforces both forms.
 
+## Small changes
+
+A change of at most about 50 lines, in one area, with no new behaviour and nothing
+in login, tokens, rights, hook trust, NATS permissions or release and signing, may
+skip an ADR and repeated review rounds. Changes in login, tokens, rights, hook trust,
+NATS permissions or release and signing always take the full way. It keeps:
+
+- **One review** by a model with the overview of the whole (Opus or Fable, never a
+  cheaper one because the diff looks small), which reads the change against its
+  callers, the runtime texts and the docs, for corner cases.
+- **Green CI for the areas it touches** (`checks.yml` runs each job only for the
+  areas a PR changes; a file no area claims runs all of them).
+- **The merge go** as usual.
+
+**Basis rule** (the merge approver's call, agreed with the ~chat-next coordinator on
+2026-11-28 at the owner's request). A PR whose CI went green on an older `main` may
+merge without a new run when all of these hold:
+
+- the areas `changes`' script sets for `main`'s commits since the PR's base and those it
+  sets for the PR (its outputs `py`, `opencode`, `pi`, `site`, `console`, not
+  directories: `mcp/` sets four) share none, and neither side touches a path that runs everything
+  (`checks.yml`, an unclaimed path, a deletion or a rename);
+- `main`'s commits touch none of `docs/doc-map.toml`, `scripts/`, `ruff.toml` and
+  `.shellcheckrc`, and the `docs` job's two commands pass on the merged tree
+  (`arc42-lint.py docs/arc42 --strict`, `doc-check.py`): doc-check reads all of
+  `docs/arc42/`, `docs/env-names.md`, the versions and every tracked file for
+  scenario ids and environment names, so a PR and `main` can each pass it alone and
+  fail together;
+- the PR and those commits do not both touch the paths of another workflow
+  (`auth.yml`, `bridge.yml`, `keycloak.yml`, `testrig.yml`);
+- `main`'s newest completed run is green and no run of a merge made under this rule
+  is still going, so at most one such merge is unproven at a time;
+- GitHub says mergeable and clean with no commit since the run, and the PR's
+  CHANGELOG lines read clean against `main`.
+
+A request under it names the base, `main`'s head, the areas of both diffs and the
+result of the two docs commands on a trial merge, with the two commits it was made
+from (the PR's head and `main`'s head; a result for an older `main` does not count).
+A trial merge that needs a conflict resolved by hand turns the rule off for that PR:
+merge `main` in and rerun. The approver takes both file lists from GitHub and runs
+the script's `case` on them.
+
+**Conflicts.** Resolve a conflict in text by taking whole sides or writing it by
+hand, never with a character- or word-level merge script (one garbled the CHANGELOG
+in #295 and #305), and read a merge's CHANGELOG and doc hunks as text.
+
 ## Before you push
 
 ```bash

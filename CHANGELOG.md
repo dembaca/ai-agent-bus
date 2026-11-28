@@ -7,6 +7,24 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The release notice from the bridge's signed record: plan B piece 14b** (#244,
+  RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads
+  `GET <address>/register/v1/release` from the bridge (`https`, or `http` only to a
+  loopback host; no redirects, no token, five seconds, at most 8 KiB) and verifies
+  the compact JWS fail-closed against the pinned keys (`MM_REGISTRAR_KEYS`; its new
+  `CB_` name is still open): the bridge's kid, Ed25519, at most an hour between
+  `iat` and `exp`, and a `version` of `v<x.y.z>`. The notice in `bus_info` and the
+  turn-end banner then names that version, the step, `Breaking` and — when the
+  record carries them — the `Needs:` lines and withdrawn versions; the bridge as
+  built names the version and the release signers. Any doubt (an unknown kid, a bad
+  signature, an expired record, a malformed answer, a version that is not
+  `x.y.z`, a non-loopback `http` address, a redirect, a failed request) is no
+  notice, said once in the log, and never `release.env`; the host's release check
+  is neither read nor started, so there is one source. `latest` and a keys-only
+  record name no version and give no notice. Unset (the default), the notice reads
+  `release.env` exactly as before. No self-update is promised: a human installs the
+  version through the harness's marketplace, never the agent.
+
 - **STATS: own posts by hour** (#290, RT-6.9 step 2, RT-6.45). Each part now carries
   `post_hours`, the agent's own posts by UTC hour and bus word (counts only, only the
   hours with posts), so the console's "24 h" can show hourly bars; `stats.hours_of`
@@ -641,6 +659,14 @@ before 0.5.0 are described in the git history.
   published".
 
 ### Changed
+
+- **CI: each check runs only for the areas a PR touches.** A `changes` job in
+  `.github/workflows/checks.yml` (it replaces `console-changed`) names the areas a
+  pull request touches, and each job carries an `if:` on them, so a skipped job
+  counts as passed for a required check. A changed file that no area claims, and
+  that is not documentation, makes every job run, and so do a deleted file and a
+  failed `changes` job; `docs` and `lint` always run.
+  `CLAUDE.md` gets a rule for small changes and one for resolving conflicts.
 
 - **Stats has a time range and an activity chart** (#284, ADR-015 addition of
   2026-11-28, RT-6.43 step 8). A switch at the top right, 24 h, 7 days, 30 days,

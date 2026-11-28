@@ -1155,7 +1155,7 @@ async def bus_info() -> str:
                 "session_start when MM_REG_SECRET (in this server's environment) and "
                 "CB_MM_PROJECT_CHANNEL are set; otherwise the host must pass the bus "
                 "settings into the session"),
-            "release": release.notice(VERSION),
+            "release": release.info(VERSION),
             **_joined_warning(_hook_warning().get("warning", ""), *hookapi.start_notes()),
         })
     trusted = await client.trusted_humans()
@@ -1215,8 +1215,9 @@ async def bus_info() -> str:
         "permission_relay": RELAY,
         **({"update": {"installed": newer, "how": _restart_how()}}
            if (newer := _newer_installed()) else {}),
-        # RT-6.30: this version and its source, the newest release the host's check passed.
-        "release": release.notice(VERSION),
+        # RT-6.30: this version and its source, the newest release the bridge's
+        # record names (CB_RECORDS_URL) or the host's check passed.
+        "release": release.info(VERSION),
         **({"warning": "; ".join(warnings)} if warnings else {}),
     })
 
