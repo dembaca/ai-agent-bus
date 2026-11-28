@@ -279,6 +279,12 @@ async def test_idle_coordinator_loses_the_crown_when_its_lease_runs_out(mm, clie
 MID = "m" * 26
 
 
+# The expiry is written in whole seconds and _expires() reads the clock again, so a
+# second that ticks between the two reads makes it one more than the lease: the
+# upper bounds below allow that one second.
+LEASE_SLACK = 1
+
+
 def _expires(mm) -> float:
     """Seconds from now until the custom status written last ends."""
     at = mm.custom_status()["expires_at"]
@@ -293,9 +299,9 @@ async def test_the_crown_has_a_short_lease_and_falls_back_on_release(mm, client,
     await lease.set_status(client, "working")
     assert 890 <= _expires(mm) <= 900
     assert await lease.command(client, "take") == "taken"
-    assert 140 <= _expires(mm) <= 150 and coord(tmp_path)["CROWN_UNTIL"] <= time.time() + 150
+    assert 140 <= _expires(mm) <= 150 + LEASE_SLACK and coord(tmp_path)["CROWN_UNTIL"] <= time.time() + 150 + LEASE_SLACK
     await lease.set_status(client, "renew")  # the beat
-    assert 140 <= _expires(mm) <= 150 and holds()
+    assert 140 <= _expires(mm) <= 150 + LEASE_SLACK and holds()
     await lease.command(client, "release")
     assert 890 <= _expires(mm) <= 900 and mm.custom_status()["emoji"] != "crown"
 
@@ -362,7 +368,7 @@ async def test_a_dead_successor_delays_the_claim_by_one_slot(mm, client):
     assert not holds()
     lease._look_at = time.time() - 1   # its slot has come
     assert await lease.look(client) and holds()
-    assert mm.custom_status()["emoji"] == "crown" and 140 <= _expires(mm) <= 150
+    assert mm.custom_status()["emoji"] == "crown" and 140 <= _expires(mm) <= 150 + LEASE_SLACK
     assert lease.look_due() == 0  # a holder looks for nothing
 
 
@@ -715,7 +721,7 @@ async def test_a_silent_holder_drops_the_crown_and_does_not_claim(mm, client, tm
     await lease.set_status(client, "renew")
     assert not holds() and coord(tmp_path)["CROWN_UNTIL"] == 0
     # One crown lease, not a release's two leases: the silence may end soon.
-    assert time.time() + 140 <= coord(tmp_path)["YIELD_UNTIL"] <= time.time() + 150
+    assert time.time() + 140 - LEASE_SLACK <= coord(tmp_path)["YIELD_UNTIL"] <= time.time() + 150 + LEASE_SLACK
     assert mm.custom_status()["emoji"] == "zzz"
     _coord_file(tmp_path, monkeypatch, CROWN_UNTIL=0, PENDING=0, YIELD_UNTIL=0)
     me(mm, "zzz")
@@ -767,7 +773,7 @@ async def test_a_sign_within_the_last_lease_keeps_the_crown_and_restarts_the_cou
     s = mm.custom_status()
     assert holds() and s["emoji"] == "crown" and lease.sets_receipts(s["text"])
     assert "silent" not in s["text"] and not life.is_shown()
-    assert coord(tmp_path)["CROWN_UNTIL"] >= time.time() + lease.crown_lease_sec() - 1
+    assert coord(tmp_path)["CROWN_UNTIL"] >= time.time() + lease.crown_lease_sec() - 2  # int seconds + a tick
     _no_sign_since(monkeypatch, 900 + 10)  # silent again, 10 s: a fresh lease
     await lease.set_status(client, "renew")
     assert holds() and mm.custom_status()["emoji"] == "crown"
