@@ -41,7 +41,9 @@
 .detail__task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; color: var(--muted); }
 .detail__ctx { display: inline-flex; align-items: center; gap: 8px; }
 
-.detail__rows { width: 100%; border-collapse: collapse; }
+/* the table scrolls inside its container, never the page (owner review, 390 px) */
+.detail__rows-wrap { overflow-x: auto; max-width: 100%; }
+.detail__rows { width: 100%; min-width: 460px; border-collapse: collapse; }
 .detail__rows th {
   text-align: left;
   padding: 7px 10px;

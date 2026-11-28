@@ -83,6 +83,7 @@ export function Detail({ api, card, ask, asks, stats = null, onClose, onFail }: 
           {card && card.tasks.length > 0 && (
             <section className="panel" aria-label="Its task rows">
               <div className="panel__head"><h2>Its task rows</h2></div>
+              <div className="detail__rows-wrap">
               <table className="detail__rows">
                 <thead>
                   <tr><th>title</th><th>state</th><th>status</th><th>by</th><th className="num">at</th></tr>
@@ -99,6 +100,7 @@ export function Detail({ api, card, ask, asks, stats = null, onClose, onFail }: 
                   ))}
                 </tbody>
               </table>
+              </div>
             </section>
           )}
 
