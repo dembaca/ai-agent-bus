@@ -19,7 +19,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from mattermost_ai_agent_bus import attest, hookapi, release
+from mattermost_ai_agent_bus import attest, hookapi, release, selfupdate
 
 from test_ask_mode_signed import _b64, _key, _sign, _x
 
@@ -78,9 +78,11 @@ async def test_a_signed_record_gives_the_notice_and_the_banner(monkeypatch):
     assert out["signature"] == "checked" and out["checked_at"].endswith("Z")
     assert out["notice"] == "release v1.4.0 is out (minor; record signed)"
     assert "marketplace" in out["note"] and "self-update" not in out["note"]
-    # The banner is for this server's own version, whatever the test runs on.
+    # The banner is for this server's own version, whatever the test runs on,
+    # and says the record is its source (the hook names the marketplace then).
     assert hookapi._release() == {"release": {
-        "newest": "1.4.0", "line": release.record_line(release.VERSION, state)}}
+        "newest": "1.4.0", "line": release.record_line(release.VERSION, state),
+        "source": "record"}}
 
 
 async def test_needs_withdrawn_and_breaking_come_from_the_record_when_it_carries_them(monkeypatch):
@@ -260,3 +262,135 @@ async def test_the_host_check_never_runs_with_the_record(monkeypatch):
     monkeypatch.setattr(release, "refresh_record", read)
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(release.check_loop(), 0.05)
+
+
+# --- the read's bounds and the record's own numbers (review of #312) ----------
+
+def signed_raw(payload: str, *, header: dict | None = None,
+               key: Ed25519PrivateKey | None = None) -> str:
+    """A compact JWS over this payload text and header, for shapes json.dumps
+    cannot make (a duplicate key) or the record() helper refuses."""
+    k = key or _key()
+    head = header or {"alg": "EdDSA", "typ": attest.RELEASE_TYP, "kid": attest.kid_of(_raw(k))}
+    return _sign(json.dumps(head).encode(), payload.encode(), k)
+
+
+async def test_an_answer_over_the_cap_gives_no_notice(monkeypatch):
+    """RT-6.30 step 5: at most 8 KiB; the read stops there, never a notice."""
+    monkeypatch.setenv(release.RECORDS_ENV, URL)
+
+    def big(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"{" + b" " * selfupdate.RECORD_MAX + b"}")
+
+    await release.refresh_record(transport=httpx.MockTransport(big))
+    out = release.info("1.3.0")
+    assert "notice" not in out and f"answer over {selfupdate.RECORD_MAX} bytes" in out["record"]
+
+
+async def test_a_read_that_times_out_gives_no_notice(monkeypatch):
+    """RT-6.30 step 5, error handling: httpx's per-phase timeout is a failed
+    read too, never a notice."""
+    monkeypatch.setenv(release.RECORDS_ENV, URL)
+
+    def drip(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("dripping", request=request)
+
+    await release.refresh_record(transport=httpx.MockTransport(drip))
+    out = release.info("1.3.0")
+    assert "notice" not in out and "ReadTimeout" in out["record"]
+
+
+async def test_the_whole_read_is_bounded_not_only_each_phase(monkeypatch):
+    """RT-6.30 error handling: past five seconds there is no notice, however
+    slowly the answer drips (asyncio.wait_for around the read, review of #312)."""
+    monkeypatch.setenv(release.RECORDS_ENV, URL)
+    monkeypatch.setattr(selfupdate, "TIMEOUT", 0.05)
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        time.sleep(0.5)
+        return httpx.Response(200, json={"record": record()})
+
+    await release.refresh_record(transport=httpx.MockTransport(slow))
+    out = release.info("1.3.0")
+    assert "notice" not in out and out["record"] == "not read: not read within 0.05 s"
+
+
+async def test_a_version_with_an_unbounded_number_is_no_version(monkeypatch):
+    """RT-6.30 step 5, review of #312: a signed version's numbers are at most
+    six digits; more is a bad version, refused before any comparison (int()
+    would refuse a number over 4300 digits and raise in _key)."""
+    monkeypatch.setenv(release.RECORDS_ENV, URL)
+    for version in ("v1." + "9" * 5000 + ".0", "v1.1234567.0", "v01.2.3"):
+        await release.refresh_record(transport=_answer(record(version)))
+        out = release.info("1.3.0")
+        assert "notice" not in out and out["record"].endswith("bad version"), version[:20]
+
+
+async def test_a_record_with_a_wrong_or_no_alg_is_no_notice(monkeypatch):
+    """RT-6.30 step 5: only EdDSA; `none` and another alg are a wrong alg,
+    whatever the payload says and however the signature parses."""
+    monkeypatch.setenv(release.RECORDS_ENV, URL)
+    k = _key()
+    iat = int(time.time())
+    payload = json.dumps({"signers": [SIGNER], "version": "v1.4.0", "set_at_ms": 1_800_000_000_000,
+                          "iat": iat, "exp": iat + 3600})
+    for alg in ("none", "RS256", "ES256"):
+        header = {"alg": alg, "typ": attest.RELEASE_TYP, "kid": attest.kid_of(_raw(k))}
+        await release.refresh_record(transport=_answer(signed_raw(payload, header=header, key=k)))
+        out = release.info("1.3.0")
+        assert "notice" not in out and out["record"].endswith("wrong alg"), alg
+
+
+async def test_a_payload_with_a_duplicate_key_is_no_notice(monkeypatch):
+    """RT-6.30 step 5: no duplicate JSON keys (a reader and a verifier must not
+    see different claims): the payload is refused, not the first or last key taken."""
+    monkeypatch.setenv(release.RECORDS_ENV, URL)
+    iat = int(time.time())
+    payload = json.dumps({"signers": [SIGNER], "set_at_ms": 1_800_000_000_000,
+                          "iat": iat, "exp": iat + 3600, "version": "v1.4.0"})[:-1] \
+        + ',"version":"v9.9.9"}'
+    await release.refresh_record(transport=_answer(signed_raw(payload)))
+    out = release.info("1.3.0")
+    assert "notice" not in out and out["record"].endswith("bad claims")
+
+
+async def test_a_record_issued_in_the_future_is_no_notice(monkeypatch):
+    """RT-6.30, RT-6.24: iat not later than now (SKEW_SEC of clock skew)."""
+    monkeypatch.setenv(release.RECORDS_ENV, URL)
+    await release.refresh_record(transport=_answer(record(iat=int(time.time()) + 3600)))
+    out = release.info("1.3.0")
+    assert "notice" not in out and out["record"].endswith("issued in the future")
+
+
+async def test_a_record_older_than_the_cached_one_does_not_replace_it(monkeypatch):
+    """RT-6.30 step 5, review of #312: the newest iat read wins; a stale copy
+    (behind a load balancer, say) neither replaces it nor gives its own line.
+    A later record with a newer iat does replace it."""
+    monkeypatch.setenv(release.RECORDS_ENV, URL)
+    now = int(time.time())
+    await release.refresh_record(transport=_answer(record("v1.5.0", iat=now)))
+    kept = release.cached_record()[0]
+    assert kept is not None and kept.newest == "1.5.0"
+    await release.refresh_record(transport=_answer(record("v1.9.0", iat=now - 1800)))
+    state, why = release.cached_record()
+    assert state is kept and why == ""
+    assert release.info("1.3.0")["newest"] == "1.5.0"
+    await release.refresh_record(transport=_answer(record("v1.9.0", iat=now + 10)))
+    assert release.cached_record()[0].newest == "1.9.0"
+
+
+async def test_the_record_is_read_again_every_record_every(monkeypatch):
+    """RT-6.30 step 5, 14b: the loop reads at once and then every RECORD_EVERY,
+    the interval a record is looked at again, not the host check's POLL."""
+    monkeypatch.setenv(release.RECORDS_ENV, URL)
+    monkeypatch.setattr(release, "RECORD_EVERY", 0.05)
+    reads: list[int] = []
+
+    async def read(**kwargs: object) -> tuple[None, str]:
+        reads.append(1)
+        return None, ""
+
+    monkeypatch.setattr(release, "refresh_record", read)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(release.check_loop(), 0.3)
+    assert len(reads) >= 3
