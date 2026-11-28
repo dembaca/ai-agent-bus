@@ -4277,8 +4277,17 @@ which each piece reads for itself.
        off, so a registrar's bot or a bridge bot whose record lapsed stays
        an agent, never a person. A cut makes the roster empty and tells nobody as
        gone (RT-6.21). The bridge, the login service and the session side
-       ship together. Not built: the `testrig` measurand "nobody told as
-       gone during a cut" (see Test below).
+       ship together. The `testrig` measurand "nobody told as gone during
+       a cut" (`told_gone`, #252, see Test below) is built: with
+       `CB_PLANB_TEST=2` the rig plays the bridge's records too, every send
+       is a TASK naming the receiver by its bridge name, and a live agent
+       told as gone (`not_reachable` `gone …`, an event marked `departed`,
+       the server's answer `is gone`) fails the run; a PR runs a cut, the
+       nightly job every fault and a cut of 120 s. First runs (local, 2 s and
+       120 s cuts): told gone 0, roster misses 0, also with the guard
+       `lease.nats_unreadable` switched off by hand: a cut's own sends fail,
+       and once back the bus is synced before a send checks, so the rig
+       reaches the state the guard decides in only by chance (#252).
      - Built (piece 2b, after 0.104.0): the kept state keyed by the NATS
        name, behind the same switch (RT-6.2 step 9). `last-`, `threads-` and
        `unanswered-` (what only the MCP server reads) take the name as key
