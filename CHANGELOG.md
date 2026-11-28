@@ -41,8 +41,8 @@ before 0.5.0 are described in the git history.
   on the way back.
   No nonce, endpoint or session file moves, so no session gets a new name by this.
   Switch off: every file name is as before. What differs: pi's server is passed
-  `PI_SESSION_ID` (blank without one), and `mm_state_key` accepts a key of the pattern
-  `[a-z0-9][a-z0-9_-]{0,127}` where the scripts checked 26 characters.
+  `PI_SESSION_ID` (blank without one), and the scripts take a state key in the same two forms
+  as the server (a bot id of 26 `[a-z0-9]`, or a NATS name of 25 `[a-z2-7]`).
 
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads

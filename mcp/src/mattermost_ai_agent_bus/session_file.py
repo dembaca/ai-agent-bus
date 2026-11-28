@@ -388,14 +388,17 @@ def nats_state_key() -> str:
     return _nats_name[0] if _nats_name else ""
 
 
-def key_ok(key: str) -> bool:
-    """Whether `key` may name a state file: a Mattermost bot id (26 characters) or a NATS
-    name (natsbus.AGENT_RE) without capitals (on a case-insensitive file system two names
-    differing in case would share one file; NATS names from the hash are lower case),
-    nothing else (no path part, no dot)."""
-    from .natsbus import AGENT_RE
+# A state key's two forms (RT-6.2 step 9), the same as mm_state_key_re in bin/mm-agent-lib.sh:
+# a Mattermost bot id (26 [a-z0-9]) or a NATS name (25 lower-case base32, natsbus.agent_name).
+_STATE_KEY_RE = re.compile(r"[a-z0-9]{26}|[a-z2-7]{25}")
 
-    return bool(_BOT_ID_RE.fullmatch(key) or (AGENT_RE.fullmatch(key) and key == key.lower()))
+
+def key_ok(key: str) -> bool:
+    """Whether `key` may name a state file: exactly a Mattermost bot id (26 [a-z0-9]) or a
+    NATS name (25 [a-z2-7]), as the scripts' mm_state_key checks it. The key names files, so
+    nothing looser: no capitals (on a case-insensitive file system two names differing in
+    case would share one file), no path part, dot, underscore or dash."""
+    return isinstance(key, str) and bool(_STATE_KEY_RE.fullmatch(key))
 
 
 def state_key(uid: str, nats_name: str | None = None, home: str | None = None) -> str:

@@ -9,7 +9,7 @@ import pytest
 from conftest import ROOT
 
 LIB = ROOT / "bin" / "mm-agent-lib.sh"
-NATS = "agent-" + "a2" * 13
+NATS = "agent-" + "a2" * 13  # the name before #276 dropped the prefix: no state key any more
 BOT = "x" * 26
 NATS25 = "a2c4e6g7" * 3 + "h"  # 25 base32 characters, no hyphen (#276)
 
@@ -20,14 +20,14 @@ def _file(kind: str, key: str, tmp_path) -> subprocess.CompletedProcess:
                           env=env, capture_output=True, text=True, timeout=30)
 
 
-@pytest.mark.parametrize("key", [BOT, NATS, NATS25])
+@pytest.mark.parametrize("key", [BOT, NATS25])
 def test_a_bot_id_and_a_nats_name_name_a_state_file(tmp_path, key):
     r = _file("listen", key, tmp_path)
     assert r.returncode == 0
     assert r.stdout == f"{tmp_path}/s/mm-agent-bus/listen-{key}.env"
 
 
-@pytest.mark.parametrize("key", ["", "../x", "a/b", "a.b", "-a", "a b", "a" * 129, "Agent-x", "A" * 26])
+@pytest.mark.parametrize("key", ["", "../x", "a/b", "a.b", "-a", "a b", "a" * 129, "Agent-x", "A" * 26, NATS])
 def test_junk_is_no_key(tmp_path, key):
     assert _file("listen", key, tmp_path).returncode == 1
 
@@ -183,3 +183,20 @@ def test_the_prompt_hook_clears_the_name_keyed_turn_from_the_endpoint_file(tmp_p
     assert r.returncode == 0
     assert not (state / f"turn-{NATS25}.env").exists()
     assert not (state / f"listen-{NATS25}.env").exists()
+
+
+def test_the_state_key_takes_only_a_bot_id_or_a_nats_name(tmp_path):
+    """RT-6.2 step 9: mm_state_key and mm_bot_state_file take exactly the two forms
+    session_file.key_ok does, a bot id (26 [a-z0-9]) or a NATS name (25 [a-z2-7]), since the
+    key names files; anything else falls back to the bot id, or fails without one."""
+    env = _key_env(tmp_path, None)
+    for good in ("y" * 26, NATS25):
+        assert _lib('mm_state_key_me="$1"; mm_state_key', env, good).stdout == good
+        assert _lib('mm_bot_state_file turn "$1"', env, good).stdout.endswith(f"/turn-{good}.env")
+    bad = ["a" * 24, "a" * 27, "b" * 24 + "1", "A" * 26, "Y" * 25, "a" * 25 + "_",
+           "a" * 12 + "-" + "a" * 13, "a" * 12 + "." + "a" * 13, "a" * 12 + "/" + "a" * 12]
+    for key in bad:
+        assert _lib('mm_state_key_me="$1"; mm_state_key', env, key).stdout == BOT, key
+        assert _lib('mm_bot_state_file turn "$1"', env, key).returncode == 1, key
+    no_bot = {k: v for k, v in env.items() if k != "CB_MM_BOT_USER_ID"}
+    assert _lib('mm_state_key_me="$1"; mm_state_key', no_bot, "a" * 27).returncode == 1

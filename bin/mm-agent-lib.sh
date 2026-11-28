@@ -794,12 +794,16 @@ mm_bus_me() {
 # scripts take a per-bot state file's key from (tests/hooks/test_state_key_shell.py):
 # with the switch off it is the bot id, as before.
 mm_state_key_me=""
+# The two forms a state key takes, as session_file.key_ok checks them: a bot id
+# (26 [a-z0-9]) or a NATS name (25 lower-case base32). The key names files, so
+# nothing looser: no capitals, no dot, slash, underscore or dash.
+mm_state_key_re='^([a-z0-9]{26}|[a-z2-7]{25})$'
 mm_state_key() {
   local key="" f
   if f="$(mm_bus_file 2>/dev/null)"; then key="$(mm_kv "$f" CB_STATE_KEY)"; fi
   [[ -n "$key" ]] || key="${mm_state_key_me:-}"
-  [[ "$key" =~ ^[a-z0-9][a-z0-9_-]{0,127}$ ]] || key="${1:-${CB_MM_BOT_USER_ID:-}}"
-  [[ "$key" =~ ^[a-z0-9][a-z0-9_-]{0,127}$ ]] || return 1
+  [[ "$key" =~ $mm_state_key_re ]] || key="${1:-${CB_MM_BOT_USER_ID:-}}"
+  [[ "$key" =~ $mm_state_key_re ]] || return 1
   printf '%s' "$key"
 }
 
@@ -820,10 +824,10 @@ mm_turn_state_file() {
 mm_bot_state_file() {
   local kind="$1" uid="${2:-}"
   [[ -n "$uid" ]] || uid="$(mm_state_key)" || return 1
-  # A bot id, or a NATS name (natsbus.AGENT_RE, the key of the kept state since plan B
-  # piece 2b, RT-6.2); the name's pattern holds the bot id's too. No capitals (two names that
-  # differ in case would share a file on macOS), no dot, no slash.
-  [[ "$uid" =~ ^[a-z0-9][a-z0-9_-]{0,127}$ ]] || return 1
+  # A bot id, or a NATS name (the key of the kept state since plan B piece 2b, RT-6.2):
+  # mm_state_key_re. No capitals (two names that differ in case would share a file on
+  # macOS), no dot, no slash.
+  [[ "$uid" =~ $mm_state_key_re ]] || return 1
   printf '%s' "$(mm_state_dir)/${kind}-${uid}.env"
 }
 
