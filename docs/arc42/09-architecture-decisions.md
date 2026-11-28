@@ -3399,7 +3399,13 @@ separately.
     channel goes first; the channels this project is coordinated in switch
     last. The registrar and the direct Mattermost path are shut down
     (phase 6) only after an acceptance with numbers (phase 4) and the
-    owner's approval.
+    owner's approval. Amended for plan B's last piece by the owner on
+    2026-11-28 (ask `7htqausiwbbxmjiqmte97f7oic`): a cutover, every piece
+    switched on in every home of the lab at once, and the registrar shut
+    down a day after the owner switched every agent; for that piece the
+    order of a test channel first and this project's channels last, and
+    the measured acceptance before the shutdown, are superseded (phase 5
+    as plan B, piece 14, below).
 15. **People review, the owner approves.** The login service, the NATS
     permission model and the central adapter are security-critical (the
     adapter holds every bot token and the key for human-origin events; a
@@ -4890,6 +4896,35 @@ which each piece reads for itself.
         the MCP server with no Mattermost read. Lab: a day's STATS read
         back, and the shell clients in the test home.
   14. **Registration ends, all or nothing** (#151 step 5).
+      - **Amended 2026-11-28: a cutover.** Decided by the owner on
+        2026-11-28 16:46 (ask `7htqausiwbbxmjiqmte97f7oic`): the piece is
+        no migration over several releases. The flip of 14c (14c-2c: the
+        crown without a bot, `nobot.CROWN_NEEDS_BOT` and
+        `CB_CROWN_NEEDS_BOT`) and the removal of the host side (14d) ship
+        in one release. Before it, in the lab, the login service's
+        directory admin API goes on (RT-6.40), every piece is switched on
+        in every home, and a smoke test runs; then the owner switches every
+        agent to that release, the registrar keeps running one day as the
+        way back (an older release still registers), and then it is shut
+        down (phase 6). The reason: there are no external users, and the
+        owner switches every agent within an hour, so no host skips a
+        release. The plan's gates 16 to 21 are dropped (14c's measured
+        acceptance, the bridge's signed records, the console's signature
+        check, the offline token's lifetime, the homes switched one by one,
+        the owner's approval of the last piece), and with them the
+        acceptance below; the plan's cutover checklist
+        ([plan-b-piece-14.md](../plan-b-piece-14.md), section 3) takes their
+        place. The four differences of the deferred path (no kept bot on a
+        resume, up to 60 s without Mattermost routes, an empty bot name in
+        the sandbox, no unread baseline or idle status from the hook) then
+        hold for every session; the owner accepted them with this
+        decision, and with 14d the deferred path itself goes. Until the
+        shutdown the registration code, the sweep, the unregistration
+        client and the block on self-registration in the sandbox stay; 14d
+        deletes nothing on the hosts. Superseded, kept below as the record:
+        the host side kept until every home runs every piece, the homes
+        switched one by one, and the way back through the two weeks of the
+        shutdown.
       - Moves: the plugin no longer registers a session whose every
         channel, the home, the guest channels, the lobby and the stats
         channel, runs over NATS with every piece on. A session with any
@@ -4915,6 +4950,9 @@ which each piece reads for itself.
         RT-6.29), its release check (`bin/mm-agent-release-check.sh`,
         RT-6.30) and its self-update between sessions (RT-6.32), and the
         block on self-registration in the sandbox (RT-6.10 step 1).
+        Superseded in its timing on 2026-11-28 (the amendment above): the
+        host side goes in the cutover release, and the block on
+        self-registration stays until the shutdown.
       - The release notice (RT-6.30) loses its check, which runs only
         from the host copy. Decided by the owner on 2026-11-27 (ask
         `i1wy6gb8ijfpuceuq3ptbz6s8y`): the MCP server tells its human
@@ -4951,7 +4989,9 @@ which each piece reads for itself.
         (`mm-agent-host-install.sh --release`, RT-6.29) with corral's
         hooks, and the registrar on again (the two weeks of the
         shutdown, phase 6); the state it keyed by the bot id is still
-        there.
+        there. Superseded on 2026-11-28 (the amendment above): the
+        registrar keeps running one day after the cutover as the way
+        back, then it is shut down.
       - Test: hook tests: no registration and no Mattermost token for such
         a session, registration for a mixed one. Lab: the acceptance
         below.
@@ -5005,7 +5045,10 @@ which each piece reads for itself.
   prompts, people's events, the guest channels and the lobby, and STATS
   with the shell clients (pieces 9 to 13). Last the end of registration
   (piece 14).
-- **Acceptance**, before the last piece:
+- **Acceptance**, before the last piece (superseded on 2026-11-28 by the
+  cutover, the amendment of piece 14: the owner dropped the plan's gates 16
+  to 21, which these rows fed, and the lab's smoke test takes their place;
+  kept as the record):
   - the other rows of the acceptance of the parallel operation (phase 4),
     proposed to pass again here, measured with `testrig`: delivery, the
     take-over of the coordinator, device approvals, unchanged tools;
