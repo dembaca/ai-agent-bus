@@ -1136,7 +1136,8 @@ def _consumer_specs(agent: str, channels: list[str], since: dict[str, int]) -> l
         out.append(("BUS", c["durable_name"], c))
         filters += [f"presence.crown.{ch}.*", f"presence.member.{ch}.*", f"presence.planb.{ch}.v1"]
     filters.append(f"presence.directory.{agent}.v1")  # its channel record (RT-6.39 step 6)
-    dm = cfg(f"{agent}_dm", f"deliver.{agent}.dm", [f"bus.dm.{agent}.*"])
+    # the DMs and, since plan B piece 10 (RT-6.13), a person's DM to this agent
+    dm = cfg(f"{agent}_dm", f"deliver.{agent}.dm", [f"bus.dm.{agent}.*", f"bus.hu.dm.{agent}.*"])
     if since.get("@dm"):  # the same as the channels: restart after the last DM seen
         dm["deliver_policy"], dm["opt_start_seq"] = "by_start_sequence", since["@dm"] + 1
     out.append(("BUS", dm["durable_name"], dm))

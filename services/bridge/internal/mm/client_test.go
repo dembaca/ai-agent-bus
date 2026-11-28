@@ -737,3 +737,41 @@ func TestPostByID(t *testing.T) {
 		t.Fatal("a missing post is no error")
 	}
 }
+
+// RT-6.13, plan B piece 10: DirectChannel posts [own id, other id] and returns
+// the channel's id; an empty id and a refusal are errors.
+func TestDirectChannel(t *testing.T) {
+	var got []string
+	status := http.StatusCreated
+	id := "dm1"
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/users/me":
+			json.NewEncoder(w).Encode(map[string]any{"id": "bot1"})
+		case "/api/v4/channels/direct":
+			if r.Method != "POST" {
+				t.Errorf("method %s", r.Method)
+			}
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]any{"id": id})
+		}
+	})
+	ch, err := c.DirectChannel(context.Background(), "u2")
+	if err != nil || ch != "dm1" {
+		t.Fatalf("got %q, %v", ch, err)
+	}
+	if len(got) != 2 || got[0] != "bot1" || got[1] != "u2" {
+		t.Fatalf("body %v", got)
+	}
+	id = ""
+	if _, err := c.DirectChannel(context.Background(), "u2"); err == nil {
+		t.Fatal("an empty id is an error")
+	}
+	id, status = "dm1", http.StatusBadRequest
+	_, err = c.DirectChannel(context.Background(), "u2")
+	var rf *mirror.Refused
+	if !errors.As(err, &rf) {
+		t.Fatalf("want a refusal, got %v", err)
+	}
+}

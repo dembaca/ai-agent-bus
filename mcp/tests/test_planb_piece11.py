@@ -282,6 +282,9 @@ class _Side:
     def people_unheard(self) -> list[str]:
         return ["home"]
 
+    def permission_unrelayed(self) -> bool:
+        return False
+
     async def prime(self) -> None:
         return None
 

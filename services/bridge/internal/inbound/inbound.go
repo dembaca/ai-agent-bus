@@ -120,7 +120,11 @@ type Bridge struct {
 	Now      func() time.Time
 	// BotPrefix is the agents' bot prefix, set only while the mirror posts
 	// under the agents' own bots (RT-6.44): the signal names it then.
-	BotPrefix                                      string
+	BotPrefix string
+	// PermissionDMs is set while the bridge answers permission requests
+	// (RT-6.13, plan B piece 10): the signal names piece 10 then, in a home
+	// where its switch is on.
+	PermissionDMs                                  bool
 	Reach, Margin, SignalEvery, SignalValid, Retry time.Duration
 
 	me     string
@@ -309,7 +313,9 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 
 // pieces are the plan B pieces whose bridge half runs for the home, each
 // while its switch is on there: piece 6 (asks, RT-6.11 step 7) and piece 7
-// (replies and reactions to a person's post, RT-6.42 step 13).
+// (replies and reactions to a person's post, RT-6.42 step 13), and piece 10
+// (a tool permission prompt's DM, RT-6.13) only while PermissionDMs says its
+// handler is wired.
 func (b *Bridge) pieces(home string) []int {
 	if b.Switches == nil {
 		return nil
@@ -319,6 +325,9 @@ func (b *Bridge) pieces(home string) []int {
 		if b.Switches.On(n, home) {
 			on = append(on, n)
 		}
+	}
+	if b.PermissionDMs && b.Switches.On(10, home) { // a permission prompt's DM
+		on = append(on, 10)
 	}
 	return on
 }
@@ -711,10 +720,20 @@ func (b *Bridge) anchorOf(ctx context.Context, h *home, u mm.User) (string, erro
 	if err != nil {
 		return "", err
 	}
+	return ProvenAnchor(b.Anchors, u.ID, a), nil
+}
+
+// ProvenAnchor is the anchor of the account a (read with an admin token)
+// while the proof holds, "" otherwise: no bot, not deactivated, no guest, and
+// logging in as the binding was proven (userID is the account asked about).
+// anchorOf and the permission DMs (RT-6.13, plan B piece 10) share this rule.
+func ProvenAnchor(acc interface {
+	Bound(userID, authService, authData string) string
+}, userID string, a mm.User) string {
 	if a.IsBot || a.Deactivated || a.Guest {
-		return "", nil
+		return ""
 	}
-	return b.Anchors.Bound(u.ID, a.AuthService, a.AuthData), nil
+	return acc.Bound(userID, a.AuthService, a.AuthData)
 }
 
 // needsProof says whether plan B piece 4 is on in h, so that a post binds by

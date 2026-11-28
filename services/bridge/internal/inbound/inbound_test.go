@@ -1167,6 +1167,32 @@ func TestTheSignalNamesPiece7OnlyWhileItsSwitchIsOn(t *testing.T) {
 	}
 }
 
+// RT-6.13, plan B piece 10: the signal names piece 10 only while its switch is
+// on in the home AND the permission handler is wired (PermissionDMs).
+func TestTheSignalNamesPiece10OnlyWhileSwitchAndHandlerAreOn(t *testing.T) {
+	for _, tc := range []struct {
+		on      allOn
+		handler bool
+		want    []any
+	}{
+		{allOn{10: true}, true, []any{float64(10)}},
+		{allOn{6: true, 7: true, 10: true}, true, []any{float64(6), float64(7), float64(10)}},
+		{allOn{10: true}, false, nil},
+		{allOn{}, true, nil},
+	} {
+		r := newRigWith(t, nil, func(b *Bridge) { b.Switches, b.PermissionDMs = tc.on, tc.handler })
+		r.connect(1)
+		var sig map[string]any
+		if err := json.Unmarshal(waitSignal(t, r.sig).Data, &sig); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := sig["pieces"].([]any)
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Fatalf("on %v handler %v: signal %v", tc.on, tc.handler, sig)
+		}
+	}
+}
+
 // A person's post by the account uid.
 func postBy(uid, id string, at int64) *mmws.Posted {
 	return &mmws.Posted{PostID: id, UserID: uid, ChannelID: cid, Message: "go ahead", CreateAt: at, UpdateAt: at}
