@@ -96,6 +96,32 @@
     "agent_gone": false,
     "thread_id": "8xqk3b1zwtrd5mfy6nqpe4hc1o"
   },
+  "askForMe": {
+    "id": "8xqk3b1zwtrd5mfy6nqpe4hc1o",
+    "by": "oudzj4bhpl62iahctur5s5sf4",
+    "display_name": "agent-himalia-nats-pilo-772844",
+    "home": "dev",
+    "kind": "approval",
+    "human": "dembaca",
+    "need": "an example ask",
+    "at": 1763980900000,
+    "end": "open",
+    "for_me": true,
+    "may_answer": true,
+    "agent_gone": false,
+    "thread_id": "8xqk3b1zwtrd5mfy6nqpe4hc1o",
+    "card": {
+      "context": "PR 118 moves the console's ask card onto the record.\nThe review is done.",
+      "recommendation": "Merge it after the checks pass.",
+      "where": "PR 118",
+      "decision": "Merge PR 118 into main",
+      "answers": [
+        "go",
+        "no-go"
+      ],
+      "chosen": null
+    }
+  },
   "me": {
     "username": "dembaca",
     "display_name": "dembaca",

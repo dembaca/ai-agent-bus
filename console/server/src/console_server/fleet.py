@@ -30,7 +30,7 @@ from typing import Any, Callable
 from mattermost_ai_agent_bus import natsbus
 from mattermost_ai_agent_bus.natsbus import (
     CHANNEL_RE, Attestation, agent_ok, decode_attestation,
-    AskRecord, PresenceCard, card_text, decode_ask_record, decode_claim, decode_presence,
+    AskRecord, PresenceCard, card_block, card_text, decode_ask_record, decode_claim, decode_presence,
     decode_presence_bot, decode_presence_card, decode_presence_name,
     owner_of_token, owner_token,
     parse_ack,
@@ -502,7 +502,30 @@ class Fleet:
                     "agent_gone": gone,
                     "thread_id": ask.mm,
                 })
+                # The card only for the asked human and those the asking agent trusts (the
+                # owner's decision of 2026-11-28, ADR-015): both need the operator's own
+                # anchor named by the agent's attestation; everyone else, and every reader
+                # before that anchor is known, gets the title alone and no `card` key.
+                if rows[-1]["for_me"] is True or rows[-1]["may_answer"] is True:
+                    rows[-1]["card"] = _card(ask)
         return sorted(rows, key=lambda r: (not r["for_me"], r["at"]))
+
+
+def _card(ask: natsbus.OpenAsk) -> dict[str, Any]:
+    """An ask's card as `/v1/asks` hands it to whom it may see it: plain text, cleaned again
+    (control and direction characters out; the texts keep their line breaks), "" for a part
+    the ask has none of, `answers` in the order it was posted with ([] for none), `chosen`
+    the one a trusted human's reaction picked (None for none or a reply)."""
+    answers = [card_text(a, natsbus.ASK_ANSWER_MAX) or "" for a in ask.answers]
+    chosen = card_text(ask.chosen, natsbus.ASK_ANSWER_MAX) or None
+    return {
+        "context": card_block(ask.context, natsbus.ASK_CONTEXT_MAX) or "",
+        "recommendation": card_block(ask.recommendation, natsbus.ASK_RECOMMENDATION_MAX) or "",
+        "where": card_text(ask.where, natsbus.ASK_WHERE_MAX) or "",
+        "decision": card_block(ask.decision, natsbus.ASK_DECISION_MAX) or "",
+        "answers": answers,
+        "chosen": chosen if chosen in answers else None,
+    }
 
 
 def short_name(name: str) -> str:

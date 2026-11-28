@@ -113,6 +113,12 @@ const asks = (): AskWire[] => [
     need: "Is today's bridge the documented interim: every agent mirrors its own NATS posts into Mattermost?",
     at: now() - 14 * minute, end: "open", forMe: true, mayAnswer: true, agentGone: false,
     threadId: "8xqk3b1zwtrd5mfy6nqpe4hc1o",
+    context: "The bridge copies each agent's NATS posts into Mattermost today.\n"
+      + "The arc42 docs call it an interim until the central bridge takes over; nobody has said so in the home yet, "
+      + "and two agents asked about it this week.",
+    recommendation: "Say yes, so the home's agents stop asking and point to the decision record.",
+    where: "ai-agent-bus-dev, issue 285",
+    decision: "",
     answers: ["Yes, the documented interim", "No, another way", "Ask again later"], chosen: null,
   },
   {
@@ -121,6 +127,7 @@ const asks = (): AskWire[] => [
     need: "Which strategy should smart-compact use in your Claude sessions?",
     at: now() - 38 * minute, end: "answered", forMe: true, mayAnswer: true, agentGone: false,
     threadId: "3hq9t1c6pzbuxk8e7wj2r5dn4a",
+    context: "Long sessions hit the context limit twice today.", recommendation: "", where: "", decision: "",
     answers: ["Compact at 80 percent", "Compact at turn end"], chosen: "Compact at turn end",
   },
   {
@@ -472,7 +479,10 @@ const liveAsk = (end: Ask["end"]): AskWire => ({
   kind: "approval", human: "dembaca",
   need: "Run the end-to-end NATS test against the shared nats-server too?",
   at: now() - minute, end, forMe: true, mayAnswer: true, agentGone: false,
-  threadId: "k5w8r2n7c4x1q9m3t6v0bzjdya", answers: [], chosen: null,
+  threadId: "k5w8r2n7c4x1q9m3t6v0bzjdya",
+  context: "The end-to-end test runs against a private nats-server today.", recommendation: "Run it once against the shared one.",
+  where: "lab nats-server", decision: "Run the end-to-end NATS test once against the shared nats-server",
+  answers: [], chosen: null,
 })
 
 /** The mock as a ConsoleApi. `onEvent` gets a snapshot first, then the

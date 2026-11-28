@@ -578,12 +578,21 @@ before 0.5.0 are described in the git history.
   red count counts replies by others only (never the ask's own post or the operator's
   own); the "for you" chip stays in a narrow window; an ask that is not the operator's
   to answer has no answer box; the thread button is a speech-bubble icon with the number
-  alone. The ask's own answers (and which one was chosen) are not on the ask record, so
-  they are not shown: carrying them takes a change of the ask record on NATS (optional
-  keys, a wider "title, no body" rule, the console server and the agents rolled out
-  together) that the owner decides separately; this release does not make it. Context,
-  recommendation and "where" are not on the bus the console reads either, so they are
-  not shown.
+  alone.
+- **The ask record carries the whole card** (#285, ADR-015, the owner's decision of
+  2026-11-28). Each agent's ask record on NATS may now carry an ask's context,
+  recommendation, where, the decision's wording, its own answers and the one a trusted
+  human's reaction picked, as optional keys sent only when the ask has them, each
+  bounded (context and recommendation 900 characters, decision 400, where 200, two to
+  four answers of 120). The decoders stay strict and drop a record that breaks a bound.
+  The console server hands the card only to the asked human and to the people the
+  asking agent trusts; everyone else sees the title alone. The unfolded ask shows
+  Context, Recommendation and Where, "This counts as your approval of" the decision's
+  wording, the ask's own answers (two side by side, more with the key caps A to D) and
+  "answered: " with the chosen answer. No new right is added and answering stays
+  disabled. Roll out the console server first, then the agents: a console server
+  before this change refuses a whole record with unknown keys, so it would show no
+  asks of an updated agent that has a card until it is updated too.
 
 ### Fixed
 

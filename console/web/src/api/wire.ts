@@ -28,6 +28,7 @@ let shapes: {
   card: Omit<AgentCard, "state" | "harness" | "role"> & { state: string; harness: string | null; role: string },
   page: ThreadPage, events: FixtureEvShape,
   ask: Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
+  askForMe: Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
   report: ReportShape
   activity: ReportShape
   activity24h: ReportShape
@@ -53,6 +54,7 @@ if (!import.meta.env.PROD) {
   const page = { rootId: fixture.page.rootId, posts: [firstPost], next: fixture.page.next } satisfies ThreadPage
   const events = fixture.events satisfies FixtureEvShape
   const ask = fixture.ask satisfies Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
+  const askForMe = fixture.askForMe satisfies Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
   const me = fixture.me satisfies WireMe
   const report: ReportShape = fixture.report satisfies ReportShape
   const agentStats: AgentStatsRow[] = fixture.agentStats satisfies AgentStatsRow[]
@@ -119,6 +121,11 @@ if (!import.meta.env.PROD) {
   if (ask.end !== "open") {
     throw new Error(`wire fixture: the example ask is not open (${ask.end})`)
   }
+  // the card only for whom the asking agent names: the anonymous row has none
+  if ("card" in ask || askForMe.card === undefined || askForMe.for_me !== true
+      || askForMe.card.answers.length < 2 || askForMe.card.decision === "") {
+    throw new Error("wire fixture: the ask rows do not split title only and card")
+  }
   if (agentStats.length === 0) {
     throw new Error("wire fixture: no agent-stats row")
   }
@@ -129,7 +136,7 @@ if (!import.meta.env.PROD) {
       }
     }
   }
-  shapes = { card, page, events, ask, report, activity, activity24h, activityNoHours, asksBefore, agentStats, groups }
+  shapes = { card, page, events, ask, askForMe, report, activity, activity24h, activityNoHours, asksBefore, agentStats, groups }
 }
 
 export const wire_shapes = shapes
