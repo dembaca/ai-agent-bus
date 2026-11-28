@@ -168,7 +168,8 @@ PEOPLE_KEYS_MAX = 100_000  # keys held at most; the oldest go first
 PEOPLE_CHECK_SEC = 10.0  # how often the bridge's signals are looked at (RT-6.42 step 9)
 UNAPPROVED_SEC = 86400.0  # how long the reads remember an event without approver: an ask's 24 h
 PEOPLE_MARGIN_MS = 60_000  # the catch-up on Mattermost reads this much before the last people event
-PEOPLE_PIECE = 11  # Pplan B's piece of people's hieventstory through twhere no bridge signal is fresh (plan B piece 5b, RT-6.42 step 11): the bridge answers
+PEOPLE_PIECE = 11  # plan B's piece of people's events where no bridge signal is fresh (RT-6.42 step 12)
+# People's history through the bridge (plan B piece 5b, RT-6.42 step 11): the bridge answers
 # the oldest `limit` posts from `since` on, so a read of the newest posts asks for a full page
 # and walks forward with `next` while `more`.
 HISTORY_LIMIT = 200  # the bridge's most posts one answer part carries (history.MaxPosts)
@@ -1402,9 +1403,16 @@ class NatsPort:
         this host's clock is not passed (a replica may still lack a post before it). A post
         in neither read can still be passed."""
         home = await self.nats_name(channel_id)
-        if home is None or self._piece5(home) or not await self._copiers(home):
-            return 0  # piece 5: a switched channel is read through the bridge, never on Mattermost
-        raw = await self._people_read(home, lambda: self.inner.channel_posts(channel_id, since_ms=since_ms))
+        if home is None or not await self._copiers(home):
+            return 0
+        if self._piece5(home):
+            # The switched channel's people come through the bridge: its history answer still
+            # carries the bridge's copies (nothing strips them here), so `_had` sees them and
+            # the mark can pass them instead of asking the same old mark again forever.
+            raw = await self._history_posts(home, since_ms=since_ms, per_page=None)
+        else:
+            raw = await self._people_read(
+                home, lambda: self.inner.channel_posts(channel_id, since_ms=since_ms))
         if len(raw) >= COPY_READ_CAP:
             return 0
         after = [p for p in raw if p.create_at > since_ms]
@@ -2247,12 +2255,15 @@ class NatsPort:
         return [self._shown(ch, seq) for seq in sorted(self._posts.get(ch, {}))]
 
     # --- people's history through the bridge (plan B piece 5b, RT-6.42 step 11) ---------------
+    def _history_now_ms(self) -> int:
+        """The server's now (Mattermost's clock if it is ahead), in epoch ms, as the bridge's."""
+        bus = self._live()
+        return int(max(time.time(), bus.server_now if bus is not None else 0.0) * 1000)
+
     def _history_bound(self) -> int:
         """The oldest `since` the bridge reads: 14 days back, a minute inside its floor so its
         own clock never refuses the first read."""
-        bus = self._live()
-        now = max(time.time(), bus.server_now if bus is not None else 0.0)
-        return max(0, int(now * 1000) - HISTORY_MAX_AGE_MS + HISTORY_MARGIN_MS)
+        return max(0, self._history_now_ms() - HISTORY_MAX_AGE_MS + HISTORY_MARGIN_MS)
 
     def _history_since(self, since_ms: int | None) -> int:
         """The `since` a channel read asks with: the caller's cursor, but never older than the
@@ -2480,12 +2491,20 @@ class NatsPort:
         """A channel's people's posts from the bridge, oldest first.
 
         The bridge answers the OLDEST `limit` posts from `since` on, so the first request asks
-        with the caller's `per_page` (a quiet channel answers at once) and later ones with the
-        full page, walking forward while `more`. At most `pages` pages, deduped by post id; a
-        failed or malformed answer is nothing, never Mattermost's posts.
+        with the caller's `per_page` once and later ones with the full page, walking forward
+        while `more`. At most `pages` pages, deduped by post id; a failed or malformed answer is
+        nothing, never Mattermost's posts.
         """
+        posts, _more = await self._history_walk(channel, since_ms=since_ms, per_page=per_page,
+                                                pages=pages)
+        return posts
+
+    async def _history_walk(self, channel: str, *, since_ms: int | None, per_page: int | None,
+                            pages: int = HISTORY_PAGES) -> tuple[list[Post], bool]:
+        """`_history_posts` with whether the page cap left `more` posts unread (the oldest
+        window, not the newest)."""
         if per_page is not None and per_page <= 0:
-            return []
+            return [], False
         since = self._history_since(since_ms)
         # The first request asks with the caller's per_page once; later pages ask the full page,
         # since the bridge answers the OLDEST window from `since` on.
@@ -2522,7 +2541,7 @@ class NatsPort:
         except Exception as exc:  # noqa: BLE001 — the read is empty, never Mattermost
             log.warning("nats: the history read of ~%s failed (%s): nothing read",
                         channel, str(exc)[:200])
-            return []
+            return [], False
         if more_left:
             log.warning("nats: the history read of ~%s stopped at %d pages (cursor %d) with more "
                         "remaining: this is the oldest window, not the newest",
@@ -2534,9 +2553,31 @@ class NatsPort:
         except Exception as exc:  # noqa: BLE001 — a malformed answer maps to nothing
             log.warning("nats: the history read of ~%s did not map (%s): nothing read",
                         channel, str(exc)[:200])
-            return []
+            return [], False
         if since_ms is not None and since_ms > 0:
             posts = [post for post in posts if post.create_at >= since_ms]  # since, as Mattermost's
+        return posts, more_left
+
+    async def _history_recent(self, channel: str, per_page: int,
+                              pages: int = HISTORY_PAGES) -> list[Post]:
+        """The newest `per_page` posts of a channel with no cursor.
+
+        The bridge answers the oldest window from `since` on, so a read from 14 days back
+        presents the oldest posts as recent. Walk the narrowest window that holds them whole:
+        one day, else three, else fourteen; stop when `per_page` posts are there without
+        `more`. A window still `more` at the page cap is returned as it is (widening could only
+        push the newest posts further away).
+        """
+        if per_page <= 0:
+            return []
+        now = self._history_now_ms()
+        posts: list[Post] = []
+        for days in (1, 3, 14):
+            posts, more = await self._history_walk(
+                channel, since_ms=now - days * 24 * 60 * 60 * 1000, per_page=per_page,
+                pages=pages)
+            if more or len(posts) >= per_page:
+                return posts
         return posts
 
     async def _history_thread(self, channel: str, post_id: str) -> Thread:
@@ -2627,7 +2668,10 @@ class NatsPort:
             return []
         name = await self.nats_name(channel_id)
         if name is not None and self._piece5(name):
-            mm = await self._history_posts(name, since_ms=since_ms, per_page=per_page)
+            if since_ms is None and per_page is not None:
+                mm = await self._history_recent(name, per_page)  # newest N: narrow, then widen
+            else:
+                mm = await self._history_posts(name, since_ms=since_ms, per_page=per_page)
         else:
             mm = await self._people_read(name, lambda: self.inner.channel_posts(
                 channel_id, per_page=per_page, since_ms=since_ms))
@@ -2645,7 +2689,10 @@ class NatsPort:
             return []
         name = await self.nats_name(cid)
         if name is not None and self._piece5(name):
-            mm = await self._history_posts(name, since_ms=since_ms, per_page=per_page)
+            if since_ms is None:
+                mm = await self._history_recent(name, per_page)  # newest N: narrow, then widen
+            else:
+                mm = await self._history_posts(name, since_ms=since_ms, per_page=per_page)
         else:
             mm = await self._people_read(name, lambda: self.inner.list_recent(
                 channel_id=channel_id, per_page=per_page, since_ms=since_ms))
@@ -2665,7 +2712,7 @@ class NatsPort:
         name = await self.nats_name(cid)
         if name is not None and self._piece5(name):
             mm = await self._history_posts(name, since_ms=since_ms, per_page=None,
-                                           pages=max(0, min(max_pages, HISTORY_PAGES)))
+                                           pages=max(0, max_pages))
         else:
             mm = await self._people_read(name, lambda: self.inner.posts_after(
                 since_ms, channel_id=channel_id, max_pages=max_pages))

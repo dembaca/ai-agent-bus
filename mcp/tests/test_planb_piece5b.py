@@ -289,10 +289,14 @@ async def test_a_channel_read_walks_next_while_more_and_dedupes(
 
         async with Bridge(rig, endless) as fake:
             with caplog.at_level(logging.WARNING, logger="mattermost_ai_agent_bus.nats_port"):
-                got = await port.posts_after(10, channel_id=WORK)
+                got = await port.posts_after(10, channel_id=WORK, max_pages=5)
             assert [p.id for p in got] == [P1]  # deduped across the five pages
             assert len(fake.asked) == 5
             assert "oldest window, not the newest" in caplog.text and "~home" in caplog.text
+
+        async with Bridge(rig, endless) as fake:
+            await port.posts_after(10, channel_id=WORK, max_pages=7)
+            assert len(fake.asked) == 7  # the caller's max_pages, not HISTORY_PAGES
 
         async with Bridge(rig, lambda _p: _result([p1, p2, p3])) as fake:
             newest = await port.list_recent(channel_id=WORK, per_page=2)
@@ -440,10 +444,33 @@ async def test_the_switch_gates_the_other_mattermost_reads(
     port._note_mm(P1, HOME)  # as a live person's event does
     try:
         assert await port._with_files(person) is person
-        assert await port.copies_through(WORK, 0) == 0
-        assert "thread" not in inner.log and "channel_posts" not in inner.log
+        assert "thread" not in inner.log
     finally:
         await port.stop()
+
+
+async def test_copies_through_reads_the_history_with_the_switch_on(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: the unread watermark's copy pass reads the switched channel's posts
+    through the bridge, never Mattermost, and passes a copy it can see there instead of asking
+    the same old mark forever."""
+    port, inner = await _setup(rig, monkeypatch, [5], bridge_bot="bridgebot")
+    now = _now() * 1000
+    mine = await port.post("an agent's post", channel_id=WORK)
+    prefix = port._s.props_prefix
+    copy = _post("k" * 26, message="an agent's post", bot=True, create_at=now - 60_000,
+                 props={f"{prefix}nats_id": mine.id})
+
+    def bridge(_payload: dict[str, Any]) -> Any:
+        return _result([copy])
+
+    async with Bridge(rig, bridge) as fake:
+        try:
+            through = await port.copies_through(WORK, now - 120_000)
+            assert through == copy["create_at"]
+            assert fake.asked and "channel_posts" not in inner.log
+        finally:
+            await port.stop()
 
 
 async def test_two_history_reads_do_not_overlap(
@@ -497,3 +524,68 @@ async def test_a_malformed_answer_drops_what_does_not_hold_together(
             assert thread.root_id == P1 and thread.posts == ()
         finally:
             await port.stop()
+
+
+async def test_a_read_without_a_cursor_starts_narrow_and_returns_the_newest(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: a newest-N read starts one day back, not at the 14-day floor, so a busy
+    home's newest posts are the ones it returns."""
+    port, _inner = await _setup(rig, monkeypatch, [5])
+    now = _now() * 1000
+    day = 24 * 60 * 60 * 1000
+    old = _post(P1, anchor="", create_at=now - 5 * day)
+    recent = [_post(P2, anchor="", create_at=now - 3 * 3600 * 1000),
+              _post(P3, anchor="", create_at=now - 2 * 3600 * 1000),
+              _post(P4, anchor="", create_at=now - 3600 * 1000)]
+
+    def bridge(payload: dict[str, Any]) -> Any:
+        return _result(recent if payload["since"] >= now - day else [old, *recent])
+
+    async with Bridge(rig, bridge) as fake:
+        try:
+            got = await port.list_recent(channel_id=WORK, per_page=2)
+            assert [p.id for p in got] == [P3, P4]  # the newest two
+            assert fake.asked and fake.asked[0]["since"] >= now - day
+            assert len(fake.asked) == 1  # the narrow window was enough
+        finally:
+            await port.stop()
+
+
+async def test_a_narrow_window_with_too_few_posts_widens(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: a one-day window with fewer than per_page posts widens to three days;
+    the caller's own cursor is not widened."""
+    port, _inner = await _setup(rig, monkeypatch, [5])
+    now = _now() * 1000
+    day = 24 * 60 * 60 * 1000
+    one = _post(P1, anchor="", create_at=now - 2 * 3600 * 1000)
+    three = [_post(P2, anchor="", create_at=now - 3 * day + 3600 * 1000),
+             _post(P3, anchor="", create_at=now - 2 * day),
+             _post(P4, anchor="", create_at=now - day - 3600 * 1000)]
+
+    def bridge(payload: dict[str, Any]) -> Any:
+        if payload["since"] >= now - day:
+            return _result([one])
+        if payload["since"] >= now - 3 * day:
+            return _result(three)
+        return _result([one, *three])
+
+    asked: list[int] = []
+
+    def cursor(payload: dict[str, Any]) -> Any:
+        asked.append(payload["since"])
+        return _result([])
+
+    try:
+        async with Bridge(rig, bridge) as fake:
+            got = await port.list_recent(channel_id=WORK, per_page=3)
+            assert [p.id for p in got] == [P2, P3, P4]
+            assert len(fake.asked) >= 2
+            assert fake.asked[0]["since"] >= now - day
+            assert fake.asked[1]["since"] < now - day
+
+        async with Bridge(rig, cursor):
+            await port.list_recent(channel_id=WORK, per_page=3, since_ms=now - 3 * day)
+            assert asked == [now - 3 * day]  # the caller's cursor is authoritative
+    finally:
+        await port.stop()
