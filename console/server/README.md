@@ -4,7 +4,7 @@ The server of the operator console, stage 1, **reading only**: it reads
 the NATS homes' presence, crown claims and memberships through the
 JetStream consumers the login service makes for each logged-in operator, serves the API of
 [ADR-015 point 10](../../docs/arc42/09-architecture-decisions.md) —
-`GET /v1/fleet` as server-sent events, `/v1/me`, `/v1/asks`, `/v1/graph`,
+`GET /v1/fleet` as server-sent events, `/v1/me`, `/v1/asks`, `/v1/groups`, `/v1/graph`,
 `/v1/stats`, `/v1/agent-stats` (own or trusted agents only), `/v1/threads/<id>`, and `GET /metrics` in the Prometheus text
 format (#158, RT-6.43 step 10: behind the operator's login like the rest,
 the console's own observations and that session's agent numbers, labels
@@ -127,6 +127,18 @@ never from anything the browser sends. People are nodes by
 and only labelled by the name (an attestation's anchor is in name form,
 the login record's in subject form), so two anchors of one name stay two
 nodes.
+
+`/v1/groups?by=home|repo|owner|status|none&scope=mine|trusting|everyone`
+(#283, RT-6.43 step 11) counts what the agents list and its panel "At a
+glance" show: per group the agents' names, the state counts, the reachable and
+working agents, the open asks, those for the operator and those it may answer,
+and the sum of today's tokens, and the panel's numbers for the operator's own
+agents and for the whole flock. "Mine" is the agents whose fresh attestation
+names the operator's anchor as owner, "trusting" those that name it as owner or
+trusted, "everyone" all. The token sum covers only the agents the operator may
+see per-agent numbers of (own or trusted) and says how many (`tokensAgents` of
+`total`); null where none states a count; without the anchor nothing is mine and
+no ask is for you. An unknown `by` or `scope` is a 400.
 
 The asks and the reports (the console on the bus as its operator,
 RT-6.43, steps 6 to 8): every MCP server with a NATS link publishes one

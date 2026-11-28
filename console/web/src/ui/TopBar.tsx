@@ -4,22 +4,21 @@ import { toggleLabel, type Theme } from "../theme"
 import { Logo, MoonIcon, SunIcon } from "./icons"
 import "./TopBar.css"
 
-export type View = "agents" | "asks" | "graph" | "overview" | "reports"
+export type View = "agents" | "asks" | "stats"
 
 export const VIEW_LABEL: Record<View, string> = {
   agents: "Agents",
   asks: "Asks",
-  graph: "Graph",
-  overview: "Overview",
-  reports: "Reports",
+  stats: "Stats",
 }
 
-// #200: the Overview first, and the console's default view
-const NAV: readonly View[] = ["overview", "agents", "asks", "graph", "reports"]
+// #283: three views, the agents list is the start page
+const NAV: readonly View[] = ["agents", "asks", "stats"]
 
-/** The top bar (the agreed design, 2026-11-25; #200): the Choirbus logo and
- * wordmark, the views — the Overview first, the default — with the number of open asks
- * beside Asks (orange when one is the operator's), the fleet stream's state
+/** The top bar (the agreed design, 2026-11-25; #283): the Choirbus logo and
+ * wordmark, which leads to the agents list, the three views Agents (the start page),
+ * Asks and Stats, with the number of open asks
+ * beside Asks (orange when one is the operator's), the flock stream's state
  * (one state for the whole console), the theme toggle, and the logged-in
  * operator with the logout. The console is read-only. */
 export function TopBar({ view, setView, openAsks, forMe, conn, operator, theme, onToggleTheme }: {
@@ -35,8 +34,8 @@ export function TopBar({ view, setView, openAsks, forMe, conn, operator, theme, 
   return (
     <header className="topbar">
       <div className="topbar__inner">
-        <button type="button" className="topbar__brand" onClick={() => setView("overview")}
-          aria-label="Choirbus, the overview">
+        <button type="button" className="topbar__brand" onClick={() => setView("agents")}
+          aria-label="Choirbus, the agents">
           <Logo />
           <span>Choirbus</span>
         </button>
@@ -64,7 +63,7 @@ export function TopBar({ view, setView, openAsks, forMe, conn, operator, theme, 
           ))}
         </nav>
         <div className="topbar__end">
-          <span className={"topbar__conn topbar__conn--" + conn} title={"fleet stream: " + conn}>
+          <span className={"topbar__conn topbar__conn--" + conn} title={"flock stream: " + conn}>
             <i aria-hidden="true" />{conn === "syncing" ? "syncing…" : conn}
           </span>
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />

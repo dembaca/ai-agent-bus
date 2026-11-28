@@ -1,11 +1,7 @@
-/* An agent's detail page: breadcrumb, head, the task and threads on the
+/* An agent's detail, in the drawer (#283): head, the task and threads on the
    left, the ask and the session's facts on the right. */
 
 .detail { display: flex; flex-direction: column; gap: 14px; }
-
-.detail__crumbs { display: flex; gap: 6px; align-items: center; color: var(--muted); }
-.detail__crumbs .linkish { color: var(--muted); }
-.detail__crumb-here { color: var(--ink); }
 
 .detail__head { display: flex; flex-direction: column; gap: 6px; }
 .detail__title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
@@ -17,6 +13,19 @@
   overflow-wrap: anywhere;
 }
 .detail__crown { gap: 5px; }
+.detail__close {
+  margin-left: auto;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.detail__close:hover { background: var(--surface-2); color: var(--ink); }
 .detail__sub { color: var(--muted); }
 
 .detail__grid { display: flex; flex-wrap: wrap; gap: 14px; align-items: start; }

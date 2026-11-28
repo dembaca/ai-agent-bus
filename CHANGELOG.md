@@ -339,6 +339,26 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **The operator console opens on the agents list, with three views** (#283,
+  ADR-015 points 3 and 6, RT-6.43 step 11). The console has Agents (the start
+  page), Asks and Stats; the Overview page, the "Bus map" panel and the Graph
+  view are gone, and with them the React Flow and dagre libraries. The agents
+  list shows one row per agent in three columns, grouped by home, repo, owner,
+  status or not at all, with a header per group that folds it, a scope switch
+  Mine, Trusting me or Everyone (Mine is the default) and a search over home,
+  agent and person. A panel "At a glance" on the left has four tiles, the asks
+  that need you and the flock by status, and folds to a rail. An agent's detail
+  opens as a drawer from the right that does not block the page: Esc, the cross
+  or a second click closes it, arrow up and down move to the next agent, and the
+  open agent is in the address. The console remembers the panel, the grouping,
+  the folded groups and the scope per person. The server counts per group: the
+  new `GET /v1/groups?by=…&scope=…` answers the state counts, the reachable
+  agents, the asks for the operator and the sum of today's tokens, so the browser
+  no longer counts over every presence card. A group's token sum covers only the
+  agents whose numbers the operator may see (own or trusted) and says how many
+  that are. Fields the API does not carry yet are left out of the rows. `GET
+  /v1/graph` stays on the server, unused by the console. Open, the owner's
+  decision: who sees which homes, and a cost in money beside tokens.
 - **A Mattermost account is bound to its Keycloak identity by proof, once,
   and a trusted human's answer on Mattermost approves without the approver
   flag** (#266, part of #268; RT-6.41 step 6, RT-6.42 step 3; the owner's

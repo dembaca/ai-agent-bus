@@ -1,3 +1,4 @@
+import { X } from "lucide-react"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import type { AgentCard, AgentStatsRow, Ask, ConsoleApi, Post, ThreadPage } from "../api/types"
 import { clock, since } from "../clock"
@@ -10,12 +11,13 @@ import "./Detail.css"
 
 type Fail = (what: string, error: unknown) => void
 
-/** An agent's detail page (the agreed design, 2026-11-25; ADR-015 points 3
- * and 6): the full card, the task rows it holds, the session's age, the time
- * since its last post, its HELLO thread and the threads of its open asks. An
- * ask opened from a list shows on top of its agent's page, or alone when its
- * agent is gone. Read-only: no answer button (stage 1). */
-export function Detail({ api, card, ask, asks, stats = null, from, onBack, onFail }: {
+/** An agent's detail, the content of the drawer from the right (#283; ADR-015
+ * points 3 and 6): the full card, the task rows it holds, the session's age,
+ * the time since its last post, its HELLO thread and the threads of its open
+ * asks. An ask opened from a list shows on top of its agent's detail, or alone
+ * when its agent is gone. Read-only: no answer button (stage 1). The cross
+ * closes it; the drawer around it handles Esc and the arrow keys (App). */
+export function Detail({ api, card, ask, asks, stats = null, onClose, onFail }: {
   api: ConsoleApi
   card: AgentCard | null
   ask: Ask | null
@@ -23,9 +25,7 @@ export function Detail({ api, card, ask, asks, stats = null, from, onBack, onFai
   /** The per-agent rows of `GET /v1/agent-stats` by agent (#201); null
    * while none was read. */
   stats?: ReadonlyMap<string, AgentStatsRow> | null
-  /** The view the page was opened from: the breadcrumb leads back to it. */
-  from: string
-  onBack: () => void
+  onClose: () => void
   onFail: Fail
 }) {
   // #199: the agent's name; its id on the bus in the title and the facts
@@ -37,12 +37,6 @@ export function Detail({ api, card, ask, asks, stats = null, from, onBack, onFai
   const othersForYou = others.some((a) => a.forMe === true)
   return (
     <div className="detail">
-      <nav aria-label="Breadcrumb" className="detail__crumbs">
-        <button type="button" className="linkish" onClick={onBack}>{from}</button>
-        <span aria-hidden="true">/</span>
-        <span className="mono detail__crumb-here">{title}</span>
-      </nav>
-
       <div className="detail__head">
         <div className="detail__title">
           <h1 className="mono" title={card ? nameTitle(card) : named?.id}>{title}</h1>
@@ -54,6 +48,10 @@ export function Detail({ api, card, ask, asks, stats = null, from, onBack, onFai
             </span>
           )}
           {!card && ask?.agentGone && <span className="pill pill--offline">agent gone</span>}
+          <button type="button" className="detail__close" aria-label="Close the detail"
+            title="Close (Esc)" onClick={onClose}>
+            <X size={16} aria-hidden="true" />
+          </button>
         </div>
         {card && (
           <span className="detail__sub">

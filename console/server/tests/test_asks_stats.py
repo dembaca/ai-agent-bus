@@ -148,7 +148,7 @@ def test_a_bad_record_is_dropped_whole_with_a_warning_that_carries_none_of_it(bo
 
 LINE = {"v": "0.101.0", "sid": "3f9a1c2b7d4e", "part": 1, "rt": "claude-code", "kind": "session",
         "min": 600, "turns": 10, "asks": 3, "asks_answered": 2, "ask_wait_sec": 300,
-        "ask_wait_max_sec": 200, "asks_open": 1, "ask_open_sec": 60, "ask_open_max_sec": 60,
+        "ask_wait_max_sec": 200, "asksOpen": 1, "ask_open_sec": 60, "ask_open_max_sec": 60,
         "tok": {"req": 10, "bus_req": 2, "fixed": 100, "all": {"in": 1000, "out": 100},
                 "bus": {"in": 100, "out": 10}}}
 
@@ -491,3 +491,65 @@ def test_one_agent_row_that_cannot_be_computed_is_n_a(monkeypatch) -> None:
     assert rows[A]["tok24h"] is not None
     assert rows[B] == {"agent": B, "tok24h": None, "tok7d": None,
                        "posts24h": None, "wakes24h": None, "tools24h": None}
+
+
+# --- #283: the agents list's groups, counted on the server ---------------------------------
+
+def _groups(f: Fleet, anchor: str | None, by: str, scope: str) -> dict:
+    from console_server import groups
+    return groups.groups(f.cards(anchor), f.asks(anchor), [], by=by, scope=scope,
+                         own=f.own(anchor), own_or_trusted=f.own_or_trusted(anchor))
+
+
+def test_groups_count_per_group_and_scope() -> None:
+    """RT-6.43 step 11, #283: the state counts, the reachable agents and the asks for the operator come from the
+    server; "Mine" is the agents the operator owns, "Trusting me" those that name it owner or
+    trusted, "Everyone" all; the groups with an ask for the operator come first."""
+    rec_a = encode_ask_record([OpenAsk(mm(1), "approval", "dembaca", "a", int(NOW) - 60)], int(NOW))
+    f = fleet_with((A, "dev", rec_a, NOW))
+    # carol's anchor: she owns B and A's attestation trusts her
+    mine = _groups(f, "carol~x", "home", "mine")
+    assert [g["agents"] for g in mine["groups"]] == [[B]]
+    trusting = _groups(f, "carol~x", "home", "trusting")
+    assert sorted(a for g in trusting["groups"] for a in g["agents"]) == sorted([A, B])
+    everyone = _groups(f, "carol~x", "home", "everyone")
+    assert everyone["glance"]["flock"]["total"] == 2
+    assert everyone["glance"]["flock"]["states"]["listening"] == 2  # presence v1 "online"
+    assert everyone["glance"]["mine"]["total"] == 1
+    # the agent A asked carol's human? no: the ask is for "dembaca", so none is for her
+    assert everyone["glance"]["flock"]["asksForYou"] == 0
+    # dembaca: A is hers, B's attestation does not name her
+    dem = _groups(f, "dembaca", "home", "everyone")
+    assert dem["glance"]["mine"]["total"] == 1 and dem["glance"]["flock"]["asksForYou"] == 1
+    by_owner = _groups(f, "dembaca", "owner", "everyone")["groups"]
+    assert by_owner[0]["agents"] == [A] and by_owner[0]["asksForYou"] == 1  # carol sorts first by name
+
+
+def test_groups_without_an_anchor_count_nothing_as_mine_or_for_you() -> None:
+    f = fleet_with()
+    doc = _groups(f, None, "owner", "mine")
+    assert doc["groups"] == [] and doc["glance"]["mine"]["total"] == 0
+    assert _groups(f, None, "none", "everyone")["groups"][0]["label"] == "All agents"
+
+
+def test_groups_sum_tokens_only_of_what_the_operator_may_see() -> None:
+    """#283 and ADR-015 point 15: the sum covers the agents with a per-agent row, and says how
+    many; n/a (None) when none states a token count, never 0."""
+    from console_server import groups
+    f = fleet_with()
+    cards = f.cards("dembaca")
+    rows = [{"agent": A, "tok24h": {"all": 1200}, "tok7d": None}]
+    doc = groups.groups(cards, [], rows, by="none", scope="everyone",
+                        own=f.own("dembaca"), own_or_trusted=f.own_or_trusted("dembaca"))
+    group = doc["groups"][0]
+    assert group["total"] == 2 and group["tokens"] == 1200 and group["tokensAgents"] == 1
+    none = groups.groups(cards, [], [{"agent": A, "tok24h": None, "tok7d": None}], by="none",
+                         scope="everyone", own=f.own("dembaca"),
+                         own_or_trusted=f.own_or_trusted("dembaca"))
+    assert none["groups"][0]["tokens"] is None
+
+
+def test_groups_by_status_use_the_status_groups_and_never_guess_an_unknown_state() -> None:
+    from console_server import groups
+    assert groups.status_of("bus") == "working" and groups.status_of("away") == "idle"
+    assert groups.status_of("dreaming") == "other"

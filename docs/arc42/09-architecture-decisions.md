@@ -4846,48 +4846,49 @@ The console is the operators' view of the bus itself.
 
 3. **Layout.** Changed with the design the owner agreed on 2026-11-25
    (it replaced a sidebar with a Kanban as the home and a split detail
-   pane). A top bar carries the Choirbus logo and wordmark, the views —
-   Overview (first, and the view the console opens with, #200), Agents,
-   Asks with the number of open asks (orange when one is the operator's),
-   Graph, Reports — the fleet stream's state, a
+   pane; changed again by the addition of 2026-11-28, issue #283). A top
+   bar carries the Choirbus logo and wordmark, which leads to the agents
+   list, the three views — Agents (the start page), Asks with the number
+   of open asks (orange when one is the operator's), Stats — the flock
+   stream's state, a
    light/dark toggle and the logged-in operator with the logout. The look is
    the website's brand: Inter only, the logo's navy as the accent, the
    site's word colors (orange asks, blue tasks, green done), compact rows,
    soft shadows, 2 px corners; dark follows the system until the operator
    picks one with the toggle, which this browser keeps. A footer names the
    console's release version and source commit, both from the image build
-   (#182). A click on an item (an agent's row, a node, an ask) opens its
-   detail beside the view, half and half, the view still in sight and the
-   item marked in it (#200); below 1000 px the detail is the whole page. A
-   breadcrumb leads back to the view, and the browser's Back and Forward
-   move between views and details; the list's search and filter stay. The
+   (#182). A click on an agent (a row, an entry of the panel "Needs you",
+   an ask) opens its detail as a drawer from the right, about half the
+   width and the whole width on a narrow window; it is not modal, so the
+   page behind stays usable. The open agent is part of the address
+   (`?agent=<name>`), so a link or a reload opens the same drawer. The
+   browser's Back and Forward move between views and drawers; the list's
+   search stays. The
    detail shows the item's data and, where it has one, its thread as the
    bus has it: the HELLO thread, a task's thread, an ask's thread. An ask
    is answered there. A short-answer dialog on an ask's badge is optional
    and never the only way: it opens the same ask, and the thread stays one
-   click away. The Overview counts from the same live data: agents
-   reachable and by status, the open asks and those for the operator, and
-   the way to the bus map (the Graph); its tiles share one gap, and every
-   tile of a row is as tall as the row.
+   click away. The former Overview page, the bus map and the Graph view are
+   gone (#283); their numbers live in the panel of the agents list (point 6).
 
    ```mermaid
    stateDiagram-v2
      [*] --> View: open a view
      View --> Detail: click an item
      Detail --> Detail: click another item
-     Detail --> View: back, or pick a view
+     Detail --> View: cross, Esc, a second click, or pick a view
      Detail --> Answering: send an answer
      Answering --> Detail: its copy came back from the bus, or none came (shown)
    ```
 
    ```text
    +-------------------------------------------------------------------+
-   | logo Choirbus  Overview  Agents  Asks 3  Graph  Reports  theme  op |
+   | logo Choirbus  Agents  Asks 3  Stats                theme  op     |
    +-------------------------------------------------------------------+
-   | Agents      [search] [filter]  | Agents / agent's name            |
-   | [open ask]  [open ask]         | state  coordinator  model  for   |
-   | agent  status  task  last post | current task | its open asks    |
-   | agent  status  task  last post | HELLO thread | session facts    |
+   | At a glance | [search] Group by Home Repo .. Scope Mine ..| drawer |
+   | 4 tiles     | home  [bar] 3 of 4 reachable  1 for you     | agent  |
+   | Needs you   |  agent  state  repo, branch, PR, task       | task   |
+   | Flock       |  agent  state  repo, branch, PR, task       | HELLO  |
    +-------------------------------------------------------------------+
    | read-only pilot                     version x.y.z · commit abc1234 |
    +-------------------------------------------------------------------+
@@ -5007,26 +5008,52 @@ The console is the operators' view of the bus itself.
    it has an open ask. The harness logo follows the card's harness: Claude
    Code, OpenCode, Cursor, Codex, pi, else "other".
 
-6. **Agents list** (a Kanban until the design of 2026-11-25). One compact
-   row per agent, in the order of the state words; above the table the open
-   asks, the operator's first. A search narrows the rows by any word of
-   name, task, branch, home, guest channels, harness, model or PR; a status
-   filter by group: working (`working`, `bus`), listening (`listening`,
-   `online`), idle (`idle`, `away`, `silent`), offline. A state the console
-   does not know is never guessed into a group: it shows under "All" and
-   under an "Other" filter, which appears while such an agent is there.
+6. **Agents list** (a Kanban until the design of 2026-11-25; the start page
+   with its panel since 2026-11-28, #283). One row per agent in three
+   columns, grouped by "Group by" Home, Repo, Owner, Status or None; what the
+   list is grouped by is not repeated in the row. A group has a header
+   (name, a small bar of its states, "n of m reachable", "k working", a chip
+   "n for you" when an ask of the group is for the operator, at the right
+   the tokens of today) that folds and unfolds it; groups with an ask for
+   the operator come first. A scope switch picks Mine (the agents whose
+   fresh attestation names the operator as owner, the default), Trusting me
+   (those that name the operator as owner or trusted) or Everyone; in
+   Everyone the groups start folded except those that need the operator,
+   and groups with nobody reachable and no open ask fold into one row ("22
+   quiet homes"). A search narrows the rows by any word of home, agent,
+   person, repo, branch, task, harness, model or PR. The status groups are
+   working (`working`, `bus`), listening (`listening`, `online`), idle
+   (`idle`, `away`, `silent`), offline, and other: a state the console does
+   not know is never guessed into a group. **The server counts**
+   (`GET /v1/groups`, point 10): the state counts, the reachable agents, the
+   asks for the operator and the sum of today's tokens of every group and
+   of the panel come from it, the browser counts nothing over the cards. The
+   panel "At a glance" on the left has four tiles — Reachable, Working
+   now, For you, You may answer — each with the operator's own number large
+   and the flock's small, "Needs you" (the asks for the operator and those
+   it may answer; a click opens the asking agent), and "Flock by status".
+   It folds to a rail with three numbers (asks for you, reachable,
+   working); folded, each row gains a fourth column (posts and tool calls
+   of today, the owner); on a narrow window it sits above the list and starts
+   folded. This browser remembers per person the panel, the grouping, the
+   folded groups and the scope. The detail is a drawer (point 3): Esc, the
+   cross or a second click on the same row closes it, arrow up and down move
+   to the next agent of the list. Fields the API does not carry yet (the
+   context, PR, repo, version, capabilities, real threads, task rows, "waits
+   on you" on the card) show when present and are left out otherwise, never
+   invented.
    - **The name** (#199): the username the agent's presence states; one
      another card states too, or one that is another card's name on the
      bus, shows with a "shared name" mark wherever the agent is named (the
-     list, the detail, the asks, the Overview, the graph), never as a
+     list, the detail, the asks, the panel), never as a
      confirmed name; the name on the bus (a hash, RT-6.36 step 8) only in the
      title and the detail's facts, or where no name is stated at all (an
      older MCP server, a session without a Mattermost bot).
-   - **On the row:** name with the crown, harness and model; the state, and
-     "waits on you" when one of its open asks is the operator's; task;
-     branch or PR; home and the number of its guest channels; `ctx`; the
-     number of its open asks; the time since its last post. Beside an open
-     detail the row keeps name, state, task and the last post.
+   - **On the row:** left the name with the crown and "waits on you" when
+     one of its open asks is the operator's, below it harness and model,
+     below that the context bar and the tokens of today; in the middle the
+     state and "last post …"; at the right repo and branch with the PR
+     chip, small, above the task.
    - **In the detail only:** the full card (role, `for` with
      "autonomous", `trusts`, project, capabilities, the limits or the
      cost, the version among it), the task rows it holds, the session's
@@ -5162,7 +5189,8 @@ The console is the operators' view of the bus itself.
     | `GET /v1/fleet`, then server-sent events | agents with state, crown, card, numbers; then changes | `coordinator("roster")` across the operator's channels, with the agents not reachable too |
     | `GET /v1/me` | the logged-in operator: username, display name, groups | the browser session; the server's own login (point 4) |
     | `GET /v1/asks` | open asks, `for_me` and `may_answer` marked | the ask rows of `coordinator("tasks")` |
-    | `GET /v1/graph` | nodes and edges | point 7 |
+    | `GET /v1/groups?by=…&scope=…` | the agents list's groups with their counts and the panel's numbers (#283) | point 6; the scopes as the per-agent rows below |
+    | `GET /v1/graph` | nodes and edges; no longer drawn by the app since #283 | point 7 |
     | `GET /v1/stats` | the reports, filtered | `stats_report` |
     | `GET /v1/threads/<post id>` | one thread from the server's memory, paged, when the detail opens | the bus's thread of that post |
     | `POST /v1/asks/<post id>/answer` | the operator's reaction or reply, published on NATS under that person's name; refused for a post that is no open ask | RT-6.11 step 3 |
@@ -5678,7 +5706,7 @@ agent publishes passes for a person's word.
     agent before the login's own record gave the operator's anchor get no
     row; no row is the safe default. An own or trusted agent running now
     has no row either until its first `STATS` part arrives. The app shows
-    the rows in the Agents list's "Tokens today" column and the detail's
+    the rows in the Agents list's rows ("today") and the detail's
     "Today" block (tokens with the split by type, posts, wakes, tool
     calls); an agent without a row shows a dash there, and the dash's
     title, the list's footnote and the detail say: "No per-agent numbers
@@ -5757,6 +5785,29 @@ kept 30 days.
   show.
 
 ---
+
+**Addition, 2026-11-28: Agents is the start page** (issue #283; the owner
+decided every point in the design thread, except the two listed as open).
+The console has three views, Agents (the start page), Asks and Stats; the
+Overview page, the "Bus map" panel and the Graph view are gone, and with
+them the React Flow and dagre libraries. The agents list (point 6) is
+grouped, with the panel "At a glance" on the left and the detail as a
+non-modal drawer from the right (point 3). **The server counts per group**:
+`GET /v1/groups?by=home|repo|owner|status|none&scope=mine|trusting|everyone`
+answers, per group, the agents' names, the state counts, the reachable and
+working agents, the open asks, those for the operator and those it may
+answer, and the sum of today's tokens, and with it the panel's numbers for
+the operator's own agents and for the whole flock. The same rule as the
+per-agent rows holds: a group's token sum covers only the agents the
+operator may see numbers of (own or trusted, point 15), says how many that
+are (`tokensAgents` of `total`), and is null (n/a), never 0, when none of
+them states a count. Without the operator's anchor nothing is "mine" and
+no ask is "for you". "Mine" counts the agents whose fresh attestation names
+the operator as owner; "Trusting me" counts those that name the operator
+as owner or trusted. `GET /v1/graph` stays on the server, unused by the app.
+Still open, the owner's decision: who sees which homes (today every logged-in
+person sees every card with task and branch) and the cost in money beside
+tokens (no agent reports it); the console builds without both.
 
 ## ADR-016: The bus without a chat as its source
 
