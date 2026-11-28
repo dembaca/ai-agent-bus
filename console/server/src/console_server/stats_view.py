@@ -219,8 +219,9 @@ class StatsBook:
                 card["activity"]["reason"] = HOURLY_NOTE
                 return card
             first = int(now // 3600) * 3600 - 23 * 3600
-            bars = [{"start": first + 3600 * i, "groups": {g: 0 for g, _n, _w in ACTIVITY_GROUPS}, "words": {}}
-                    for i in range(24)]
+            bars: list[dict[str, Any]] = [
+                {"start": first + 3600 * i, "groups": {g: 0 for g, _n, _w in ACTIVITY_GROUPS}, "words": {}}
+                for i in range(24)]
             for start, words in got["hours"].items():
                 if start < first or start >= first + 24 * 3600:
                     continue
