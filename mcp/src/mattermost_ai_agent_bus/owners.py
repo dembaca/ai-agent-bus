@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import TYPE_CHECKING
 
-from . import attest, profile
+from . import attest, identity, profile
 from .config import env
 
 if TYPE_CHECKING:
@@ -288,7 +288,7 @@ async def names_in_doubt(client: ChatPort) -> tuple[AbstractSet[str], str]:
     names: AbstractSet[str]
     try:
         names = await trusted_names(client)
-        me = (await client.get_me()).id if names else ""
+        me = (await identity.self_me(client)).id if names else ""
     except Exception as exc:  # noqa: BLE001 — in doubt: the last names, else the configured ones
         log.info("trusted humans or my bot not readable (%s): the owner split stays on", exc)
         names, me = set(), ""
@@ -313,7 +313,7 @@ async def names_in_doubt(client: ChatPort) -> tuple[AbstractSet[str], str]:
             return set(), ""
         log.info("no trusted human resolved, %d configured: the owner split stays on", len(names))
     try:
-        me = (await client.get_me()).id
+        me = (await identity.self_me(client)).id
     except Exception:  # noqa: BLE001 — in doubt: the configured id
         me = env("CB_MM_BOT_USER_ID").strip()
     return names, me

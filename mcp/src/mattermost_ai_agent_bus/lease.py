@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, channel, crownlog, life, owners, ownpost, planb, release, session_file, stats, usage
+from . import a2a, channel, crownlog, identity, life, owners, ownpost, planb, release, session_file, stats, usage
 from . import config
 from .model import ChannelUser, Mark, Post, Refused, RosterEntry, StatusMark
 
@@ -626,9 +626,8 @@ async def coordinates_in(client: ChatPort, user_id: str, channel_id: str) -> boo
 
 
 async def _user_id(client: ChatPort) -> str:
-    if client.session:
-        return client.session.user_id
-    return config.env("CB_MM_BOT_USER_ID") or (await client.get_me()).id
+    """The session's own key (identity.self_key): the bot's id, without a bot its NATS name."""
+    return await identity.self_key(client)
 
 
 # --- the status -------------------------------------------------------------------
@@ -1330,7 +1329,7 @@ async def _elected(client: ChatPort, uid: str, rows: list[dict[str, Any]]) -> bo
 
 async def _command(client: ChatPort, action: str, passed: list[bool] | None = None) -> str:
     uid = await _user_id(client)
-    if not _UID.fullmatch(uid):
+    if not session_file.key_ok(uid):  # a bot id or, without a bot, the NATS name (piece 14c-2a)
         return ""
     now, lease = int(time.time()), lease_sec()
     state = _coord(uid)
@@ -1524,7 +1523,7 @@ async def nats_beat(client: ChatPort) -> None:
             uid = await _user_id(client)
             state = nats_state()
             source = _nats_source
-            if not _UID.fullmatch(uid) or state.kind != "ok" or state.view is None or source is None:
+            if not session_file.key_ok(uid) or state.kind != "ok" or state.view is None or source is None:
                 return
             view = state.view
             _nats_hold_track(view)

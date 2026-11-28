@@ -5,6 +5,22 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **The session's identity without a bot: plan B piece 14c-2a** (#244, RT-6.6 step 13,
+  RT-6.38 step 10, RT-6.2 step 9, ADR-014). Every place that decides "is this me, my
+  state, may I act" (the crown, asks, the read watermark, the gate, receipts, the inbox,
+  own posts, the counters and the presence card) asks one module, `identity.py`: with a
+  Mattermost bot the bot's id and username, exactly as before; in a session that decided
+  to run without one, its NATS name, and for mentions the bridge's bot of that name, else
+  the name. The crown command and the NATS beat take exactly a bot id or a NATS name (25
+  `[a-z2-7]` characters), not only a 26-character id; without a bot the home's id comes from the channel directory and the
+  inbox reads NATS alone. A test lists every remaining read of Mattermost's users/me with
+  its reason. Inert: no setting changes behaviour, with a bot nothing changes, and every
+  session still registers its bot; the hook API and status without a token (14c-2b) and
+  the flip (14c-2c) follow. The docs no longer say the crown claim carries the bot's id:
+  it is `{"v":1}` under the session's NATS name.
+
 ### Docs
 
 - Plan B piece 14 becomes a cutover (the owner's decision of 2026-11-28, #244): the flip of the crown without a bot (14c-2c) and the removal of the host side (14d) in one release, every piece switched on in the lab first with a smoke test, the registrar one day as the way back, then the shutdown; the plan's last six gates (the measured acceptance, the console's signature check and the offline token's lifetime among them) give way to a cutover checklist after release 0.105.0 (`docs/plan-b-piece-14.md`, ADR-014 item 14).
