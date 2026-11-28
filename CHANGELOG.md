@@ -17,8 +17,9 @@ every bot as before until piece 14c; the update notice from the bridge's signed
 release record (piece 14b), read only with `CB_RECORDS_URL` set; and the kept state
 keyed by the NATS name (piece 14c-1), only with piece 2 on. With the switches off
 every session still registers its Mattermost bot. The old setting names of 0.103.0
-still work in this release, with their deprecation warning: the removal that 0.104.0
-planned for 0.105.0 is not in it ([docs/env-names.md](docs/env-names.md#the-reading-rule)).
+still work in this release, with their deprecation warning; they go in 0.106.0, the
+cutover release (the owner's decision of 2026-11-28, which moved them from 0.105.0;
+[docs/env-names.md](docs/env-names.md#the-reading-rule)).
 
 Rollout, in this order:
 
@@ -1053,6 +1054,9 @@ Needs: settings renamed to the new prefix before 0.105.0, the old names still wo
 The old setting names of 0.103.0 still work in this release, with their
 deprecation warning; they go in 0.105.0, the removal release
 ([docs/env-names.md](docs/env-names.md#the-reading-rule)).
+
+*Note of 2026-11-28:* the owner moved the removal of the old names to 0.106.0, the
+cutover release; 0.105.0 still reads them, with their deprecation warning.
 
 ### Added
 
