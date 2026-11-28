@@ -35,6 +35,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mm"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mmws"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/permission"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/presence"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/reader"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/registrar/core"
@@ -91,6 +92,7 @@ func run(log *slog.Logger) error {
 	}
 	h := &health{}
 	var wg sync.WaitGroup
+	permissionDMs := false // set once the permission handler is wired (plan B piece 10)
 	// Plan B's switches per channel, as the login service writes them from the channel
 	// directory (RT-6.39 step 5), through the bridge's own consumer bridge_planb made at
 	// every start: the mirror reads piece 6 (asks, RT-6.11) and piece 7 (replies and
@@ -111,6 +113,26 @@ func run(log *slog.Logger) error {
 	// never stops the bridge; /healthz names the failure.
 	if cfg.ReqPrefix != "" {
 		handlers := p9.handlers()
+		// Plan B piece 10 (RT-6.13): a tool permission prompt is DMed to the agent's
+		// responsible human, with the agent's own bot when it has one, else the
+		// bridge bot; the human's reply or reaction there goes back over NATS on
+		// <bus>.hu.dm.<agent>.<anchor token>. A proof of the binding in a home with
+		// piece 4 on needs the admin token (without it, no prompt is sent there).
+		perm := &permission.Handler{Log: log, Homes: cfg.Homes, Switches: planb, Accounts: accounts,
+			Bridge: client, Publisher: inbound.Confirmed{NC: nc}, BusPrefix: cfg.BusPrefix}
+		if cfg.AdminToken != "" {
+			perm.Users = mm.New(cfg.MMURL, cfg.AdminToken)
+		}
+		if bots != nil {
+			perm.Bots = permissionBots{bots}
+		}
+		handlers["permission"] = perm.Piece
+		permissionDMs = true
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			perm.Run(ctx)
+		}()
 		hist := &history.Handler{Log: log, Team: cfg.MMTeam, Presence: snapshot,
 			Switches: planb, People: accounts}
 		if bots != nil {
@@ -225,6 +247,9 @@ func run(log *slog.Logger) error {
 	if cfg.AdminToken != "" {
 		in.Users = mm.New(cfg.MMURL, cfg.AdminToken)
 	}
+	// The signal names piece 10 (RT-6.13) while its switch is on, once the
+	// permission handler above is wired.
+	in.PermissionDMs = permissionDMs
 	if bots != nil {
 		in.BotPrefix = cfg.BotPrefix
 	}

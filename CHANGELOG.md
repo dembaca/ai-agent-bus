@@ -27,8 +27,23 @@ before 0.5.0 are described in the git history.
   also filters `<bus>.hu.dm.<name>.*`, the subject on which the bridge carries a person's
   direct message to that agent - a permission prompt's answer among them - and the bridge
   may publish `bus.hu.dm.*.*`. The agent's name is the subject's third token, so no other
-  agent's consumer sees it, and no agent may publish there. Nothing reads the lane yet: the
-  bridge's prompt and the MCP server's verdict follow in this piece.
+  agent's consumer sees it, and no agent may publish there.
+- **Permission prompts by DM over the bridge: plan B piece 10** (#244, ADR-014 phase 5,
+  RT-6.13 step 7). In a home over NATS with `planb.on(10, home)` on, the session makes no
+  Mattermost call for a tool permission prompt: it asks the bridge on
+  `<req>.permission.<agent>` (op `prompt`) to DM it to the responsible human, taken from
+  the session's own attestation, only while the bridge's fresh signal names piece 10;
+  else the prompt stays in the terminal and `bus_info` says so. The bridge
+  (`internal/permission`) DMs the one account the login service binds to that person
+  (piece 4's proof when on), under the agent's own bot or the bridge bot, polls the DM
+  and carries only that person's reaction on the prompt, reply in its thread or
+  `yes`/`no` naming its id onto the lane. A verdict counts only from the very person the
+  prompt went to, an attested trusted human who approves, within 24 h; a `yes <id>` read
+  on Mattermost never answers such a prompt. The lines under the prompt go to the bridge
+  (op `note`). With the switch off nothing changes. Rollout: the bridge and every host
+  of the home on this release before the switch goes on; piece 4 with it and the
+  bridge's admin token, else the bridge refuses every prompt; the bridge keeps open
+  prompts in memory, so a restart drops their answers (the terminal still answers).
 
 ### Breaking
 
