@@ -2706,9 +2706,9 @@ class NatsPort:
         not answer, NatsPortError without a bus."""
         from . import requests  # only piece 9 asks the bridge from here
 
-        answer = await requests.request(self._require(), "header",  # type: ignore[arg-type]
+        result = await requests.request(self._require(), "header",  # type: ignore[arg-type]
                                         {"channel": home, "line": line})
-        result = answer.get("result")
+        # request() returns the answer's result (one part), not the envelope
         return isinstance(result, dict) and result.get("changed") is True
 
     async def whereabouts(self, channel_id: str, name: str) -> str | None:
