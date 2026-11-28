@@ -207,7 +207,7 @@ func TestEnsureStreamsCreatesTheSafeConfig(t *testing.T) {
 			}
 		}
 		if st == "STATS" { // RT-6.43, a year since RT-6.45
-			wantAge, wantBytes = float64(365*24*time.Hour), float64(64<<20)
+			wantAge, wantBytes = float64(365*24*time.Hour), float64(1<<30)
 			if g["max_msgs_per_subject"] != float64(500) || g["max_msg_size"] != float64(8192) || g["storage"] != "file" {
 				t.Errorf("STATS: %v", g)
 			}
