@@ -44,6 +44,27 @@ before 0.5.0 are described in the git history.
   `PI_SESSION_ID` (blank without one), and the scripts take a state key in the same two forms
   as the server (a bot id of 26 `[a-z0-9]`, or a NATS name of 25 `[a-z2-7]`).
 
+- **The takeover hardened: plan B piece 14c-1b** (#244, RT-6.2 step 9, RT-6.1 step 7),
+  behind piece 2's switch as before. The sweep probes `key-<name>.lock` with a shared lock
+  instead of the exclusive one, and the server tries `key-<name>.lock` and a predecessor's
+  lock again three times 50 ms apart, so a probe or another start's claim no longer costs a
+  start its name or its predecessor. The counter move claims on the source side
+  (`<source>.moving-<pid>`), the new name's marker gets its `CB_TIE`, bot id and the intent
+  `CB_TAKING=<source>` before the copy, an append into an existing file is journaled first
+  (`CB_APPENDING=<claim>:<size>`), and the next start finishes a takeover a kill interrupted
+  under the names' locks: a SIGKILL at any step loses no counter line and doubles none.
+  Without a bot on the workspace tie only the server holding `tie-<16 hex>.lock` takes a
+  name over; a second one in the same workspace starts fresh under its own name, ties
+  nothing, and `bus_info` says so. A predecessor without a lock file is gone once its marker
+  is an hour old (was a day) or none of its bots has a session file left. `mm_state_key`
+  ignores the `CB_STATE_KEY` of an endpoint file whose server is gone (`CB_BUS_PID`, no such
+  process). A kept file that is not UTF-8 is skipped with a warning instead of stopping the
+  latch. The way back (piece 2 switched off after the counters moved to the name) leaves
+  those counters unpublished until piece 2 is on again and a takeover moves them, or the
+  sweep's day rule removes them. Switch off: nothing differs but the sweep's shared probe,
+  its sweeping of a bot's `stats-<bot id>.jsonl.moving-<pid>`, and `mm_state_key`'s check of
+  the server's pid.
+
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads
   `GET <address>/register/v1/release` from the bridge (`https`, or `http` only to a
