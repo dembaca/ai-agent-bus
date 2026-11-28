@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, channel, crownlog, life, owners, ownpost, planb, release, session_file, stats, usage
+from . import a2a, channel, crownlog, identity, life, owners, ownpost, planb, release, session_file, stats, usage
 from . import config
 from .model import ChannelUser, Mark, Post, Refused, RosterEntry, StatusMark
 
@@ -158,7 +158,8 @@ def crown_lease_sec() -> int:
 def _file(kind: str, user_id: str) -> Path | None:
     """presence-<uid>.env or coord-<uid>.env; None for an id that is none. The key is a bot
     id, or a NATS name (session_file.key_ok, RT-6.2: the kept state since plan B piece 2b)."""
-    return session_file.state_dir() / f"{kind}-{user_id}.env" if session_file.key_ok(user_id) else None
+    key = session_file.state_key(user_id)
+    return session_file.state_dir() / f"{kind}-{key}.env" if session_file.key_ok(key) else None
 
 
 def _read(path: Path | None) -> dict[str, str]:
@@ -182,6 +183,21 @@ def _write(path: Path | None, text: str) -> None:
         pass
 
 
+def _bot_coord(user_id: str) -> Path | None:
+    """coord-<bot id>.env while the state is keyed by the NATS name (RT-6.2 step 9): the server
+    writes the crown lease there too, so a hook from before piece 14c-1 (the status line)
+    still finds it. None while the key is the bot id, or without one."""
+    if not _UID.fullmatch(user_id) or session_file.state_key(user_id) == user_id:
+        return None
+    return session_file.state_dir() / f"coord-{user_id}.env"
+
+
+def _write_coord(user_id: str, text: str) -> None:
+    _write(_file("coord", user_id), text)
+    if (bot := _bot_coord(user_id)) is not None:
+        session_file.write_mirror(bot, text)  # never over another server's own file
+
+
 def _coord(user_id: str) -> dict[str, int]:
     return {k: int(v) for k, v in _read(_file("coord", user_id)).items() if v.isdigit()}
 
@@ -192,7 +208,7 @@ def _save_coord(user_id: str, crown_until: int, pending: int, yield_until: int,
     recorded one. Written only with a crown."""
     if home is None:
         home = crown_home(user_id)
-    _write(_file("coord", user_id),
+    _write_coord(user_id,
            f"CROWN_UNTIL={crown_until}\nPENDING={pending}\nYIELD_UNTIL={yield_until}\n"
            + (f"CROWN_HOME={home}\n" if crown_until and _UID.fullmatch(home) else ""))
 
@@ -460,6 +476,12 @@ def nats_notes() -> list[str]:
     has no NATS side, a link tag that fits more than one fresh name; and the channels whose
     people are not heard (plan B piece 11, RT-6.42 step 12)."""
     out: list[str] = [_left_out] if _left_out else []
+    if refused := session_file.latch_refused():
+        out.append(f"the kept state stays keyed by the bot id, not by the NATS name: {refused} "
+                   "(plan B piece 2, RT-6.2 step 9)")
+    if refused := session_file.tie_refused():
+        out.append(f"this session takes no earlier state over and leaves none for a later start: {refused} "
+                   "(the workspace tie without a bot, plan B piece 2, RT-6.2 step 9)")
     state = nats_state()
     if state.kind == "down":
         out.append(f"the home ~{_nats_home} runs its crown over NATS, but the NATS side is not reachable "
@@ -604,9 +626,8 @@ async def coordinates_in(client: ChatPort, user_id: str, channel_id: str) -> boo
 
 
 async def _user_id(client: ChatPort) -> str:
-    if client.session:
-        return client.session.user_id
-    return config.env("CB_MM_BOT_USER_ID") or (await client.get_me()).id
+    """The session's own key (identity.self_key): the bot's id, without a bot its NATS name."""
+    return await identity.self_key(client)
 
 
 # --- the status -------------------------------------------------------------------
@@ -715,7 +736,7 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         until = min(until, int(label))
     elif state == "working":
         emoji, text, named = a2a.status_emoji(StatusMark.WORKING), "working", label
-    elif state == "idle" and channel.confirmed_file(uid).exists():
+    elif state == "idle" and channel.confirmed(uid):
         # Started as a channel (RT-6.12): this server pushes what comes in, so
         # the agent stays reachable, and keeps a crown, between its turns.
         emoji, text = a2a.status_emoji(StatusMark.LISTENING), "listening · the bus wakes me"
@@ -736,6 +757,8 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         for f in (pres, coord):
             if f is not None:
                 f.unlink(missing_ok=True)
+        if (bot := _bot_coord(uid)) is not None:
+            session_file.drop_mirror(bot)
     else:
         _write(pres, f"STATE={state}\nLABEL={label}\n")
 
@@ -818,7 +841,7 @@ async def _set_status(client: ChatPort, state: str, label: str = "") -> None:
         # A home not resolved this beat keeps the recorded one: never adopt a crown blindly.
         stamp = (f"CROWN_HOME={home or crown_home(uid)}\n"
                  if crown and _UID.fullmatch(home or crown_home(uid)) else "")
-        _write(coord, "".join(f"CROWN_UNTIL={crown}\n" if ln.startswith("CROWN_UNTIL=") else f"{ln}\n"
+        _write_coord(uid, "".join(f"CROWN_UNTIL={crown}\n" if ln.startswith("CROWN_UNTIL=") else f"{ln}\n"
                               for ln in lines) + stamp)
 
     if mirrored:
@@ -1306,7 +1329,7 @@ async def _elected(client: ChatPort, uid: str, rows: list[dict[str, Any]]) -> bo
 
 async def _command(client: ChatPort, action: str, passed: list[bool] | None = None) -> str:
     uid = await _user_id(client)
-    if not _UID.fullmatch(uid):
+    if not session_file.key_ok(uid):  # a bot id or, without a bot, the NATS name (piece 14c-2a)
         return ""
     now, lease = int(time.time()), lease_sec()
     state = _coord(uid)
@@ -1500,7 +1523,7 @@ async def nats_beat(client: ChatPort) -> None:
             uid = await _user_id(client)
             state = nats_state()
             source = _nats_source
-            if not _UID.fullmatch(uid) or state.kind != "ok" or state.view is None or source is None:
+            if not session_file.key_ok(uid) or state.kind != "ok" or state.view is None or source is None:
                 return
             view = state.view
             _nats_hold_track(view)
@@ -2055,7 +2078,7 @@ def _judged(uid: str, state: str = "") -> tuple[bool, bool]:
         state, label = saved.get("STATE") or "bus", saved.get("LABEL", "")
         if state == "listening" and not (label.isdigit() and int(label) > time.time()):
             state = "idle"
-    listening = state == "idle" and channel.confirmed_file(uid).exists()
+    listening = state == "idle" and channel.confirmed(uid)
     return state != "offline" and (state != "idle" or listening), listening
 
 

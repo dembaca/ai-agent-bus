@@ -7,6 +7,155 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The session's identity without a bot: plan B piece 14c-2a** (#244, RT-6.6 step 13,
+  RT-6.38 step 10, RT-6.2 step 9, ADR-014). Every place that decides "is this me, my
+  state, may I act" (the crown, asks, the read watermark, the gate, receipts, the inbox,
+  own posts, the counters and the presence card) asks one module, `identity.py`: with a
+  Mattermost bot the bot's id and username, exactly as before; in a session that decided
+  to run without one, its NATS name, and for mentions the bridge's bot of that name, else
+  the name. The crown command and the NATS beat take exactly a bot id or a NATS name (25
+  `[a-z2-7]` characters), not only a 26-character id; without a bot the home's id comes from the channel directory and the
+  inbox reads NATS alone. A test lists every remaining read of Mattermost's users/me with
+  its reason. Inert: no setting changes behaviour, with a bot nothing changes, and every
+  session still registers its bot; the hook API and status without a token (14c-2b) and
+  the flip (14c-2c) follow. The docs no longer say the crown claim carries the bot's id:
+  it is `{"v":1}` under the session's NATS name.
+
+### Changed
+
+- **The login approval at this machine only once a session holds no bot** (#198, RT-6.34,
+  ADR-014 item 14; plan B piece 14c-3). With a bot, nothing changes: the approval still
+  reaches the responsible human as a DM with an ask in the home, and a wrong person's
+  approval is still a DM. A session that decided to hold no bot (piece 14a, only after
+  piece 14c-2c's flip) has neither, since it could not post them, so its approval is
+  the machine's: the browser, the address and the code in the MCP log and the harness's
+  terminal line (Claude Code's `SessionStart` and Stop hooks, the OpenCode plugin, the pi
+  extension), also under corral, where the relay shows it and the host keeps it for the
+  line. Cursor and Codex have no hook and rest with the browser and the MCP log there; on
+  a machine without a desktop browser (SSH, no `DISPLAY`, a headless pi) the log alone
+  remains. The theft notices stay a DM. With nobody at the machine, a new login of a
+  bot-less session waits (the price the owner accepted, RISK-29).
+
+### Docs
+
+- Plan B piece 14 becomes a cutover (the owner's decision of 2026-11-28, #244): the flip of the crown without a bot (14c-2c) and the removal of the host side (14d) in one release, every piece switched on in the lab first with a smoke test, the registrar one day as the way back, then the shutdown; the plan's last six gates (the measured acceptance, the console's signature check and the offline token's lifetime among them) give way to a cutover checklist after release 0.105.0 (`docs/plan-b-piece-14.md`, ADR-014 item 14).
+
+## 0.105.0
+
+Needs: login service, bridge and hosts on the same release.
+Needs: login service and bridge users with their new rights from the example config, before their upgrade.
+Needs: nats server with a gibibyte more jetstream file store, before the login service starts.
+Needs: console server updated before the agents, or it shows no ask of an updated agent.
+
+Released 2026-11-28. Plan B (#244, ADR-014 phase 5) ships built and switched off:
+its pieces 1 to 13, each behind its switch per home or channel and off by default;
+the decision whether a session needs a Mattermost bot (piece 14a), which registers
+every bot as before until piece 14c; the update notice from the bridge's signed
+release record (piece 14b), read only with `CB_RECORDS_URL` set; and the kept state
+keyed by the NATS name (piece 14c-1) with its follow-up, the hardened takeover (piece
+14c-1b), both only with piece 2 on. Every switch is off. With the switches off
+every session still registers its Mattermost bot. The old setting names of 0.103.0
+still work in this release, with their deprecation warning; they go in 0.106.0, the
+cutover release (the owner's decision of 2026-11-28, which moved them from 0.105.0;
+[docs/env-names.md](docs/env-names.md#the-reading-rule)).
+
+Rollout, in this order:
+
+1. **The login service first.** Its JetStream user publishes the account proofs
+   (`presence.account.mattermost.*.auth.v1`) before it starts, or every agent login
+   with an OpenID or LDAP proven Mattermost account is refused (#266). Raise the NATS
+   server's `max_file_store` by 1 GiB before it starts: it grows the `STATS` stream
+   from 64 MiB to 1 GiB (#310, #314, #319). While its log shows `consumers: stats
+   stream size not raised`, the stream keeps 64 MiB and the console's 12 months are
+   not covered on that server. Until the login service runs this release, the
+   console's Stats shows 7 days (#284, #291).
+2. **The bridge.** Its user's consumer create rights for `bridge_accounts` and
+   `bridge_planb` (`services/auth/nats-server.example.conf`) are in place before it
+   starts; without them it reads no account records or no plan B switches and
+   carries no home (#266, #249). An ask still open whose Mattermost copy carries an
+   agent's reaction (a receipt or a done mark) is asked again after the bridge is
+   updated: a copy the old bridge overwrote stays wrong for answers (#297, #298).
+3. **The console server before the agents.** An older console server refuses an ask
+   record with unknown keys and shows no ask of an updated agent that carries a card
+   (#285, #307). The console's server and web app ship in one image and go out
+   together, so `GET /v1/graph` leaves the server with the web app that no longer
+   reads it (#283, #288, #289).
+4. **The hosts.** The login service, the bridge and the hosts run the same release,
+   since NATS names lose their `agent-` prefix (#274, see Breaking).
+
+What changes for everyone, with every switch off:
+
+- Every agent sends `post_hours` in its `STATS` parts from this release on; an older
+  console ignores the key (#290, #309).
+- The check of a release record (`attest.verify_release`) is stricter, the host's
+  self-update included: each number of a version has at most six digits, and a
+  malformed `needs`, `withdrawn` or `breaking` refuses the record (#312, #325).
+- `CB_NATS_HOMES` and `MM_NATS_HOMES` set to different values refuse the bus in the
+  start hook too, as they did in the MCP server already (#313).
+- Before plan B piece 2 or piece 14c goes on anywhere later, every host runs 0.105.0
+  or newer, its hooks and MCP server of one version (#337): a server before this release
+  writes no `CB_STATE_KEY` (#323, #328).
+
+### Added
+
+- **Every kept state file keyed by the NATS name: plan B piece 14c-1** (#244, RT-6.2
+  step 9, ADR-014). Behind piece 2's switch (`planb.on(2, home)`, off by default; no new
+  switch), the asks, the read watermark, reminders, the gate, the stall and release-notice
+  state, the ask mode, presence, the crown lease, the channel confirmation, the counters
+  (`stats-`), the crown log and the permission log follow `last-`, `threads-` and
+  `unanswered-` to the session's NATS name, and so do the scripts' files (`turn-`,
+  `listen-`, `update-`; `mm_state_key` in `bin/mm-agent-lib.sh`, from `CB_STATE_KEY` in
+  the endpoint file or `state_key` in `/v1/me`). Once the bus has the name the server
+  takes `key-<name>.lock` for its run, copies every kind once and moves the counters
+  (`stats-`, so the session's last part counts them once; never a lock), writes `copied-<name>.env` even
+  without a bot and only then switches the key; a second process with the same name keeps
+  the bot id's key and `bus_info` says why. While a bot id exists the server also keeps
+  `coord-` and `channel-` under it, for a hook of the plugin before. A session without a
+  bot id now keeps state under the name. Session end keeps the marker, so the sweep's day
+  rule removes the name's other files. The latch also writes the key into the endpoint
+  file (`CB_STATE_KEY`), so every hook reads the same one. The locks for one sender per bot
+  (`asks-`, `remind-`, `stats-<bot id>.lock`) stay on the bot id; the server touches a
+  bot-id mirror only while it is its own. Once piece 2 is on, hooks and server must be the
+  same version: an older hook's `presence-<bot id>.env` is not read and its
+  `stats-<bot id>.jsonl` not published, and it may miss the channel confirmation for one
+  turn. Across a restart (every start a new name, `CB_LOGIN_NKEY` stays `ephemeral`) a new
+  name takes over the state of its session's predecessor once that one's lock shows it
+  gone: the marker names the session as `CB_TIE` (Claude Code's, OpenCode's or pi's
+  session id, else the workspace, hashed as the endpoint file's name is) and, with a bot,
+  only a name of the same bot counts; the newest gone one is taken, under its lock, so two
+  starts never both take it; without a bot on the workspace tie this relies on one MCP
+  server per workspace. The predecessor's marker gets `CB_TAKEN_BY`, and the sweep then
+  removes its files by the day rule; a name whose lock is held is never swept. The pi
+  extension passes pi's session id to the server as `PI_SESSION_ID`, which corral's relay
+  carries to the host process; it does not count as the relay's identity, a pi relay is
+  still told apart by its workspace. The counters (`stats-`) are moved, not copied, also
+  on the way back.
+  No nonce, endpoint or session file moves, so no session gets a new name by this.
+  Switch off: every file name is as before. What differs: pi's server is passed
+  `PI_SESSION_ID` (blank without one), and the scripts take a state key in the same two forms
+  as the server (a bot id of 26 `[a-z0-9]`, or a NATS name of 25 `[a-z2-7]`).
+
+- **The takeover hardened: plan B piece 14c-1b** (#244, RT-6.2 step 9, RT-6.1 step 7),
+  behind piece 2's switch as before. The sweep probes `key-<name>.lock` with a shared lock
+  instead of the exclusive one, and the server tries `key-<name>.lock` and a predecessor's
+  lock again three times 50 ms apart, so a probe or another start's claim no longer costs a
+  start its name or its predecessor. The counter move claims on the source side
+  (`<source>.moving-<pid>`), the new name's marker gets its `CB_TIE`, bot id and the intent
+  `CB_TAKING=<source>` before the copy, an append into an existing file is journaled first
+  (`CB_APPENDING=<claim>:<size>`), and the next start finishes a takeover a kill interrupted
+  under the names' locks: a SIGKILL at any step loses no counter line and doubles none.
+  Without a bot on the workspace tie only the server holding `tie-<16 hex>.lock` takes a
+  name over; a second one in the same workspace starts fresh under its own name, ties
+  nothing, and `bus_info` says so. A predecessor without a lock file is gone once its marker
+  is an hour old (was a day) or none of its bots has a session file left. `mm_state_key`
+  ignores the `CB_STATE_KEY` of an endpoint file whose server is gone (`CB_BUS_PID`, no such
+  process). A kept file that is not UTF-8 is skipped with a warning instead of stopping the
+  latch. The way back (piece 2 switched off after the counters moved to the name) leaves
+  those counters unpublished until piece 2 is on again and a takeover moves them, or the
+  sweep's day rule removes them. Switch off: nothing differs but the sweep's shared probe,
+  its sweeping of a bot's `stats-<bot id>.jsonl.moving-<pid>`, and `mm_state_key`'s check of
+  the server's pid.
+
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads
   `GET <address>/register/v1/release` from the bridge (`https`, or `http` only to a
@@ -560,6 +709,15 @@ before 0.5.0 are described in the git history.
   before this change refuses a whole record with unknown keys, so it would show no
   asks of an updated agent that has a card until it is updated too.
 
+- **Decided, not built: permission prompts in the console** (ADR-015, addition of
+  2026-11-28; the owner's decision, ask `s184ounnnpghpgsfas1dpxnxia`). A session's open
+  tool permission prompts are to show in the console's Asks view as a kind of ask, read
+  only ("answer in the DM or the terminal") and only for the session's responsible
+  human, the agent's owner: a record of their own on `<prompt>.<anchor>.<name>` in a
+  stream of its own in memory (35 minutes), which only that person's consumer reads,
+  holding no more of the input than the DM shows. Built after plan B (#244); the
+  record's exposure is a new risk (RISK-38).
+
 ### Fixed
 
 - **Until piece 14c the decision about a bot waits for nothing: plan B piece 14a** (#313,
@@ -745,18 +903,6 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
-- **The login approval at this machine only once a session holds no bot** (#198, RT-6.34,
-  ADR-014 item 14; plan B piece 14c-3). With a bot, nothing changes: the approval still
-  reaches the responsible human as a DM with an ask in the home, and a wrong person's
-  approval is still a DM. A session that decided to hold no bot (piece 14a, only after
-  piece 14c-2c's flip) has neither, since it could not post them, so its approval is
-  the machine's: the browser, the address and the code in the MCP log and the harness's
-  terminal line (Claude Code's `SessionStart` and Stop hooks, the OpenCode plugin, the pi
-  extension), also under corral, where the relay shows it and the host keeps it for the
-  line. Cursor and Codex have no hook and rest with the browser and the MCP log there; on
-  a machine without a desktop browser (SSH, no `DISPLAY`, a headless pi) the log alone
-  remains. The theft notices stay a DM. With nobody at the machine, a new login of a
-  bot-less session waits (the price the owner accepted, RISK-29).
 - **CI: each check runs only for the areas a PR touches.** A `changes` job in
   `.github/workflows/checks.yml` (it replaces `console-changed`) names the areas a
   pull request touches, and each job carries an `if:` on them, so a skipped job
@@ -967,6 +1113,9 @@ Needs: settings renamed to the new prefix before 0.105.0, the old names still wo
 The old setting names of 0.103.0 still work in this release, with their
 deprecation warning; they go in 0.105.0, the removal release
 ([docs/env-names.md](docs/env-names.md#the-reading-rule)).
+
+*Note of 2026-11-28:* the owner moved the removal of the old names to 0.106.0, the
+cutover release; 0.105.0 still reads them, with their deprecation warning.
 
 ### Added
 

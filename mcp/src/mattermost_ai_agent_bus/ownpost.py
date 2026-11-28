@@ -111,15 +111,14 @@ def signed_off(message: str, rec: dict[str, str] | None = None) -> bool:
 
 
 def remove(uid: str) -> None:
-    """Forget the bot's records: under the state key and under the bot id (the copy, RT-6.2)."""
+    """Forget the bot's records: under the state key and under the bot id (the copy, RT-6.2).
+    The marker copied-<name>.env stays (piece 14c-1): it ties the name's other files to the
+    bot, which is gone now, so mm-agent-sweep.sh removes them by its day rule (RT-6.1 step 7)."""
     if uid:
         path(uid).unlink(missing_ok=True)
         (session_file.state_dir() / f"last-{uid}.env").unlink(missing_ok=True)
         threads_path(uid).unlink(missing_ok=True)
         (session_file.state_dir() / f"threads-{uid}.env").unlink(missing_ok=True)
-        key = session_file.state_key(uid)
-        if key != uid:
-            (session_file.state_dir() / f"copied-{key}.env").unlink(missing_ok=True)
 
 
 # Guest threads (RT-6.22): at most this many are kept; a thread whose latest

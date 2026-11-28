@@ -123,7 +123,7 @@ def answer_line(answers: list[str], decision: bool) -> str:
 
 
 def _path(uid: str) -> Path:
-    return session_file.state_dir() / f"asks-{uid}.env"
+    return session_file.state_dir() / f"asks-{session_file.state_key(uid)}.env"
 
 
 def _read(uid: str) -> tuple[dict[str, float], set[str]]:
@@ -500,7 +500,7 @@ def _queue_lock(uid: str) -> Any:
     locks nothing."""
     fd = -1
     try:
-        fd = os.open(session_file.state_dir() / f"asks-{uid}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(session_file.state_dir() / f"asks-{session_file.lock_key(uid)}.lock", os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
     except OSError:
         pass

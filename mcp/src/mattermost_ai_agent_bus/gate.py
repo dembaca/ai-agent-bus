@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import a2a, channel, lease, owners, session_file, tasks
+from . import a2a, channel, identity, lease, owners, session_file, tasks
 from .model import Mark, Post
 
 log = logging.getLogger(__name__)
@@ -232,7 +232,7 @@ async def other_agents_thread(client: ChatPort, root_id: str, uid: str) -> bool 
     if not named:
         return False
     try:
-        if (await client.get_me()).username.lower() in facts.named:
+        if (await identity.self_name(client)).lower() in facts.named:
             return False  # the root names this agent too: its thread as well
     except Exception as exc:  # noqa: BLE001 — unsure
         log.info("own name not read: %s", type(exc).__name__)
@@ -343,7 +343,7 @@ async def reply_text(client: ChatPort, author: str, *, dm: bool, guest: str = ""
 
 
 def _path(uid: str) -> Path:
-    return session_file.state_dir() / f"gate-{uid}.env"
+    return session_file.state_dir() / f"gate-{session_file.state_key(uid)}.env"
 
 
 def _read(uid: str) -> dict[str, dict[str, float]]:

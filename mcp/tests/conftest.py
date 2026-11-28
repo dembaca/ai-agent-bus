@@ -72,6 +72,15 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
     from mattermost_ai_agent_bus import session_file
 
     monkeypatch.setattr(session_file, "_hosted_dir", None)
+    # The kept state's key and its lock (RT-6.2 step 9) are per process: none per test.
+    monkeypatch.setattr(session_file, "_nats_name", None)
+    monkeypatch.setattr(session_file, "_key_fds", {})
+    monkeypatch.setattr(session_file, "_refused", "")
+    monkeypatch.setattr(session_file, "_tie_fd", None)
+    monkeypatch.setattr(session_file, "_tie_refused", "")
+    monkeypatch.setattr(session_file, "_claims", set())
+    monkeypatch.setattr(session_file, "_mirrors", {})
+    monkeypatch.setattr(session_file, "_key_listener", None)
     # RT-6.6 step 5: the thread records, failed reads and roster of another test.
     from mattermost_ai_agent_bus import gate as _gate
 

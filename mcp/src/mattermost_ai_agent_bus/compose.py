@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from . import a2a, lease, ownpost, unanswered
+from . import a2a, identity, lease, ownpost, unanswered
 from .config import env
 from .port import ChatPort
 from .registration import RegistrationPort
@@ -98,7 +98,7 @@ class Remembered(Wire):
                                           props=props, file_ids=file_ids)
         # The chat resolved the channel (the home when none was named): the
         # post carries it, so no request is repeated here.
-        await _remember(self.port, self.port.bot_id, post.channel_id, post)
+        await _remember(self.port, identity.key_now(self.port), post.channel_id, post)
         return post
 
 
@@ -274,12 +274,11 @@ def _keep_state_key(client: object, port: NatsPort) -> None:
         name, home = port.own_name(), port.home_name()
         if not name or not home or not planb.on(2, home):
             return
-        session_file.use_nats_name(name, home)
-        uid = getattr(client, "bot_id", "")
-        if uid:
-            copied = session_file.copy_state_once(uid, name)
-            if copied:
-                log.info("kept state copied to the NATS name: %s", ", ".join(copied))
+        # The copy comes before the key is latched (piece 14c-1): a hook that learns the
+        # name appends its counters to a file that holds the bot id's already.
+        copied = session_file.latch(name, home, getattr(client, "bot_id", "") or "")
+        if copied:
+            log.info("kept state copied to the NATS name: %s", ", ".join(copied))
     except Exception as exc:  # noqa: BLE001 — bookkeeping
         log.debug("state key not changed: %s", type(exc).__name__)
 
@@ -307,5 +306,8 @@ def event_source(client: ChatPort) -> EventSource:
     if port is None:
         return chat
     from .nats_port import MergedEvents, NatsEvents
+
+    if identity.bot_less(client):
+        return NatsEvents(port)  # no bot, no Mattermost WebSocket: NATS alone (piece 14c-2a)
 
     return MergedEvents(chat, NatsEvents(port), port)

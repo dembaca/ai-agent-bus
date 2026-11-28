@@ -28,7 +28,7 @@ import time
 from collections.abc import Collection
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from . import a2a, gate, watermark
+from . import a2a, gate, identity, watermark
 
 if TYPE_CHECKING:
     from .port import ChatPort
@@ -75,7 +75,7 @@ async def after(client: ChatPort, unread: set[str] | None = None) -> list[After]
     channels, then one per channel whose newest post is past its mark.
     `unread`, when given, takes the ids of the channels whose read failed:
     their posts are missing from the result (#238)."""
-    uid = (await client.get_me()).id
+    uid = (await identity.self_me(client)).id
     floor = max(await client.account_created(), int(time.time() * 1000) - DAY_MS)
     marks = watermark.read(uid)
     gated = gate.gated(uid)
@@ -177,7 +177,7 @@ async def channels(client: ChatPort, watched: Collection[str], guests: Collectio
     the server watches; elsewhere only what names the agent counts. `guests`:
     the guest channels among them, where only a post naming the agent or a
     reply in one of its `threads` counts (RT-6.22)."""
-    me = await client.get_me()
+    me = await identity.self_me(client)
     uid, name = me.id, me.username
     gated = gate.gated(uid)
     out: list[Pending] = []

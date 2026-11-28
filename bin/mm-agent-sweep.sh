@@ -41,7 +41,9 @@
 # line per bot that used it). A name's files go when no running server names it,
 # its marker names no bot with a session file or a running MCP server and none
 # of them was touched for a day; without a marker nothing ties the name to a
-# session, so they stay (--force includes them by the day rule).
+# session, so they stay (--force includes them by the day rule). A name whose
+# marker says a later start of its session took it over (CB_TAKEN_BY=<name>,
+# RT-6.2 step 9) is tied to no bot: its files go by the day rule.
 #
 # A keyless corral session (RT-6.18) has its MCP server running on the host:
 # its session file records CB_BUS_HOST_PID, and the process keeps its files in
@@ -73,7 +75,7 @@ for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=1 ;;
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -100,7 +102,9 @@ is_live() {
 }
 
 # Per-bot state, not a session: the uid in its name, never a token.
-STATE_RE='^(asks|coord|gate|last|listen|nonce|presence|turn|update)-[a-z0-9]{26}\.env$|^stats-[a-z0-9]{26}\.jsonl$|^(permission|crown)-[a-z0-9]{26}\.log$'
+# A counter move a kill interrupted leaves its claim on the source side,
+# stats-<uid>.jsonl.moving-<pid> (RT-6.2 step 9): the bot's file too.
+STATE_RE='^(asks|coord|gate|last|listen|nonce|presence|turn|update)-[a-z0-9]{26}\.env$|^stats-[a-z0-9]{26}\.jsonl(\.moving-[0-9]+)?$|^(permission|crown)-[a-z0-9]{26}\.log$'
 # The MCP server's hook API endpoint (RT-6.17, endpoint-[sid-]<key>.env): no
 # session and no token. A server removes its own at exit; one left by a crash
 # names a port nobody listens on, and the hooks stay quiet. Section 4 removes
@@ -113,7 +117,19 @@ is_state_file() { [[ "$(basename "$1")" =~ $STATE_RE ]]; }
 # pattern (natsbus.NAME_HASH_LEN characters of lower-case base32, no prefix since #274),
 # so the kinds that move to the name later are covered without a list. A file holding
 # a bot's token or registration name is a session, whatever its name.
-NAME_STATE_RE='^[a-z]+-[a-z2-7]{25}\.(env|jsonl|log|lock)$'
+# A counter move a crash interrupted leaves <kind>-<name>.jsonl.moving-<pid> (RT-6.2 step 9):
+# the name's file too.
+NAME_STATE_RE='^[a-z]+-[a-z2-7]{25}\.(env|jsonl|log|lock)(\.moving-[0-9]+)?$'
+# Whether a process holds the flock on $1 (macOS has no flock(1): perl's flock, the same
+# BSD lock the MCP server takes). Without perl a lock file counts as held: kept. The probe
+# takes a shared lock, never the exclusive one the server holds: a held exclusive lock
+# refuses it, another probe does not, and a server that starts in the probe's instant
+# tries again (session_file._flock, RT-6.2 step 9).
+lock_held() {
+  [[ -f "$1" && ! -L "$1" ]] || return 1
+  command -v perl >/dev/null 2>&1 || return 0
+  perl -e 'use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 1; exit(flock($f, LOCK_SH | LOCK_NB) ? 1 : 0)' "$1"
+}
 is_name_state_file() {
   [[ "$(basename "$1")" =~ $NAME_STATE_RE ]] || return 1
   ! grep -Eq '^(export )?(CB_MM_BOT_TOKEN|MM_BOT_TOKEN|MM_REG_BOT_NAME|MM_BOT_NAME)=' "$1" 2>/dev/null
@@ -290,7 +306,7 @@ for f in "$STATE_DIR"/endpoint-*.env; do
   KEEP_NAMES+="$(field "$f" CB_STATE_KEY) "
 done
 stale=0
-for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/stats-*.jsonl "$STATE_DIR"/permission-*.log "$STATE_DIR"/crown-*.log; do
+for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/stats-*.jsonl "$STATE_DIR"/stats-*.jsonl.moving-* "$STATE_DIR"/permission-*.log "$STATE_DIR"/crown-*.log; do
   is_state_file "$f" || continue
   uid="$(basename "$f")"; uid="${uid#*-}"; uid="${uid%%.*}"
   [[ "$KEEP_UIDS" == *" $uid "* ]] && continue
@@ -314,7 +330,8 @@ fi
 # the name to a session: its files stay, unless --force.
 shopt -s nullglob
 NAMES=" "
-for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/*-*.jsonl "$STATE_DIR"/*-*.log "$STATE_DIR"/*-*.lock; do
+for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/*-*.jsonl "$STATE_DIR"/*-*.log "$STATE_DIR"/*-*.lock \
+         "$STATE_DIR"/*-*.jsonl.moving-*; do
   is_name_state_file "$f" || continue
   n="$(basename "$f")"; n="${n#*-}"; n="${n%%.*}"
   [[ "$NAMES" == *" $n "* ]] || NAMES+="$n "
@@ -323,18 +340,26 @@ named=0
 untied=0
 for n in $NAMES; do
   [[ "$KEEP_NAMES" == *" $n "* ]] && continue
+  # A process that holds the name's lock (key-<name>.lock, RT-6.2 step 9) runs: its name
+  # is in use, whatever its endpoint file says.
+  lock_held "$STATE_DIR/key-$n.lock" && continue
   files=()
-  for f in "$STATE_DIR"/*-"$n".env "$STATE_DIR"/*-"$n".jsonl "$STATE_DIR"/*-"$n".log "$STATE_DIR"/*-"$n".lock; do
+  for f in "$STATE_DIR"/*-"$n".env "$STATE_DIR"/*-"$n".jsonl "$STATE_DIR"/*-"$n".log "$STATE_DIR"/*-"$n".lock \
+           "$STATE_DIR"/*-"$n".jsonl.moving-*; do
     is_name_state_file "$f" && files+=("$f")
   done
   (( ${#files[@]} )) || continue   # bash 3.2 with set -u: no empty "${files[@]}"
   marker="$STATE_DIR/copied-$n.env"
   if [[ -f "$marker" && ! -L "$marker" ]]; then
     tied=0
+    taken=0
     while IFS='=' read -r k v; do
       [[ "$k" == CB_COPIED_FROM && "$v" =~ ^[a-z0-9]{26}$ && "$KEEP_UIDS" == *" $v "* ]] && tied=1
+      [[ "$k" == CB_TAKEN_BY ]] && taken=1
     done <"$marker"
-    [[ "$tied" -eq 1 ]] && continue
+    # A name a later start of its session took over (CB_TAKEN_BY) is tied to no bot:
+    # the day rule alone decides.
+    [[ "$tied" -eq 1 && "$taken" -eq 0 ]] && continue
   elif [[ "$FORCE" -eq 0 ]]; then
     untied=$((untied + ${#files[@]}))
     continue

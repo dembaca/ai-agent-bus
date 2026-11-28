@@ -131,7 +131,7 @@ from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from . import a2a, config, files, lease, natsbus, natsfiles, owners, planb
+from . import a2a, config, files, identity, lease, natsbus, natsfiles, owners, planb
 from . import requests as bridge_requests
 from .events import ChatEvent, EventSource, EventStream, MembershipEvent, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST, dm_seq
@@ -447,9 +447,9 @@ def read_props(wire: Mapping[str, natsbus.Prop], prefix: str, asks: bool = False
 
 
 def _notice_file(uid: str) -> Path:
-    from .session_file import state_dir
+    from .session_file import state_dir, state_key
 
-    return state_dir() / f"notice-{uid}.env"
+    return state_dir() / f"notice-{state_key(uid)}.env"
 
 
 def _since_from_read_mark(uid: str, channels: set[str]) -> dict[str, tuple[int, int]]:
@@ -775,10 +775,20 @@ class NatsPort:
         """home_id: the work channel's id, for the last post the presence states (RT-6.37
         step 6). Never raises: unread, the presence states no last post."""
         try:
-            self.home_id = await self.inner.work_channel_id()
+            self.home_id = await self.work_channel_id()
         except Exception as exc:  # noqa: BLE001 — a card's field, never a reason not to start
             log.info("nats: the home's id not read (%s): no last post in the presence",
                      type(exc).__name__)
+
+    async def work_channel_id(self) -> str:
+        """The work channel's id: the adapter's (Mattermost, or the id CB_MM_PROJECT_CHANNEL_ID
+        or CB_MM_CHANNEL_ID names), as before; without a Mattermost bot (identity.bot_less, plan B
+        piece 14c-2a) the channel directory's (piece 1, RT-6.39 step 6), no Mattermost call."""
+        if not identity.bot_less(self):
+            return str(await self.inner.work_channel_id())
+        got = await self._directory_id(self.inner.work_channel_name.strip().lstrip("~").lower())
+        self.home_id = self.home_id or got
+        return got
 
     async def _bot_id(self) -> str:
         """The Mattermost user id of the bot, as lease._user_id resolves it."""
@@ -1015,7 +1025,7 @@ class NatsPort:
                  if self._closed12 else "")
         with contextlib.suppress(Exception):
             self.inner.forget_guests()
-        bot = self.inner.bot_id
+        bot = identity.key_now(self)  # the bot, without one the NATS name (piece 14c-2a)
         if bot:
             self._tell(MembershipEvent(user_ids=(bot,), name="planb_piece12"))
 
@@ -1575,7 +1585,7 @@ class NatsPort:
         return next((n for n, cid in self._ids.items() if cid == channel_id), None)
 
     async def _home_or(self, channel_id: str | None) -> str:
-        return channel_id or await self.inner.work_channel_id()
+        return channel_id or await self.work_channel_id()
 
     # --- ids -----------------------------------------------------------------------
     def _id_in(self, value: str, channel: str, what: str) -> int:
@@ -2246,7 +2256,7 @@ class NatsPort:
             log.warning("nats: the catch-up of ~%s on Mattermost failed (%s): tried again in %.0f s",
                         ch, type(exc).__name__, PEOPLE_CHECK_SEC)
             return
-        me = self.inner.bot_id
+        me = identity.key_now(self)
 
         def person(uid: str) -> bool:
             return bool(uid) and uid != me and uid not in bots
@@ -2276,7 +2286,7 @@ class NatsPort:
         else:
             return False
         bus = self._live()
-        if not uid or not cid or uid == self.inner.bot_id:
+        if not uid or not cid or uid == identity.key_now(self):
             return False
         if bus is None and not any(self._piece11(c) for c in self._people_channels()):
             return False  # the NATS side down: Mattermost's people as before
@@ -2389,7 +2399,8 @@ class NatsPort:
         if ask is None:
             return True
         post = self._posts[ch][seq]
-        own = bool(self.inner.bot_id) and post.user_id == self.inner.bot_id
+        me = identity.key_now(self)  # the bot, without one the NATS name (piece 14c-2a)
+        own = bool(me) and post.user_id == me
         return own and abs(post.create_at / 1000 - ask.asked) <= ASK_AT_SLACK_SEC
 
     def _judge(self, key: tuple[str, ...], anchor: str, approved: bool | None = None, *,
@@ -3412,7 +3423,7 @@ class NatsPort:
         circle = await self._circle4(user_id)
         if circle is not None:
             return circle.owner_name or circle.owner_anchor
-        return None if user_id == self.inner.bot_id else ""
+        return None if user_id == identity.key_now(self) else ""
 
     async def _circle4(self, user_id: str) -> AttestedCircle | None:
         """Piece 4: the circle of the agent behind `user_id` from the login service's
@@ -3437,7 +3448,7 @@ class NatsPort:
         bus = self._live()
         if bus is None or not user_id:
             return ""
-        if user_id == self.inner.bot_id:
+        if user_id == identity.key_now(self):
             return bus.name
         bots, known = self._known2({user_id})
         if known:

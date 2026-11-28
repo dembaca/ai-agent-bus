@@ -13,7 +13,7 @@ from mattermost_ai_agent_bus import websocket_inbox as _wi  # noqa: F401 — the
 from mattermost_ai_agent_bus.model import Post
 
 UID = "b" * 26
-NAME = "agent-" + "a2" * 13
+NAME = "a2c4e6g7" * 3 + "h"  # 25 base32 characters, as natsbus.agent_name makes them (#276)
 NAME25 = "a2c4e6g7" * 3 + "h"  # 25 base32 characters, no hyphen (#276)
 HOME = "work"
 
@@ -42,8 +42,9 @@ def test_state_key_switch_off_is_the_bot_id(state: Path) -> None:
 def test_state_key_switch_on(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _on(monkeypatch)
     assert session_file.state_key(UID) == NAME
-    assert session_file.state_key("") == ""
-    assert session_file.state_key(UID, "agent-other", HOME) == "agent-other"
+    assert session_file.state_key("") == NAME  # piece 14c-1: a session without a bot keeps state too
+    other = "b2d4f6h7" * 3 + "j"  # another 25-character NATS name
+    assert session_file.state_key(UID, other, HOME) == other
 
 
 def test_state_key_without_a_name_is_the_bot_id(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,7 +105,9 @@ def test_key_checks_accept_a_nats_name_and_still_reject_junk(state: Path) -> Non
         assert session_file.key_ok(key)
         assert lease._file("presence", key) == state / f"presence-{key}.env"
         assert askroute._path(key) == state / f"askmode-{key}.env"
-    for key in ("", "../x", "a/b", "a.b", "-a", "a b", "a" * 129):
+    for key in ("", "../x", "a/b", "a.b", "-a", "a b", "a" * 129, "a" * 24, "a" * 27, "b" * 24 + "1",
+                "A" * 26, "Y" * 25, "a" * 25 + "_", "a" * 12 + "-" + "a" * 13, "a" * 12 + "." + "a" * 13,
+                "a" * 12 + "/" + "a" * 12, "agent-" + "a2" * 13):
         assert not session_file.key_ok(key)
         assert lease._file("presence", key) is None
         assert askroute._path(key) is None
@@ -134,13 +137,15 @@ def test_remove_forgets_both_keys(state: Path, monkeypatch: pytest.MonkeyPatch) 
     assert [p.name for p in state.iterdir()] == []
 
 
-def test_remove_also_forgets_the_copy_marker(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_remove_keeps_the_copy_marker_for_the_sweep(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Piece 14c-1: the marker ties the name's other files to the (now gone) bot, so the sweep's
+    # day rule removes them (RT-6.1 step 7); without it they would be left untied.
     (state / f"last-{UID}.env").write_text("MSG=x\n")
     session_file.copy_state_once(UID, NAME)
     assert (state / f"copied-{NAME}.env").exists()
     _on(monkeypatch)
     ownpost.remove(UID)
-    assert not (state / f"copied-{NAME}.env").exists()
+    assert (state / f"copied-{NAME}.env").exists()
 
 
 def test_the_key_survives_the_switch_going_away(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:

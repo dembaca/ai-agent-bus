@@ -338,9 +338,21 @@ def keyed_path(prefix: str) -> Path:
 _BOT_ID_RE = re.compile(r"[a-z0-9]{26}")
 # The session's NATS name and the home it is the name in, once the bus has it (use_nats_name).
 _nats_name: tuple[str, str] | None = None
-# The kinds of kept state the MCP server alone reads: copied to the new key once. Files the
-# bash scripts read (listen, update, presence, coord) stay keyed by the bot id until piece 14.
-STATE_KINDS = ("last", "threads", "unanswered")
+# The kinds of kept state the MCP server reads, copied to the new key once (piece 2b: last,
+# threads, unanswered; piece 14c-1: the rest). A bare kind is <kind>-<key>.env, one with a dot
+# names its extension. Not copied: the locks (a lock belongs to its process), channel- (this
+# process's channel confirmation, moved by latch), nonce- (an input of the name itself, so it
+# stays keyed by the bot id) and the files of one turn the hooks keep (listen-, update-, turn-).
+STATE_KINDS = ("last", "threads", "unanswered", "asks", "read", "remind", "gate", "stall", "notice",
+               "askmode", "presence", "coord", "stats.jsonl", "crown.log", "permission.log")
+# Moved, not copied: the counters, so no part publishes them twice (RT-6.9 step 2).
+MOVED_KINDS = frozenset({"stats.jsonl"})
+
+
+def _kind_file(kind: str, key: str) -> str:
+    """The file name of a STATE_KINDS entry under `key`."""
+    base, dot, ext = kind.partition(".")
+    return f"{base}-{key}.{ext}" if dot else f"{kind}-{key}.env"
 
 
 def use_nats_name(name: str, home: str) -> None:
@@ -376,51 +388,57 @@ def nats_state_key() -> str:
     return _nats_name[0] if _nats_name else ""
 
 
-def key_ok(key: str) -> bool:
-    """Whether `key` may name a state file: a Mattermost bot id (26 characters) or a NATS
-    name (natsbus.AGENT_RE) without capitals (on a case-insensitive file system two names
-    differing in case would share one file; NATS names from the hash are lower case),
-    nothing else (no path part, no dot)."""
-    from .natsbus import AGENT_RE
+# A state key's two forms (RT-6.2 step 9), the same as mm_state_key_re in bin/mm-agent-lib.sh:
+# a Mattermost bot id (26 [a-z0-9]) or a NATS name (25 lower-case base32, natsbus.agent_name).
+_STATE_KEY_RE = re.compile(r"[a-z0-9]{26}|[a-z2-7]{25}")
 
-    return bool(_BOT_ID_RE.fullmatch(key) or (AGENT_RE.fullmatch(key) and key == key.lower()))
+
+def key_ok(key: str) -> bool:
+    """Whether `key` may name a state file: exactly a Mattermost bot id (26 [a-z0-9]) or a
+    NATS name (25 [a-z2-7]), as the scripts' mm_state_key checks it. The key names files, so
+    nothing looser: no capitals (on a case-insensitive file system two names differing in
+    case would share one file), no path part, dot, underscore or dash."""
+    return isinstance(key, str) and bool(_STATE_KEY_RE.fullmatch(key))
 
 
 def state_key(uid: str, nats_name: str | None = None, home: str | None = None) -> str:
     """The key of the session's kept state (RT-6.2 step 9): the NATS name when use_nats_name
     latched it (plan B piece 2 was on at the start), else `uid`, the bot's Mattermost id.
-    An empty `uid` stays empty (no bot, no state). `nats_name` is the session's own, unless
-    named (tests); `home` is unused then."""
-    if not uid:
-        return uid
+    An empty `uid` (no bot) is the latched name too, else empty: no key, no state (piece 14c-1).
+    `nats_name` is the session's own, unless named (tests); `home` is unused then."""
     name = nats_name if nats_name is not None else (_nats_name[0] if _nats_name else None)
     if name is not None and key_ok(name):
         return name
     return uid
 
 
-def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS) -> list[str]:
+def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS, *, since: int | None = -1) -> list[str]:
     """Copy the kept state keyed by the bot id `uid` to the files keyed by the NATS name
     `name` (RT-6.2 step 9), per kind: a missing `<kind>-<name>.env` is made from an existing
     `<kind>-<uid>.env`, unless the marker says it was copied and the session deleted it
     since (the source is then not newer than the marker); an existing one is replaced only
     by a source with a newer mtime (a switch that was off in between wrote the bot id's
-    file), never by an older source. A symlink as source or target is refused. The source
-    stays where it is, so the old plugin still finds its copy. The marker
-    `copied-<name>.env` holds the source ids. Returns the kinds copied."""
-    if not (_BOT_ID_RE.fullmatch(uid) and key_ok(name)) or uid == name:
+    file), never by an older source. A symlink as source or target is refused, and so is a
+    file that is not UTF-8 (a warning, the latch goes on). A copied source stays where it
+    is, so the old plugin still finds its copy. The marker `copied-<name>.env` holds the
+    source ids. The source is a bot id or, at a takeover (_copy_source), the name of a
+    predecessor. The counters (MOVED_KINDS) are moved instead, resumable after a kill
+    (_move): no part publishes them twice, and the source is gone afterwards. `since` is
+    the marker's time of an earlier copy from `uid` (-1: read it from the marker; _take
+    passes what the marker said before it wrote its intent). Returns the kinds copied."""
+    if not (key_ok(uid) and key_ok(name)) or uid == name:
         return []
     d = state_dir()
     marker = d / f"copied-{name}.env"
-    ids = _marker_ids(marker) if marker.exists() else []
-    try:
-        marked_at = marker.stat().st_mtime_ns if uid in ids else None
-    except OSError:
-        marked_at = None
+    marked_at = _marked_at(marker, uid) if since == -1 else since
     done: list[str] = []
     for kind in kinds:
-        src, dst = d / f"{kind}-{uid}.env", d / f"{kind}-{name}.env"
+        src, dst = d / _kind_file(kind, uid), d / _kind_file(kind, name)
         try:
+            if kind in MOVED_KINDS:
+                if _move(src, dst, marker):
+                    done.append(kind)
+                continue
             if dst.is_symlink() or src.is_symlink() or not src.is_file():
                 continue
             src_at = src.stat().st_mtime_ns
@@ -429,22 +447,532 @@ def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS) -
                     continue
             elif marked_at is not None and src_at <= marked_at:
                 continue
-            write_private(dst, src.read_text())
+            try:
+                text = src.read_text()
+            except UnicodeDecodeError:
+                logging.getLogger(__name__).warning("session: %s is not UTF-8: not copied, the latch goes on",
+                                                    src.name)
+                continue
+            write_private(dst, text)
             done.append(kind)
         except OSError:
             continue
-    if done or uid not in ids:
-        try:
-            write_private(marker, "".join(f"CB_COPIED_FROM={i}\n" for i in (ids if uid in ids else [*ids, uid])))
-        except OSError:
-            pass
+    if done or uid not in _marker_ids(marker):
+        _mark(marker, add_ids=[uid])
     return done
+
+
+def _marked_at(marker: Path, uid: str) -> int | None:
+    """When `marker` says the state of `uid` was copied (its mtime), None when it does not
+    say so or the copy from `uid` is still under way (CB_TAKING=<uid>, _take)."""
+    lines = _marker_lines(marker)
+    if f"CB_COPIED_FROM={uid}" not in lines or f"CB_TAKING={uid}" in lines:
+        return None
+    try:
+        return marker.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+# The counter claims (<src>.moving-<pid>) this process made: a leftover with this process's
+# pid that it did not make is a dead process's whose pid came back.
+_claims: set[str] = set()
+
+
+def _utf8(path: Path) -> bytes | None:
+    """The bytes of `path`, None (and a warning) when they are not UTF-8: such a counters file
+    stays where it is and the latch goes on."""
+    data = path.read_bytes()
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        logging.getLogger(__name__).warning("session: %s is not UTF-8: not moved, the latch goes on", path.name)
+        return None
+    return data
+
+
+def _journal(marker: Path | None) -> dict[str, int]:
+    """The appends `marker` says were started: claim file name -> the target's size before."""
+    out: dict[str, int] = {}
+    for line in _marker_lines(marker) if marker is not None else []:
+        if line.startswith("CB_APPENDING="):
+            claim, _, size = line.removeprefix("CB_APPENDING=").rpartition(":")
+            if claim and size.isdigit():
+                out[claim] = int(size)
+    return out
+
+
+def _journaled_elsewhere(claim: str, marker: Path | None) -> bool:
+    """Whether another name's marker journals an append of `claim`: that name's takeover
+    resolves it against its own file, not this one."""
+    for other in state_dir().glob("copied-*.env"):
+        if other != marker and not other.is_symlink() and claim in _journal(other):
+            return True
+    return False
+
+
+def _append_bytes(path: Path, data: bytes) -> None:
+    _state_parent(path)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+    finally:
+        os.close(fd)
+
+
+def _append(claim: Path, data: bytes, dst: Path, marker: Path | None) -> None:
+    """Put the claim's counters `data` into `dst` and remove the claim. With no `dst` one
+    rename. Else `dst`'s size goes into the marker first (CB_APPENDING=<claim>:<size>), then
+    the append, then the claim goes: a takeover after a kill in between tells from the size
+    whether the append was done, in part or not at all (_move)."""
+    if not dst.exists() and not dst.is_symlink():
+        os.rename(claim, dst)
+        return
+    if marker is None or not _mark(marker, add=[f"CB_APPENDING={claim.name}:{dst.stat().st_size}"]):
+        raise OSError(errno.EIO, "the counter move cannot be journaled", str(marker))
+    _append_bytes(dst, data)
+    claim.unlink()
+
+
+def _move(src: Path, dst: Path, marker: Path | None = None) -> bool:
+    """Move the counters `src` into `dst` (RT-6.2 step 9), claimed on the source side: `src`
+    is renamed to `<src>.moving-<pid>` first, then renamed to `dst` or appended to it
+    (_append, journaled in `marker`, the target name's). A claim a killed process left
+    (`<src>.moving-<pid>` of a dead pid, not journaled by another name) is taken along
+    first: one this marker journals is appended only as far as `dst` lacks it, so a kill
+    between the append and the removal doubles nothing. The caller holds the lock of the
+    source's name. Whether anything moved."""
+    moved = False
+    journal = _journal(marker)
+    for left in sorted(src.parent.glob(f"{src.name}.moving-*")):
+        pid = left.name.rpartition("-")[2]
+        if left.is_symlink() or not left.is_file() or not pid.isdigit() or left.name in _claims:
+            continue
+        if int(pid) != os.getpid() and _pid_alive(pid):
+            continue  # a taker that still runs
+        if _journaled_elsewhere(left.name, marker) or (data := _utf8(left)) is None:
+            continue
+        if left.name in journal and dst.is_file() and not dst.is_symlink():
+            have = dst.read_bytes()[journal[left.name]:]
+            if have[:len(data)] == data:  # appended before the kill: only the removal was left
+                left.unlink()
+                moved = True
+                continue
+            if have and data.startswith(have):  # appended in part: that part goes, then the whole
+                os.truncate(dst, journal[left.name])
+        _append(left, data, dst, marker)
+        moved = True
+    if src.is_symlink() or dst.is_symlink() or not src.is_file() or _utf8(src) is None:
+        return moved
+    claim = src.with_name(f"{src.name}.moving-{os.getpid()}")
+    if claim.exists() or claim.is_symlink():
+        return moved  # a dead process's claim under this pid that stays: never overwritten
+    os.rename(src, claim)
+    _claims.add(claim.name)
+    _append(claim, claim.read_bytes(), dst, marker)
+    return True
+
+
+def _marker_lines(marker: Path | None) -> list[str]:
+    try:
+        return marker.read_text().splitlines() if marker is not None and not marker.is_symlink() else []
+    except (OSError, ValueError):
+        return []
+
+
+def _mark(marker: Path, add_ids: tuple[str, ...] | list[str] = (), add: tuple[str, ...] | list[str] = (),
+          drop: tuple[str, ...] = ()) -> bool:
+    """Rewrite `marker` (copied-<name>.env) with the ids `add_ids` among its CB_COPIED_FROM
+    lines and the lines `add`, keeping every line it has (CB_TIE, CB_TAKEN_BY) but those
+    starting with one of `drop`. Never raises: whether it was written."""
+    lines = [ln for ln in _marker_lines(marker) if not (drop and ln.startswith(drop))]
+    ids = [ln for ln in lines if ln.startswith("CB_COPIED_FROM=")]
+    rest = [ln for ln in lines if ln and not ln.startswith("CB_COPIED_FROM=")]
+    ids += [f"CB_COPIED_FROM={i}" for i in add_ids if f"CB_COPIED_FROM={i}" not in ids]
+    rest += [ln for ln in add if ln not in rest]
+    try:
+        write_private(marker, "".join(f"{ln}\n" for ln in ids + rest))
+    except OSError:
+        return False
+    return True
+
+
+# --- the latch: one holder per name (plan B piece 14c-1, RT-6.2 step 9) ---------------
+
+# The open lock file key-<name>.lock this process holds for its whole run, so no second
+# process keys its state by the same name; and why the latch was refused, for bus_info.
+_key_fds: dict[str, int] = {}
+_refused = ""
+
+# A non-blocking flock that meets a holder is tried again this many times, this far apart:
+# the sweep's probe (a shared lock, RT-6.1 step 7) or another start's claim holds a lock only
+# for an instant, and a start must not lose its name or its predecessor to that instant.
+LOCK_RETRIES = 3
+LOCK_RETRY_SEC = 0.05
+
+
+def _flock(fd: int) -> bool:
+    """LOCK_EX | LOCK_NB on `fd`, tried again LOCK_RETRIES times LOCK_RETRY_SEC apart while
+    another holds it: True when taken, False while held. Other errors raise OSError."""
+    for attempt in range(LOCK_RETRIES + 1):
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as exc:
+            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                raise
+        if attempt < LOCK_RETRIES:
+            time.sleep(LOCK_RETRY_SEC)
+    return False
+
+
+def _hold_key(name: str) -> str:
+    """Take key-<name>.lock (flock, a few short retries, _flock) for the rest of the process.
+    "" when held, else why not: another live process holds it, or the lock cannot be made
+    (fail-safe: a key no process can lock is no key)."""
+    if name in _key_fds:
+        return ""
+    path = state_dir() / f"key-{name}.lock"
+    try:
+        _state_parent(path)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        return f"the lock key-{name}.lock cannot be made ({type(exc).__name__})"
+    try:
+        held = _flock(fd)
+    except OSError as exc:
+        os.close(fd)
+        return f"the lock key-{name}.lock cannot be taken ({type(exc).__name__})"
+    if not held:
+        os.close(fd)
+        return "another running MCP server keys its state by the same NATS name"
+    _key_fds[name] = fd
+    return ""
+
+
+def lock_key(uid: str) -> str:
+    """The key of a lock meant for one sender per bot (the reminders, the ask queue, the stats
+    part): the bot id whenever there is one, so two servers of one bot (one latched on the
+    name, one refused) still take turns; else the state key."""
+    return uid if _BOT_ID_RE.fullmatch(uid) else state_key(uid)
+
+
+# The bot-id files this process wrote as mirrors of its name-keyed ones (mixed versions,
+# RT-6.2 step 9): path -> (text, mtime_ns). A mirror is rewritten or removed only while it is
+# still what this process wrote: a second server of the bot, refused the name, keys its own
+# state by the bot id and owns the file then.
+_mirrors: dict[str, tuple[str, int]] = {}
+
+
+def _mine(path: Path) -> bool:
+    kept = _mirrors.get(str(path))
+    try:
+        return kept is not None and path.stat().st_mtime_ns == kept[1] and path.read_text() == kept[0]
+    except OSError:
+        return False
+
+
+def write_mirror(path: Path, text: str) -> None:
+    """Write the bot-id mirror `path`, unless another process's file is there."""
+    if path.is_symlink() or (path.exists() and not _mine(path)):
+        return
+    try:
+        write_private(path, text)
+        _mirrors[str(path)] = (text, path.stat().st_mtime_ns)
+    except OSError:
+        pass
+
+
+def drop_mirror(path: Path) -> None:
+    """Remove the bot-id mirror `path`, only if this process wrote it."""
+    if _mine(path):
+        path.unlink(missing_ok=True)
+    _mirrors.pop(str(path), None)
+
+
+def session_tie() -> tuple[str, str]:
+    """Which session this process serves, across its restarts (RT-6.2 step 9, the takeover):
+    ("claude", CLAUDE_CODE_SESSION_ID), ("opencode", OPENCODE_SESSION_ID, the OpenCode
+    session the plugin bound, RT-6.20), ("pi", PI_SESSION_ID, the pi session's id the
+    extension passes, RT-6.27), else ("workspace", the workspace keyed_path keys on). Only
+    read: keyed_path and session_id are unchanged, so no endpoint, session or nonce file
+    moves."""
+    for harness, var in (("claude", "CLAUDE_CODE_SESSION_ID"), ("opencode", "OPENCODE_SESSION_ID"),
+                         ("pi", "PI_SESSION_ID")):
+        if value := os.environ.get(var, "").strip():
+            return harness, value
+    return "workspace", project_dir()
+
+
+def tie() -> str:
+    """CB_TIE as the marker holds it: `<harness>:<first 16 hex of sha1(id)>`, the hash
+    keyed_path uses, so no raw session id or directory goes into a file."""
+    harness, value = session_tie()
+    return f"{harness}:{hashlib.sha1(value.encode()).hexdigest()[:16]}"
+
+
+# Without a bot on the workspace tie, the open lock file tie-<hash>.lock this process holds for
+# its whole run (the hash as in CB_TIE): only its holder takes a predecessor over and ties its
+# own name; and why another server of the workspace did not get it, for bus_info.
+_tie_fd: int | None = None
+_tie_refused = ""
+
+
+def _hold_tie() -> bool:
+    """Take tie-<hash>.lock (flock, _flock) for the rest of the process: True when held. A
+    second server without a bot in the same workspace does not get it: it starts with fresh
+    state under its own name, takes nothing over and writes no CB_TIE (tie_refused says so)."""
+    global _tie_fd, _tie_refused
+    if _tie_fd is not None:
+        return True
+    path = state_dir() / f"tie-{tie().partition(':')[2]}.lock"
+    try:
+        _state_parent(path)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        _tie_refused = f"the lock {path.name} cannot be made ({type(exc).__name__})"
+        return False
+    try:
+        held = _flock(fd)
+    except OSError:
+        held = False
+    if not held:
+        os.close(fd)
+        _tie_refused = "another MCP server without a bot runs in this workspace"
+        return False
+    _tie_fd = fd
+    return True
+
+
+def tie_refused() -> str:
+    """Why this process took no predecessor over and tied nothing ("" when it did not refuse)."""
+    return _tie_refused
+
+
+# A marker older than this with no lock file beside it is a name whose process is gone: the
+# latch makes the lock before it writes the marker, so a younger one may only belong to a
+# process whose lock the sweep removed meanwhile. About a process's start, not its run.
+GONE_SEC = 3600
+
+
+def _has_session(bot: str) -> bool:
+    """Whether a session or endpoint file in the state dir names the bot `bot`."""
+    line = re.compile(rf"^(?:export )?(?:CB_)?MM_BOT_USER_ID=['\"]?{re.escape(bot)}['\"]?$", re.M)
+    for f in state_dir().glob("*.env"):
+        if f.name.startswith("copied-") or f.is_symlink():
+            continue
+        try:
+            if line.search(f.read_text(errors="replace")):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _gone_without_lock(marker: Path) -> bool:
+    """A name with no lock file is gone once its marker is older than GONE_SEC, or once none of
+    the bots its marker names has a session file left."""
+    try:
+        if time.time() - marker.stat().st_mtime >= GONE_SEC:
+            return True
+    except OSError:
+        return False
+    bots = [i for i in _marker_ids(marker) if _BOT_ID_RE.fullmatch(i)]
+    return bool(bots) and not any(_has_session(b) for b in bots)
+
+
+def _claim(name: str) -> int | None:
+    """Take key-<name>.lock (flock, a few short retries, _flock) of a predecessor `name`, for
+    the copy and its CB_TAKEN_BY mark: the open fd while held, None while its process runs.
+    A missing lock file counts as gone by _gone_without_lock; it is made then. A symlink or
+    an unreadable lock is not gone."""
+    path, marker = state_dir() / f"key-{name}.lock", state_dir() / f"copied-{name}.env"
+    flags = os.O_RDWR | os.O_NOFOLLOW
+    if not path.exists() and not path.is_symlink():
+        if not _gone_without_lock(marker):
+            return None
+        flags |= os.O_CREAT
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError:
+        return None
+    try:
+        held = _flock(fd)
+    except OSError:
+        held = False
+    if not held:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _value(name: str, key: str) -> str | None:
+    """The last `key=` value in copied-<name>.env, None without one."""
+    lines = [ln for ln in _marker_lines(state_dir() / f"copied-{name}.env") if ln.startswith(f"{key}=")]
+    return lines[-1].partition("=")[2] if lines else None
+
+
+def _candidates(bot_id: str, name: str) -> list[str]:
+    """The other names this session ran under, newest marker first: the marker carries this
+    process's CB_TIE and no CB_TAKEN_BY, and, with a bot id, CB_COPIED_FROM=<that bot id>
+    (the bot is the lineage across --resume and the workspace's next server, so another
+    session on a shared tie is never one). Without a bot the tie alone decides: on the
+    workspace tie only the holder of tie-<hash>.lock gets here (_hold_tie). A name another
+    name's unfinished takeover is taking (its CB_TAKING) is that one's to finish (_finish)."""
+    me, out = f"CB_TIE={tie()}", []
+    taking: set[str] = set()
+    markers: list[tuple[Path, list[str]]] = []
+    for marker in state_dir().glob("copied-*.env"):
+        if marker.is_symlink():
+            continue
+        lines = _marker_lines(marker)
+        taking.update(ln.partition("=")[2] for ln in lines if ln.startswith("CB_TAKING="))
+        markers.append((marker, lines))
+    for marker, lines in markers:
+        pred = marker.name.removeprefix("copied-").removesuffix(".env")
+        if pred == name or pred in taking or not key_ok(pred) or _BOT_ID_RE.fullmatch(pred):
+            continue
+        if me not in lines or any(ln.startswith("CB_TAKEN_BY=") for ln in lines):
+            continue
+        if _BOT_ID_RE.fullmatch(bot_id) and f"CB_COPIED_FROM={bot_id}" not in lines:
+            continue
+        try:
+            out.append((marker.stat().st_mtime_ns, pred))
+        except OSError:
+            continue
+    return [pred for _, pred in sorted(out, reverse=True)]
+
+
+def _take(src: str, name: str, add_ids: list[str] | None = None, add: list[str] | None = None) -> list[str]:
+    """Copy the state `src` kept (a predecessor's name or the bot id) to `name`, resumable
+    after a kill (RT-6.2 step 9): the intent goes into name's marker first (CB_TAKING=<src>,
+    with `add_ids` and `add`: the tie and the bot), then the copy and the counter move, then
+    src's CB_TAKEN_BY=<name> and the end of the intent (CB_TAKING and CB_APPENDING go). A
+    later start that finds the intent finishes it under name's lock (_finish). Returns the
+    kinds copied; nothing when the marker cannot be written."""
+    d = state_dir()
+    marker = d / f"copied-{name}.env"
+    since = _marked_at(marker, src)
+    if not _mark(marker, add_ids=add_ids or [], add=[*(add or []), f"CB_TAKING={src}"]):
+        return []
+    copied = copy_state_once(src, name, since=since)
+    if not _BOT_ID_RE.fullmatch(src):
+        _mark(d / f"copied-{src}.env", add=[f"CB_TAKEN_BY={name}"])
+    _mark(marker, drop=("CB_TAKING=", "CB_APPENDING="))
+    return copied
+
+
+def _finish(name: str, held: list[int], depth: int = 0) -> bool:
+    """The takeover `name` began (CB_TAKING in its marker) and its process did not finish (it
+    was killed in its latch, before it ever used the name): finish it now, under name's lock
+    (the caller holds it), first the one its source began, if any. The locks taken go into
+    `held`. False when a source's process still runs (or the chain is too long)."""
+    src = _value(name, "CB_TAKING")
+    if src is None:
+        return True
+    if depth >= 8 or src == name or not key_ok(src):
+        return False
+    if not _BOT_ID_RE.fullmatch(src):
+        fd = _claim(src)
+        if fd is None:
+            return False
+        held.append(fd)
+        if not _finish(src, held, depth + 1):
+            return False
+    _take(src, name)
+    return True
+
+
+def _copy_source(bot_id: str, name: str) -> tuple[str | None, list[int]]:
+    """The key whose kept state the latch copies to `name` (RT-6.2 step 9), and the lock fds
+    it holds for that. Decided by the owner (#328): the state carries over across a restart
+    for every harness, CB_LOGIN_NKEY stays ephemeral (every process a new name). So: the
+    newest predecessor (_candidates) whose lock this process can take (_claim: its process is
+    gone), checked again under that lock for a CB_TAKEN_BY another start wrote meanwhile, its
+    own unfinished takeover finished first (_finish); a predecessor still running is passed
+    over, not waited for. Else the bot id, or None without one. Without a bot on the
+    workspace tie only the holder of tie-<hash>.lock takes a predecessor (_hold_tie)."""
+    if not _BOT_ID_RE.fullmatch(bot_id) and session_tie()[0] == "workspace" and not _hold_tie():
+        return None, []
+    for pred in _candidates(bot_id, name):
+        fd = _claim(pred)
+        if fd is None:
+            continue
+        held = [fd]
+        if _value(pred, "CB_TAKEN_BY") is not None or not _finish(pred, held):
+            for h in held:
+                os.close(h)
+            continue
+        return pred, held
+    return (bot_id if _BOT_ID_RE.fullmatch(bot_id) and bot_id != name else None), []
+
+
+def latch(name: str, home: str, uid: str) -> list[str]:
+    """The bus has the session's NATS name `name` in `home` (RT-6.2 step 9): with plan B piece 2
+    on there, take the name's lock, write the marker with the tie and the bot id even without
+    a copy (so mm-agent-sweep.sh's day rule applies to the name's files), copy the state the
+    predecessor or the bot `uid` kept (_take, the intent in the marker before the copy), move
+    this process's channel confirmation, and only then latch the key (use_nats_name): a hook
+    that learns the key appends to a file that already holds the copy. A second process with
+    the same name refuses: its key stays the bot id (or none) and latch_refused() says why.
+    Returns the kinds copied."""
+    from . import planb
+
+    global _refused
+    if not (name and key_ok(name) and planb.on(2, home)):
+        return []
+    first = _nats_name is None  # the latch is once per process; a repeat moves nothing
+    if why := _hold_key(name):
+        _refused = why
+        logging.getLogger(__name__).warning("session: the kept state stays keyed by the bot id: %s", why)
+        return []
+    src_key, held = _copy_source(uid, name) if first else (None, [])
+    d = state_dir()
+    copied: list[str] = []
+    try:
+        marker = d / f"copied-{name}.env"
+        if first and not marker.is_symlink():
+            # The tie names the session for its next restart (not for a second bot-less server
+            # of the workspace, _hold_tie); the bot id ties the name to the bot for the sweep
+            # (RT-6.1 step 7), also after a takeover from a predecessor name.
+            ids = [uid] if _BOT_ID_RE.fullmatch(uid) else []
+            tied = [] if _tie_refused else [f"CB_TIE={tie()}"]
+            if src_key:
+                copied = _take(src_key, name, add_ids=ids, add=tied)
+            else:
+                _mark(marker, add_ids=ids, add=tied)
+    finally:
+        for h in held:
+            os.close(h)  # the predecessors' locks, held through the copy and the marks
+    # channel-<key>.env says this process confirmed the channel (RT-6.12): an earlier process
+    # of the name left nothing that counts, and a confirmation made under the bot id moves.
+    src, dst = d / f"channel-{uid}.env", d / f"channel-{name}.env"
+    try:
+        if first and not dst.is_symlink():
+            dst.unlink(missing_ok=True)
+            if _BOT_ID_RE.fullmatch(uid) and src.is_file() and not src.is_symlink():
+                text = src.read_text()
+                write_private(dst, text)
+                # Made before the latch, by this process (the start removed any older one):
+                # from now on its mirror.
+                _mirrors[str(src)] = (text, src.stat().st_mtime_ns)
+    except (OSError, ValueError):
+        pass
+    use_nats_name(name, home)
+    return copied
+
+
+def latch_refused() -> str:
+    """Why this process keys its state by the bot id although piece 2 is on ("" when not)."""
+    return _refused
 
 
 def _marker_ids(marker: Path) -> list[str]:
     try:
         lines = marker.read_text().splitlines()
-    except OSError:
+    except (OSError, ValueError):
         return []
     return [line.partition("=")[2] for line in lines if line.startswith("CB_COPIED_FROM=")]
 
