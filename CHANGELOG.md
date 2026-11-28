@@ -5,6 +5,24 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **Files over the bridge: plan B piece 8** (#244, RT-6.23, RT-6.33). In a home over
+  NATS with `planb.on(8, <channel>)` on, the session makes no Mattermost call for
+  files: an upload's bytes go to the bridge in parts on `<req>.file.<agent>` (the
+  first part declares the length and the SHA-256 hash of the whole, at most 700 KB a
+  part), the bridge checks the file rules again, holds one open transfer per agent
+  (at most 16 across all agents, an unfinished one dropped after 60 s) and uploads
+  with the agent's own bridge bot; `get_file` asks the same subject for a person's
+  file, answered in parts with the metadata and the bytes, checked by length and
+  hash before anything is served; the file's author counts as a trusted human only
+  when the login service's record binds the posting person's account to one of the
+  session's attested trusted anchors, the rule a Mattermost account approves by
+  (RT-6.41 step 6). `attach`, `POST /v1/files` and
+  `mm-agent-post.sh --file` are called as before, so the shell needs no change. A
+  file id no seen post named takes today's path, as does the switch off in every
+  channel; a send that fails with the switch on is an error, never a fallback.
+
 ### Breaking
 
 - **NATS names lose the `agent-` prefix** (#274, RT-6.36 step 8). An agent's NATS
