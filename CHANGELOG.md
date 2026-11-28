@@ -13,8 +13,8 @@ before 0.5.0 are described in the git history.
   own posts, the counters and the presence card) asks one module, `identity.py`: with a
   Mattermost bot the bot's id and username, exactly as before; in a session that decided
   to run without one, its NATS name, and for mentions the bridge's bot of that name, else
-  the name. The crown command and the NATS beat take any state key, not only a
-  26-character id; without a bot the home's id comes from the channel directory and the
+  the name. The crown command and the NATS beat take exactly a bot id or a NATS name (25
+  `[a-z2-7]` characters), not only a 26-character id; without a bot the home's id comes from the channel directory and the
   inbox reads NATS alone. A test lists every remaining read of Mattermost's users/me with
   its reason. Inert: no setting changes behaviour, with a bot nothing changes, and every
   session still registers its bot; the hook API and status without a token (14c-2b) and

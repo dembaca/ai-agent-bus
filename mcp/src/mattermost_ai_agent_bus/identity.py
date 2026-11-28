@@ -60,23 +60,22 @@ def _shown(client: Any, name: str) -> str:
 def key_now(client: Any) -> str:
     """self_key without a request, for the synchronous comparisons: the bot id as far as it is
     known (client.bot_id, as before), else the NATS name of a session without a bot, else ''."""
-    bot = str(getattr(client, "bot_id", "") or "")
-    if bot:
-        return bot
-    return nats_name(client) if bot_less(client) else ""
+    if bot_less(client):  # decided without a bot: a stale CB_MM_BOT_USER_ID names no one
+        return nats_name(client)
+    return str(getattr(client, "bot_id", "") or "")
 
 
 async def self_key(client: Any) -> str:
     """The session's own key: the bot's Mattermost id when there is a bot (its session, then
     CB_MM_BOT_USER_ID, then users/me, as lease._user_id always read it), else its NATS name."""
+    if bot_less(client) and (name := nats_name(client)):  # before the environment value: a stale
+        return name  # CB_MM_BOT_USER_ID must not split the identity of a session without a bot
     session = getattr(client, "session", None)
     if session:
         return str(session.user_id)
     got = config.env("CB_MM_BOT_USER_ID")
     if got:
         return got
-    if bot_less(client) and (name := nats_name(client)):
-        return name
     return str((await client.get_me()).id)
 
 

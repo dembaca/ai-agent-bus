@@ -105,10 +105,21 @@ async def test_with_a_bot_every_value_is_the_bot_id() -> None:
 
 
 async def test_with_a_bot_the_env_id_still_comes_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A session that has not decided to run without a bot keeps the old order: the env id."""
+    port, _ = _port(bot=False)
+    monkeypatch.setenv("CB_MM_BOT_USER_ID", BOT)
+    assert await identity.self_key(port) == BOT
+
+
+async def test_a_stale_env_id_does_not_split_a_session_decided_without_a_bot(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #333: once the session has decided to run without a bot, a stale
+    CB_MM_BOT_USER_ID must not give the crown's files one key and the asks another."""
     port, _ = _port(bot=False)
     monkeypatch.setenv("CB_MM_BOT_USER_ID", BOT)
     nobot.hold(port)
-    assert await identity.self_key(port) == BOT
+    assert await identity.self_key(port) == NAME
+    assert identity.key_now(port) == NAME
 
 
 async def test_without_a_bot_the_key_is_the_nats_name() -> None:
