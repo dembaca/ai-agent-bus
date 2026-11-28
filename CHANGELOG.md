@@ -30,10 +30,14 @@ before 0.5.0 are described in the git history.
   turn. Across a restart (every start a new name, `CB_LOGIN_NKEY` stays `ephemeral`) a new
   name takes over the state of its session's predecessor once that one's lock shows it
   gone: the marker names the session as `CB_TIE` (Claude Code's, OpenCode's or pi's
-  session id, else the workspace, hashed as the endpoint file's name is), the predecessor's
-  marker gets `CB_TAKEN_BY`, and the sweep then removes its files by the day rule. The pi
-  extension passes pi's session id to the server as `PI_SESSION_ID`. The counters
-  (`stats-`) are moved, not copied, so no part publishes them twice, also on the way back.
+  session id, else the workspace, hashed as the endpoint file's name is) and, with a bot,
+  only a name of the same bot counts; the newest gone one is taken, under its lock, so two
+  starts never both take it; without a bot on the workspace tie this relies on one MCP
+  server per workspace. The predecessor's marker gets `CB_TAKEN_BY`, and the sweep then
+  removes its files by the day rule; a name whose lock is held is never swept. The pi
+  extension passes pi's session id to the server as `PI_SESSION_ID`, which corral's relay
+  carries to the host process. The counters (`stats-`) are moved, not copied, crash-safe,
+  so no part publishes them twice, also on the way back.
   No nonce, endpoint or session file moves, so no session gets a new name by this.
   Switch off: every file name is as before.
 
