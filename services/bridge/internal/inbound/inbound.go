@@ -88,6 +88,12 @@ type Bridge struct {
 	// BotPrefix is the agents' bot prefix, set only while the mirror posts
 	// under the agents' own bots (RT-6.44): the signal names it then.
 	BotPrefix string
+	// Switches are plan B's per channel (presence.Switches): the signal names
+	// the pieces whose bridge half runs for the home, so far piece 6 (asks,
+	// RT-6.11 step 7, the mirror's ask.go); nil names none.
+	Switches interface {
+		On(piece int, channel string) bool
+	}
 
 	Reach, Margin, SignalEvery, SignalValid, Retry time.Duration
 
@@ -247,7 +253,9 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 		Exp    int64  `json:"exp"`
 		// only while on: a host before that release refuses the field
 		BotPrefix string `json:"bot_prefix,omitempty"`
-	}{1, h.name, true, now.Unix(), now.Add(b.SignalValid).Unix(), b.BotPrefix})
+		// the same: only while a piece is on, for a host to wait for (RT-6.42 step 7)
+		Pieces []int `json:"pieces,omitempty"`
+	}{1, h.name, true, now.Unix(), now.Add(b.SignalValid).Unix(), b.BotPrefix, b.pieces(h.name)})
 	if err == nil {
 		err = b.NATS.Publish("presence.bridge."+h.name+".v1", body)
 	}
@@ -258,6 +266,15 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 		// only with nothing queued: a queued event may be older than the slack
 		b.guard(h, b.advance(ctx, h, now.UnixMilli()+b.offset-liveSlack.Milliseconds()))
 	}
+}
+
+// pieces are the plan B pieces whose bridge half runs for the home: piece 6
+// (asks) while its switch is on there.
+func (b *Bridge) pieces(home string) []int {
+	if b.Switches != nil && b.Switches.On(6, home) {
+		return []int{6}
+	}
+	return nil
 }
 
 // liveSlack is how far behind Mattermost's clock a connected home's watermark

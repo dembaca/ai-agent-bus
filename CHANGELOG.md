@@ -129,7 +129,11 @@ before 0.5.0 are described in the git history.
   `ask_answers` and `ask_to`; the reminders, `resolve_ask`'s ✅ and its note go
   over NATS too, and the session makes no Mattermost call for them. The bridge
   posts the copy with the card and keeps only the ask's own mention, and only of
-  an active person's account; every other mention stays plain. People's replies
+  an active person's account that the login service's records bind, at most 20 a
+  sender an hour; every other mention stays plain. Its signal names
+  `"pieces": [6]` while the switch is on there, and the session sends an ask over
+  NATS only then. A host before this release refuses that field and reads the
+  home's people on Mattermost, as with `bot_prefix`. People's replies
   and 👍/👎 on the copy come back as their events (RT-6.42), named by the ask's
   stream sequence, also after a restart; approval stays as strict as before (a
   trusted anchor, a fresh approver record, 24 h). The check that turns a person's

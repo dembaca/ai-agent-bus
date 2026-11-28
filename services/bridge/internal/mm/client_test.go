@@ -239,7 +239,7 @@ func TestPerson(t *testing.T) {
 		var names []string
 		_ = json.NewDecoder(r.Body).Decode(&names)
 		users := map[string]map[string]any{
-			"dembaca": {"username": "dembaca", "is_bot": false, "delete_at": 0},
+			"dembaca": {"id": "u-dembaca", "username": "dembaca", "is_bot": false, "delete_at": 0},
 			"agent-a": {"username": "agent-a", "is_bot": true, "delete_at": 0},
 			"gone":    {"username": "gone", "is_bot": false, "delete_at": 1700000000000},
 		}
@@ -251,7 +251,7 @@ func TestPerson(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(out)
 	})
-	for name, want := range map[string]bool{"dembaca": true, "agent-a": false, "gone": false, "nobody": false} {
+	for name, want := range map[string]string{"dembaca": "u-dembaca", "agent-a": "", "gone": "", "nobody": ""} {
 		got, err := c.Person(context.Background(), name)
 		if err != nil || got != want {
 			t.Errorf("%s: got %v %v, want %v", name, got, err, want)

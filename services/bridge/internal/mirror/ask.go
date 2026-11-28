@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/message"
 )
 
 // AskPiece is plan B's piece number of asks to humans and their answers.
@@ -30,6 +32,11 @@ const maxCardFields = 20
 
 // personTTL is how long a lookup of a person's username holds.
 const personTTL = 5 * time.Minute
+
+// MentionsPerHour bounds the mentions the bridge keeps for one sender in an
+// hour, asks and reminders together: an agent asks one human at a time, and
+// a reminder comes hours apart (RT-6.19); past it the mention is plain.
+const MentionsPerHour = 20
 
 // The props of an ask over NATS, after the props prefix: the card and the
 // alternatives as JSON text, and the username its text mentions.
@@ -51,15 +58,23 @@ type Switches interface {
 	On(piece int, channel string) bool
 }
 
-// People says whether a username is a person's account on Mattermost: one
-// that exists, is active and is no bot. Not found is false, not an error.
+// People gives the Mattermost user id of a username's account when it is
+// a person's: it exists, is active and is no bot; "" otherwise, not an
+// error. An error is a failed read (mm.Client.Person).
 type People interface {
-	Person(ctx context.Context, username string) (bool, error)
+	Person(ctx context.Context, username string) (string, error)
+}
+
+// Directory names the person the login service's account record binds a
+// Mattermost account to ("" for none): the people an ask may mention
+// (ADR-014 phase 5, piece 6; inbound.Accounts).
+type Directory interface {
+	Anchor(userID string) string
 }
 
 type personSeen struct {
-	person bool
-	at     time.Time
+	id string
+	at time.Time
 }
 
 // personCache remembers People's answers for personTTL.
@@ -68,17 +83,17 @@ type personCache struct {
 	seen map[string]personSeen
 }
 
-func (c *personCache) get(name string, now time.Time) (bool, bool) {
+func (c *personCache) get(name string, now time.Time) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s, ok := c.seen[name]
 	if !ok || now.Sub(s.at) >= personTTL {
-		return false, false
+		return "", false
 	}
-	return s.person, true
+	return s.id, true
 }
 
-func (c *personCache) put(name string, person bool, now time.Time) {
+func (c *personCache) put(name, id string, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.seen == nil {
@@ -87,7 +102,34 @@ func (c *personCache) put(name string, person bool, now time.Time) {
 	if len(c.seen) > 1000 {
 		c.seen = map[string]personSeen{}
 	}
-	c.seen[name] = personSeen{person, now}
+	c.seen[name] = personSeen{id, now}
+}
+
+// mentionLimit counts the mentions kept per sender in the last hour.
+type mentionLimit struct {
+	mu   sync.Mutex
+	kept map[string][]time.Time
+}
+
+// take says whether sender may have one more mention kept now, and counts it.
+func (l *mentionLimit) take(sender string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.kept == nil {
+		l.kept = map[string][]time.Time{}
+	}
+	recent := l.kept[sender][:0]
+	for _, t := range l.kept[sender] {
+		if now.Sub(t) < time.Hour {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) >= MentionsPerHour {
+		l.kept[sender] = recent
+		return false
+	}
+	l.kept[sender] = append(recent, now)
+	return true
 }
 
 // asksOn says whether piece 6 is on for this home.
@@ -95,10 +137,13 @@ func (m *Mirror) asksOn() bool {
 	return m.Switches != nil && m.Switches.On(AskPiece, m.Home)
 }
 
-// isAsk says whether props mark an ask (kind ask) or its reminder.
-func (m *Mirror) askKind(props map[string]any) string {
-	k, _ := props[m.Prefix+askKind].(string)
-	if k == "ask" || k == "reminder" {
+// askKind says whether a post is an ask (kind ask, top-level) or its
+// reminder (kind reminder, in a thread): "" for anything else, also for a
+// reminder without a root, which would mention someone outside any ask.
+func (m *Mirror) askKind(msg message.Msg) string {
+	k, _ := msg.Props[m.Prefix+askKind].(string)
+	switch {
+	case k == "ask" && msg.Root == nil, k == "reminder" && msg.Root != nil:
 		return k
 	}
 	return ""
@@ -124,11 +169,15 @@ func (m *Mirror) withoutAsk(props map[string]any) map[string]any {
 // username whose mention it keeps ("" for none: everything is defused) and
 // the card to post as the copy's attachments (nil for none). The username
 // counts only when the first line of the text mentions it, it names no
-// group (channel, all, here) and Mattermost says it is a person; a card
-// that breaks a rule is left out and logged, the post goes without it. An
-// error is a lookup that failed: the reader tries the message again.
-func (m *Mirror) ask(ctx context.Context, text string, props map[string]any) (string, []any, error) {
-	kind := m.askKind(props)
+// group (channel, all, here), Mattermost says it is an active person's
+// account, the login service's record binds that account to a person (the
+// directory) and the sender is within MentionsPerHour; a card that breaks a
+// rule is left out and logged, the post goes without it. An error is a
+// lookup that failed for a while (a 5xx, a 429, the network): the reader
+// tries the message again; any other refusal counts as no person.
+func (m *Mirror) ask(ctx context.Context, sender string, msg message.Msg) (string, []any, error) {
+	text, props := msg.Text, msg.Props
+	kind := m.askKind(msg)
 	if kind == "" {
 		return "", nil, nil
 	}
@@ -151,30 +200,56 @@ func (m *Mirror) ask(ctx context.Context, text string, props map[string]any) (st
 	if _, ok := mentionAt(firstLine(text), name); !ok {
 		return "", cards, nil
 	}
-	person, err := m.person(ctx, name)
+	id, err := m.person(ctx, name)
 	if err != nil {
-		return "", nil, err
+		if transient(err) {
+			return "", nil, err
+		}
+		m.Log.Warn("bridge: an ask's mention is plain: the username was refused", "home", m.Home,
+			"agent", sender, "error", err)
+		id = ""
 	}
-	if !person {
+	if id == "" {
+		return "", cards, nil
+	}
+	if m.Directory == nil || m.Directory.Anchor(id) == "" {
+		m.Log.Info("bridge: an ask's mention is plain: no account record binds the person",
+			"home", m.Home, "agent", sender)
+		return "", cards, nil
+	}
+	if !m.mentions.take(sender, time.Now()) {
+		m.Log.Warn("bridge: an ask's mention is plain: the sender's mentions this hour are used up",
+			"home", m.Home, "agent", sender, "limit", MentionsPerHour)
 		return "", cards, nil
 	}
 	return name, cards, nil
 }
 
-func (m *Mirror) person(ctx context.Context, name string) (bool, error) {
+// transient says whether a failed lookup may succeed when tried again: a
+// 5xx, a 429 or no answer at all (the network, a timeout).
+func transient(err error) bool {
+	var st interface{ HTTPStatus() int }
+	if !errors.As(err, &st) {
+		return true
+	}
+	s := st.HTTPStatus()
+	return s >= 500 || s == 429
+}
+
+func (m *Mirror) person(ctx context.Context, name string) (string, error) {
 	if m.People == nil {
-		return false, nil
+		return "", nil
 	}
 	now := time.Now()
-	if p, ok := m.people.get(name, now); ok {
-		return p, nil
+	if id, ok := m.people.get(name, now); ok {
+		return id, nil
 	}
-	p, err := m.People.Person(ctx, name)
+	id, err := m.People.Person(ctx, name)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	m.people.put(name, p, now)
-	return p, nil
+	m.people.put(name, id, now)
+	return id, nil
 }
 
 func firstLine(text string) string {

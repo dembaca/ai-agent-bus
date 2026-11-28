@@ -23,7 +23,15 @@ from test_natsbus import Rig, _api, _consumer_specs, until
 
 from mattermost_ai_agent_bus import a2a, asks, compose, natsbus, planb, remind, server
 from mattermost_ai_agent_bus.events import ReactionEvent
-from mattermost_ai_agent_bus.nats_port import NatsEvents, NatsPort, ask_wire, parse_post_id, person_id, read_props
+from mattermost_ai_agent_bus.nats_port import (
+    NatsEvents,
+    NatsPort,
+    NatsPortError,
+    ask_wire,
+    parse_post_id,
+    person_id,
+    read_props,
+)
 from mattermost_ai_agent_bus.natsbus import Attestation, NatsSettings, PersonEvent, PersonMessage
 from mattermost_ai_agent_bus.websocket_inbox import WebSocketInbox
 
@@ -60,6 +68,11 @@ for _n in TRAPPED:
 class Records(FakeNats):
     """The fake bus with the login service's account records by name (RT-6.42 step 3)."""
 
+    carries: set[str] = {"home"}  # channels whose fresh bridge signal names piece 6
+
+    def bridge_pieces(self, channel: str) -> frozenset[int]:
+        return frozenset({6}) if channel in self.carries else frozenset()
+
     def account_person(self, account: str) -> tuple[str, str] | None:
         anchor = self.accounts.get(account, "-")
         return (anchor, anchor) if anchor != "-" and account not in self.stale else None
@@ -80,7 +93,9 @@ def _world(monkeypatch: pytest.MonkeyPatch, on: bool = True) -> tuple[NatsPort, 
     inner.work_channel_name = "home"
     port = NatsPort(inner, _settings(), ("home",), echo_wait=0.5)  # type: ignore[arg-type]
     fake = Records(port)
+    fake.carries = {"home"}
     port.use_bus(fake)
+    port.unmention = server._unmention_text
     port._ids = {"home": WORK}
     fake.attestations[ME] = _att()
     fake.accounts[HUMAN] = "dembaca"
@@ -143,13 +158,39 @@ def test_the_card_comes_back_only_on_an_ask() -> None:
     props = {"attachments": [{"title": "Q?", "fields": []}], "ask_answers": ["a", "b"]}
     wire = ask_wire(props, "🙋 @dembaca\nmore @bob", P)
     assert wire[f"{P}ask_to"] == "dembaca"
-    back = read_props({**wire, f"{P}a2a_kind": "ask"}, P)
+    back = read_props({**wire, f"{P}a2a_kind": "ask"}, P, asks=True)
     assert back["attachments"] == props["attachments"] and back["ask_answers"] == ["a", "b"]
     assert f"{P}ask_card" not in back
-    other = read_props({**wire, f"{P}a2a_kind": "TASK"}, P)  # not an ask: the props stay text
+    other = read_props({**wire, f"{P}a2a_kind": "TASK"}, P, asks=True)  # not an ask: the props stay text
     assert "attachments" not in other and f"{P}ask_card" in other
-    broken = read_props({f"{P}a2a_kind": "ask", f"{P}ask_card": "{not json"}, P)
+    off = read_props({**wire, f"{P}a2a_kind": "ask"}, P)  # the switch off: nothing decoded
+    assert "attachments" not in off and f"{P}ask_card" in off
+    broken = read_props({f"{P}a2a_kind": "ask", f"{P}ask_card": "{not json"}, P, asks=True)
     assert "attachments" not in broken
+
+
+async def test_on_without_the_bridges_signal_for_piece_6_the_ask_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Decided: an ask goes over NATS only once the bridge's fresh signal names piece 6."""
+    port, inner, fake = _world(monkeypatch)
+    fake.carries = set()
+    with pytest.raises(NatsPortError, match="no fresh signal of the bridge"):
+        await _ask(port)
+    assert inner.mm_calls == [] and asks.open_asks(BOT) == []
+    assert not [s for s in fake.sent if s[0] == "post"]
+
+
+async def test_on_a_post_that_goes_on_to_mattermost_defuses_people_as_before(monkeypatch: pytest.MonkeyPatch) -> None:
+    """humans_among knows only the directory's people with the switch on; a post that still goes
+    to Mattermost (a reply to a person's post, files, another channel) is checked again with
+    Mattermost's lookup, so a person the directory does not bind is not mentioned there."""
+    port, inner, fake = _world(monkeypatch)
+    inner.people = {"p" * 26: "carol"}  # a Mattermost person no account record binds
+    await port.post("thanks @carol and @dembaca", root_id=MM_REPLY)
+    (sent,) = [p for p in inner.posted if p.get("root_id") == MM_REPLY]
+    assert sent["message"] == "thanks carol and @dembaca"
+    monkeypatch.delenv(planb.TEST_ENV)  # off: the text as the server cleaned it
+    await port.post("hi @carol", root_id=MM_REPLY)
+    assert inner.posted[-1]["message"] == "hi @carol"
 
 
 async def test_on_a_failed_send_fails_the_ask_and_nothing_goes_to_mattermost(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -336,6 +377,8 @@ async def test_against_a_real_server_the_ask_goes_out_and_a_persons_thumbs_up_co
     monkeypatch.delenv(planb.TEST_ENV, raising=False)
     name = rig.names["alice"]
     for stream, cname, cfg in _consumer_specs(name, ["home"], {}):
+        if cname.endswith("_presence"):  # the bridge's signal, as consumers/manager.go adds it
+            cfg = cfg | {"filter_subjects": [*cfg["filter_subjects"], "presence.bridge.home.v1"]}
         await _api(rig.admin, f"$JS.API.CONSUMER.CREATE.{stream}.{cname}", {"stream_name": stream, "config": cfg})
     hu = {"durable_name": f"{name}_hu_home", "deliver_subject": f"deliver.{name}.hu.home", "ack_policy": "none",
           "deliver_policy": "new", "filter_subject": "bus.hu.home.*", "metadata": {"agent": name}}
@@ -360,7 +403,17 @@ async def test_against_a_real_server_the_ask_goes_out_and_a_persons_thumbs_up_co
         await until(lambda: planb.on(6, "home"), what="the plan B record naming piece 6")
         port._ids = {"home": WORK}
         card = a2a.attachment_props([("Decision", "merge it", False)], fallback="q", urgent=False, title="Merge?")
-        posted = await port.post("🙋 @dembaca", props=card | (a2a.props(kind=a2a.ASK) or {}) | {"ask_answers": ["go", "no-go"]})
+        ask_props = card | (a2a.props(kind=a2a.ASK) or {}) | {"ask_answers": ["go", "no-go"]}
+        with pytest.raises(NatsPortError, match="no fresh signal"):  # no bridge signal for piece 6 yet
+            await port.post("🙋 @dembaca", props=ask_props)
+        now = int(time.time())
+        await rig.admin.publish("presence.bridge.home.v1", json.dumps(
+            {"v": 1, "home": "home", "people": True, "iat": now, "exp": now + 180, "pieces": [6]}).encode())
+        await rig.admin.flush()
+        bus = port._bus
+        assert bus is not None
+        await until(lambda: 6 in bus.bridge_pieces("home"), what="the bridge's signal naming piece 6")
+        posted = await port.post("🙋 @dembaca", props=ask_props)
         got = parse_post_id(posted.id)
         assert got is not None and got[0] == "home"
         await until(lambda: bool(seen), what="the ask on bus.ch.home")
@@ -385,3 +438,47 @@ async def test_against_a_real_server_the_ask_goes_out_and_a_persons_thumbs_up_co
         await sub.unsubscribe()
         await events.close()
         await port.stop()
+
+
+async def test_on_after_a_stream_reset_a_reused_number_answers_no_ask(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A persisted ask n1:home:<n> and, after a stream reset, another post with the same number in
+    the memory: a 👍 on that post's copy answers nothing. The session's own post at the ask's time
+    is the ask."""
+    from mattermost_ai_agent_bus.natsbus import Event, Message
+
+    port, inner, fake = _world(monkeypatch)
+    port.ask_source = lambda: [natsbus.OpenAsk(mm="n1:home:77", kind="approval", human="dembaca",
+                                               title="t", asked=1_000)]
+    port._dispatch(Event("home", "agent-other", 77, time.time(), Message("post", "someone else's")), WORK)
+    assert port._where.get(77) == "home"
+    ev = NatsEvents(port)
+    await ev.open()
+    try:
+        await port._on_person(_person(500, PersonMessage("reaction", MM_COPY, "dembaca", emoji="+1", ref=77)))
+        q = ev._queue
+        assert q is not None
+        assert q.get_nowait().reaction.post_id == MM_COPY
+        own = await port.post("🙋 @dembaca", props=a2a.props(kind=a2a.ASK))
+        seq = parse_post_id(own.id)[1]  # type: ignore[index]
+        port.ask_source = lambda: [natsbus.OpenAsk(mm=own.id, kind="approval", human="dembaca",
+                                                   title="t", asked=int(own.create_at / 1000))]
+        while not q.empty():
+            q.get_nowait()
+        await port._on_person(_person(501, PersonMessage("reaction", "d" * 26, "dembaca", emoji="+1", ref=seq)))
+        assert q.get_nowait().reaction.post_id == own.id
+    finally:
+        await ev.close()
+
+
+def test_the_bridges_signal_names_its_pieces_strictly() -> None:
+    """RT-6.42 step 7: the signal's optional `pieces`, plan B pieces each once."""
+    from mattermost_ai_agent_bus.natsbus import MessageError, decode_bridge_signal_full, decode_bridge_signal_pieces
+
+    def body(**kw: Any) -> bytes:
+        return json.dumps({"v": 1, "home": "home", "people": True, "iat": 1, "exp": 9, **kw}).encode()
+    assert decode_bridge_signal_pieces(body(pieces=[6]), "home") == (9.0, "", frozenset({6}))
+    assert decode_bridge_signal_pieces(body(), "home")[2] == frozenset()
+    assert decode_bridge_signal_full(body(pieces=[6], bot_prefix="bb-"), "home") == (9.0, "bb-")
+    for bad in ([0], [14], [6, 6], ["6"], [True], 6):
+        with pytest.raises(MessageError):
+            decode_bridge_signal_pieces(body(pieces=bad), "home")

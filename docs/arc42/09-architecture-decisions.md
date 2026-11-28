@@ -4448,14 +4448,19 @@ which each piece reads for itself.
        characters, every mention in it plain), and keeps only the mention
        of `ask_to` on the text's first line, and only when Mattermost says
        the username is an active person's account, read with the bridge
-       bot's token, never the admin token. People's replies and reactions
+       bot's token, never the admin token, and the login service's account
+       record binds that account to a person (the directory; decided by
+       the owner on 2026-11-28), on a top-level ask or a reminder in a
+       thread, at most 20 a sender an hour. Its signal names
+       `"pieces": [6]` while it reads the switch on, and the session sends
+       an ask over NATS only then (decided on 2026-11-28): else the tool
+       fails. People's replies and reactions
        come back as their events (RT-6.42), naming the ask by the stream
        sequence of the bridge's own map, also an open ask the session's
        memory no longer holds; approval stays RT-6.42 step 9's. The lookup of
        `humans_among` comes from the login service's fresh account records.
        Where the build differs from the text above or leaves a point open:
-       the mention is checked against Mattermost's accounts, not against
-       the directory's people or the channel's members; an ask asked on
+       the mention is not checked against the channel's members; an ask asked on
        Mattermost before the switch keeps its ✅ and note there (piece 7's
        reaction to a Mattermost post), and so does the ask's link in a
        person's thread; the ask mode and the debug card still read the

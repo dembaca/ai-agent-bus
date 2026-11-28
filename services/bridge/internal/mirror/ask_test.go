@@ -22,13 +22,21 @@ type fakePeople struct {
 	err    error
 }
 
-func (f *fakePeople) Person(_ context.Context, name string) (bool, error) {
+func (f *fakePeople) Person(_ context.Context, name string) (string, error) {
 	f.asked = append(f.asked, name)
 	if f.err != nil {
-		return false, f.err
+		return "", f.err
 	}
-	return f.people[name], nil
+	if f.people[name] {
+		return "id-" + name, nil
+	}
+	return "", nil
 }
+
+// fakeDirectory binds accounts to anchors, as the login service's records.
+type fakeDirectory map[string]string
+
+func (d fakeDirectory) Anchor(id string) string { return d[id] }
 
 const askCardJSON = `[{"color":"#e8a317","fallback":"dembaca: Merge #42?","title":"Merge #42?",` +
 	`"fields":[{"title":"From","value":"@agent-a","short":true},{"title":"Decision","value":"merge it, @all","short":false},` +
@@ -50,6 +58,7 @@ func askMirror(t *testing.T, on bool) (*Mirror, *fakeSink, *fakePeople) {
 	m.Switches = fakeSwitches{AskPiece: on}
 	people := &fakePeople{people: map[string]bool{"dembaca": true}}
 	m.People = people
+	m.Directory = fakeDirectory{"id-dembaca": "dembaca"}
 	return m, sink, people
 }
 
@@ -140,7 +149,10 @@ func TestAnAsksMentionNeedsAPersonNamedOnItsFirstLine(t *testing.T) {
 	}
 	// a reminder in the ask's thread keeps its mention, and has no card
 	m, sink, _ := askMirror(t, true)
-	if err := m.Handle(context.Background(), channel, "agent-a", 9, askMsg("⏰ @dembaca — reminder", map[string]any{"x_a2a_kind": "reminder"})); err != nil {
+	reminder := askMsg("⏰ @dembaca — reminder", map[string]any{"x_a2a_kind": "reminder"})
+	root := uint64(7)
+	reminder.Root = &root
+	if err := m.Handle(context.Background(), channel, "agent-a", 9, reminder); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(sink.posts[0].text, "⏰ @dembaca —") {
@@ -151,14 +163,91 @@ func TestAnAsksMentionNeedsAPersonNamedOnItsFirstLine(t *testing.T) {
 	}
 }
 
-func TestAFailedLookupIsTriedAgainNotPostedWithout(t *testing.T) {
-	m, sink, people := askMirror(t, true)
-	people.err = errors.New("mattermost down")
-	if err := m.Handle(context.Background(), channel, "agent-a", 7, askMsg("❓ @dembaca", nil)); err == nil {
-		t.Fatal("a failed lookup must fail the message, so the reader retries it")
+func TestAFailedLookupIsTriedAgainOnlyWhenItMaySucceed(t *testing.T) {
+	for _, err := range []error{errors.New("connection refused"), statusErr(502), statusErr(429)} {
+		m, sink, people := askMirror(t, true)
+		people.err = err
+		if got := m.Handle(context.Background(), channel, "agent-a", 7, askMsg("❓ @dembaca", nil)); got == nil {
+			t.Fatalf("%v: a transient failure must fail the message, so the reader retries it", err)
+		}
+		if len(sink.posts) != 0 {
+			t.Fatalf("%v: posted without the mention: %+v", err, sink.posts)
+		}
 	}
-	if len(sink.posts) != 0 {
-		t.Fatalf("posted without the mention: %+v", sink.posts)
+	// any other refusal (a forged ask of a name Mattermost refuses) stalls nothing: plain
+	for _, code := range []int{400, 403, 404} {
+		m, sink, people := askMirror(t, true)
+		people.err = statusErr(code)
+		if err := m.Handle(context.Background(), channel, "agent-a", 7, askMsg("❓ @dembaca", nil)); err != nil {
+			t.Fatalf("%d: %v", code, err)
+		}
+		if !strings.Contains(sink.posts[0].text, "@\u200bdembaca") {
+			t.Fatalf("%d: %q", code, sink.posts[0].text)
+		}
+	}
+}
+
+func TestOnlyAPersonTheDirectoryBindsIsMentioned(t *testing.T) {
+	m, sink, _ := askMirror(t, true)
+	m.Directory = fakeDirectory{} // an active person, but no account record binds the account
+	if err := m.Handle(context.Background(), channel, "agent-a", 7, askMsg("❓ @dembaca", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sink.posts[0].text, "@\u200bdembaca") {
+		t.Fatalf("an unbound person was mentioned: %q", sink.posts[0].text)
+	}
+	m.Directory = nil
+	if err := m.Handle(context.Background(), channel, "agent-a", 8, askMsg("❓ @dembaca", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sink.posts[1].text, "@\u200bdembaca") {
+		t.Fatalf("no directory: %q", sink.posts[1].text)
+	}
+}
+
+func TestAReminderWithoutARootMentionsNobody(t *testing.T) {
+	m, sink, people := askMirror(t, true)
+	msg := askMsg("⏰ @dembaca — reminder", map[string]any{"x_a2a_kind": "reminder"})
+	if err := m.Handle(context.Background(), channel, "agent-a", 7, msg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sink.posts[0].text, "@\u200bdembaca") || len(people.asked) != 0 {
+		t.Fatalf("a top-level reminder: %q %v", sink.posts[0].text, people.asked)
+	}
+	// nor does an ask in a thread
+	root := uint64(3)
+	ask := askMsg("❓ @dembaca", nil)
+	ask.Root = &root
+	if err := m.Handle(context.Background(), channel, "agent-a", 8, ask); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sink.posts[1].text, "@\u200bdembaca") {
+		t.Fatalf("an ask in a thread: %q", sink.posts[1].text)
+	}
+}
+
+func TestASendersKeptMentionsAreLimitedPerHour(t *testing.T) {
+	m, sink, _ := askMirror(t, true)
+	for i := 0; i < MentionsPerHour+2; i++ {
+		if err := m.Handle(context.Background(), channel, "agent-a", uint64(10+i), askMsg("❓ @dembaca", nil)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kept := 0
+	for _, p := range sink.posts {
+		if !strings.Contains(p.text, "@\u200b") {
+			kept++
+		}
+	}
+	if kept != MentionsPerHour {
+		t.Fatalf("kept %d mentions, want %d", kept, MentionsPerHour)
+	}
+	// another sender has its own count
+	if err := m.Handle(context.Background(), channel, "agent-c", 99, askMsg("❓ @dembaca", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sink.posts[len(sink.posts)-1].text, "@\u200b") {
+		t.Fatalf("agent-c: %q", sink.posts[len(sink.posts)-1].text)
 	}
 }
 

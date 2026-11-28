@@ -978,8 +978,21 @@ def decode_bridge_signal(data: bytes, channel: str) -> float:
 def decode_bridge_signal_full(data: bytes, channel: str) -> tuple[float, str]:
     """Strict: the bridge's v1 signal for `channel`, `people` true; returns its `exp` and
     its optional `bot_prefix` ("" without one; one that is no username's start raises)."""
+    exp, prefix, _ = decode_bridge_signal_pieces(data, channel)
+    return exp, prefix
+
+
+def decode_bridge_signal_pieces(data: bytes, channel: str) -> tuple[float, str, frozenset[int]]:
+    """decode_bridge_signal_full and the signal's optional `pieces`: the plan B pieces whose
+    bridge half runs for the channel (piece 6, asks, RT-6.11 step 7), each a plan B piece,
+    each once; none without the key."""
     obj = _obj(data)
-    _exact(obj, _BRIDGE_KEYS, ("bot_prefix",))
+    _exact(obj, _BRIDGE_KEYS, ("bot_prefix", "pieces"))
+    pieces = obj.get("pieces", [])
+    if not isinstance(pieces, list) or len(pieces) > planb.MAX_PIECE or any(
+            isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= planb.MAX_PIECE for n in pieces) \
+            or len(set(pieces)) != len(pieces):
+        raise MessageError("pieces is not a list of plan B pieces")
     if obj["home"] != channel:
         raise MessageError("signal of another channel")
     if obj["people"] is not True:
@@ -988,7 +1001,7 @@ def decode_bridge_signal_full(data: bytes, channel: str) -> tuple[float, str]:
     prefix = obj.get("bot_prefix", "")
     if "bot_prefix" in obj and (not isinstance(prefix, str) or not BOT_PREFIX_RE.fullmatch(prefix)):
         raise MessageError("bot_prefix is no username's start")
-    return float(_int(obj, "exp")), prefix
+    return float(_int(obj, "exp")), prefix, frozenset(pieces)
 
 
 def decode_planb(data: bytes, channel: str) -> frozenset[int]:
@@ -1497,6 +1510,7 @@ class NatsBus:
         # channel -> the bot prefix its newest signal that had one named (RT-6.36 step 4); kept
         # when a later signal has none or the signal runs out: the copies made stay in the channel
         self._bridge_prefix: dict[str, str] = {}
+        self._bridge_pieces: dict[str, frozenset[int]] = {}  # channel -> plan B pieces its signal names
         # channel -> (stream sequence, server time, pieces) of the plan B switches (RT-6.39 step 5)
         self._planb: dict[str, tuple[int, float, frozenset[int]]] = {}
         # the map before the presence consumer was made anew: read while the replay runs (#244)
@@ -2290,6 +2304,14 @@ class NatsBus:
                 await asyncio.wait_for(self._chan_event.wait(), timeout)
         return self.channel_ids()
 
+    def bridge_pieces(self, channel: str) -> frozenset[int]:
+        """The plan B pieces the bridge's fresh signal for the channel names (RT-6.42 step 7):
+        those whose bridge half runs there, so far piece 6 (asks, RT-6.11 step 7); none while
+        no fresh signal names the channel (people_switched)."""
+        if not self.people_switched(channel):
+            return frozenset()
+        return self._bridge_pieces.get(channel, frozenset())
+
     def bridge_prefix(self, channel: str) -> str:
         """The bot prefix of the bridge's signal for the channel (RT-6.36 step 4): the bridge
         posts each agent's copies there under `<prefix><agent name>`; "" while no signal
@@ -2677,12 +2699,14 @@ class NatsBus:
                 seq0, at0, _exp = self._bridge_signal.get(t[2], (0, 0.0, 0.0))
                 if (ack.time, ack.stream_seq) > (at0, seq0):
                     try:
-                        exp, prefix = decode_bridge_signal_full(msg.data, t[2])
+                        exp, prefix, pieces = decode_bridge_signal_pieces(msg.data, t[2])
                         exp = min(exp, ack.time + SIGNAL_MAX_SEC)
                         if prefix:
                             self._bridge_prefix[t[2]] = prefix
+                        self._bridge_pieces[t[2]] = pieces
                     except MessageError:
                         exp = 0.0
+                        self._bridge_pieces.pop(t[2], None)
                         log.warning("nats bus: a bridge signal that does not decode (seq %d): people on "
                                     "Mattermost", ack.stream_seq)
                     self._bridge_signal[t[2]] = (ack.stream_seq, ack.time, exp)

@@ -115,9 +115,11 @@ type Mirror struct {
 	Bots   Bots // optional: the agents' own bots; nil posts everything with Sink
 	// Plan B piece 6 (RT-6.11, ask.go): the switches per channel and the lookup
 	// of a person's username; without them asks are mirrored like any post.
-	Switches Switches
-	People   People
-	people   personCache
+	Switches  Switches
+	People    People
+	Directory Directory
+	people    personCache
+	mentions  mentionLimit
 }
 
 // Handle mirrors one message; sender is the subject's last token, seq the
@@ -148,7 +150,7 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 	in := msg.Props
 	if asks {
 		// Plan B piece 6: the ask's card and its one mention; its own keys never pass.
-		if keep, cards, err = m.ask(ctx, msg.Text, msg.Props); err != nil {
+		if keep, cards, err = m.ask(ctx, sender, msg); err != nil {
 			return err
 		}
 		in = m.withoutAsk(msg.Props)

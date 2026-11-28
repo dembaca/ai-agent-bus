@@ -134,7 +134,7 @@ func run(log *slog.Logger) error {
 		lk := &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
 			Window: 90 * time.Second, TTL: 30 * time.Second}
 		mr := &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv, Links: lk,
-			Switches: planb, People: client}
+			Switches: planb, People: client, Directory: accounts}
 		if bots != nil {
 			mr.Bots = bots
 		}
@@ -182,6 +182,7 @@ func run(log *slog.Logger) error {
 	if bots != nil {
 		in.BotPrefix = cfg.BotPrefix
 	}
+	in.Switches = planb // the signal names piece 6 while it is on (RT-6.11 step 7)
 	go func() {
 		defer wg.Done()
 		_ = in.Run(ctx)
