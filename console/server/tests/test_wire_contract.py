@@ -65,7 +65,7 @@ def fleet_scenario():
         # the login service's attestation of owner and trust, as the Go service
         # writes it (services/auth/internal/callout/attest.go, the record type)
         (f"presence.attest.{agent}.v1",
-         json.dumps({"v": 1, "agent": agent,
+         json.dumps({"v": 1, "agent": agent, "home": "dev",
                      "owner": {"anchor": "dembaca", "name": "dembaca"},
                      "trusted": [{"anchor": "dembaca", "name": "dembaca"}],
                      "cut": False, "iat": 1, "exp": 1763990000}).encode(),

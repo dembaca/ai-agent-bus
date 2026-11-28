@@ -39,6 +39,7 @@ type Trust interface {
 type Attestation struct {
 	V       int                 `json:"v"`
 	Agent   string              `json:"agent"`
+	Home    string              `json:"home"`
 	Owner   directory.Trusted   `json:"owner"`
 	Trusted []directory.Trusted `json:"trusted"`
 	Cut     bool                `json:"cut"`
@@ -138,7 +139,7 @@ func (s *Service) indexTrust(ctx context.Context, ix TrustIndex, a Attestation, 
 
 // attest resolves the host's names and publishes the attestation; it
 // returns the attestation as published (Trusted cut to fit).
-func (s *Service) attest(ctx context.Context, a Attester, t Trust, agent string, owner directory.Trusted, names []string, hostCut bool, iat, exp int64) (Attestation, error) {
+func (s *Service) attest(ctx context.Context, a Attester, t Trust, agent, home string, owner directory.Trusted, names []string, hostCut bool, iat, exp int64) (Attestation, error) {
 	var (
 		list []directory.Trusted
 		cut  bool
@@ -153,7 +154,7 @@ func (s *Service) attest(ctx context.Context, a Attester, t Trust, agent string,
 	if err != nil {
 		return Attestation{}, err
 	}
-	body, att, err := Attestation{V: 1, Agent: agent, Owner: owner, Trusted: list, Cut: cut || hostCut, Iat: iat, Exp: exp}.fit()
+	body, att, err := Attestation{V: 1, Agent: agent, Home: home, Owner: owner, Trusted: list, Cut: cut || hostCut, Iat: iat, Exp: exp}.fit()
 	if err != nil {
 		return Attestation{}, err
 	}

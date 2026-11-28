@@ -601,6 +601,10 @@ class Attestation:
     trusted: tuple[tuple[str, str], ...]  # (anchor, name)
     cut: bool
     exp: float
+    # The hello's home as the login service granted it (RT-6.41, #255): a channel token, or ''
+    # when the hello named none or the human is no member of it. None when the record states
+    # none at all (an older login service): no word, which a reader must not read as ''.
+    home: str | None = None
 
 
 def _person(obj: Any, what: str) -> tuple[str, str]:
@@ -633,10 +637,15 @@ def decode_attestation(data: bytes, agent: str) -> Attestation:
     cut = obj.get("cut")
     if not isinstance(cut, bool):
         raise MessageError("cut is not a boolean")
+    home: str | None = None
+    if "home" in obj:  # absent: an older login service states none, which is not "no home"
+        home = obj["home"]
+        if not isinstance(home, str) or (home and not CHANNEL_RE.fullmatch(home)):
+            raise MessageError("home is no channel name")
     _int(obj, "iat")
     return Attestation(owner_anchor=owner[0], owner_name=owner[1],
                        trusted=tuple(_person(t, "a trusted entry") for t in trusted),
-                       cut=cut, exp=float(_int(obj, "exp")))
+                       cut=cut, exp=float(_int(obj, "exp")), home=home)
 
 
 def decode_notice(data: bytes) -> Notice:
@@ -2276,6 +2285,18 @@ class NatsBus:
             return None
         return seen[2]
 
+    def home_of(self, agent: str) -> str | None:
+        """The home the agent's attestation states (RT-6.41, #255): a channel token, '' when the
+        record states no home (a hello that named none), None when the record states none at all
+        (an older login service) or there is no record this agent's presence backs - fresh and
+        naming the anchor of the presence subject, the same gate as the circle. So a reader tells
+        "the service says this is no home agent" from "no word yet". It grants nothing."""
+        anchor = self._owners.get(agent, "")
+        att = self.attestation_of(agent)
+        if att is None or not anchor or att.owner_anchor != anchor:
+            return None
+        return att.home
+
     def presence_of(self, agent: str) -> str:
         """online or away while the agent's last presence is younger than
         PRESENCE_FRESH_SEC by the server's clock (never this host's) and no bye;
@@ -2417,18 +2438,11 @@ class NatsBus:
         decodes binds to a person (RT-6.42 step 3), a stale one too: a stale record still names
         the person, only its `approver` needs it fresh (as the bridge reads it). A record erased
         by a message that does not decode, and `anchor` null, bind none. Plan B piece 4 judges a
-        Mattermost account's trust by it."""
+        Mattermost account's trust and approval by it (RT-6.41 step 6): the login service writes a
+        record only for a binding it proved (OpenID or LDAP) and keeps it, from its directory,
+        only while Mattermost shows the account so (#266)."""
         return {account: rec.anchor for account, (_, _, rec) in self._accounts.items()
                 if rec is not None and rec.anchor}
-
-    def account_approver(self, account: str) -> bool:
-        """The login service's own record of the Mattermost account `account` is fresh (exp
-        after the server's now), binds it to a person and says `approver` (RT-6.42 step 9).
-        Plan B piece 4 lets an account approve by its own record alone, never by another
-        account of the same person."""
-        got = self._accounts.get(account)
-        rec = got[2] if got is not None else None
-        return rec is not None and bool(rec.anchor) and rec.approver and rec.exp > self._server_now
 
     def approver(self, anchor: str) -> bool:
         """A fresh record (exp after the server's now) binds an account to `anchor` and says

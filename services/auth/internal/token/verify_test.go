@@ -406,7 +406,7 @@ func TestTheOwnerIsCheckedAgainstTheChat(t *testing.T) {
 	}
 }
 
-func TestChatOpenIDSaysTheNameIsBoundToTheSub(t *testing.T) {
+func TestChatProvenSaysTheNameIsBoundToTheSub(t *testing.T) {
 	r := newRealm(t)
 	for _, tc := range []struct {
 		name string
@@ -415,15 +415,15 @@ func TestChatOpenIDSaysTheNameIsBoundToTheSub(t *testing.T) {
 	}{
 		{"OpenID account with the same sub", human(nil), true},
 		{"password account, Open binding", human(func(u *User) { u.AuthService, u.AuthData = "", "" }), false},
-		{"LDAP account, Open binding", human(func(u *User) { u.AuthService, u.AuthData = "ldap", "uid=alice" }), false},
+		{"LDAP account, a token without the LDAP id claim", human(func(u *User) { u.AuthService, u.AuthData = "ldap", "uid=alice" }), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id, err := verifier(t, r, tc.dir, nil).Verify(context.Background(), r.token(nil))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if id.ChatOpenID != tc.want {
-				t.Fatalf("ChatOpenID = %v; want %v", id.ChatOpenID, tc.want)
+			if id.ChatProven != tc.want {
+				t.Fatalf("ChatProven = %v; want %v", id.ChatProven, tc.want)
 			}
 		})
 	}
@@ -576,5 +576,136 @@ func TestTheIdentityCarriesTheChatIDOfAProvenAccountAndTheIssueTime(t *testing.T
 	id, err = verifier(t, r, pw, nil).Verify(context.Background(), tok)
 	if err != nil || id.ChatID != "" {
 		t.Errorf("a password account: ChatID %q, %v", id.ChatID, err)
+	}
+}
+
+// RT-6.42 step 3 (#266, the owner's decision of 2026-11-27): the two proofs
+// of a binding. OpenID: the account's auth_data is the token's `sub`; LDAP:
+// its auth_data is the token's LDAP id claim (CB_AUTH_LDAP_ID_CLAIM, ldap_id by
+// default). A name alone, LDAP without the claim and a claim that is no
+// string prove nothing and let the login in as before; a mismatch refuses.
+func TestTheBindingIsProvenOverOpenIDOrLDAP(t *testing.T) {
+	r := newRealm(t)
+	const id = "abcdefghijklmnopqrstuvwxyz"
+	account := func(service, data string) chat {
+		return human(func(u *User) { u.ID, u.AuthService, u.AuthData = id, service, data })
+	}
+	claim := func(name string, v any) func(jwt.MapClaims) { return func(c jwt.MapClaims) { c[name] = v } }
+	for _, tc := range []struct {
+		name          string
+		dir           Directory
+		edit          func(jwt.MapClaims)
+		cfg           func(*Config)
+		want          error
+		service, data string // the proof; "" for none
+	}{
+		{"OpenID: auth_data is the sub", account(OpenIDService, aliceSub), nil, nil, nil, OpenIDService, aliceSub},
+		{"OpenID: another sub", account(OpenIDService, "another-sub"), nil, nil, ErrSubjectMismatch, "", ""},
+		{"OpenID: an LDAP id equal to its auth_data proves nothing", account(OpenIDService, "8d1f"),
+			claim("ldap_id", "8d1f"), nil, ErrSubjectMismatch, "", ""},
+		{"LDAP: auth_data is the LDAP id", account(LDAPService, "8d1f"), claim("ldap_id", "8d1f"), nil, nil, LDAPService, "8d1f"},
+		{"LDAP: another LDAP id", account(LDAPService, "8d1f"), claim("ldap_id", "0000"), nil, ErrSubjectMismatch, "", ""},
+		{"LDAP: no claim, the name alone", account(LDAPService, "8d1f"), nil, nil, nil, "", ""},
+		{"LDAP: an empty claim", account(LDAPService, "8d1f"), claim("ldap_id", ""), nil, nil, "", ""},
+		{"LDAP: a claim that is no string", account(LDAPService, "8d1f"), claim("ldap_id", []any{"8d1f"}), nil, nil, "", ""},
+		{"LDAP: the sub is no LDAP id", account(LDAPService, aliceSub), nil, nil, nil, "", ""},
+		{"LDAP: the claim the setting names", account(LDAPService, "8d1f"), claim("entry_uuid", "8d1f"),
+			func(c *Config) { c.LDAPIDClaim = "entry_uuid" }, nil, LDAPService, "8d1f"},
+		{"LDAP: the default claim when another is set", account(LDAPService, "8d1f"), claim("ldap_id", "8d1f"),
+			func(c *Config) { c.LDAPIDClaim = "entry_uuid" }, nil, "", ""},
+		{"a password: the name alone", account("", ""), claim("ldap_id", "8d1f"), nil, nil, "", ""},
+		{"SAML: the name alone", account("saml", "8d1f"), claim("ldap_id", "8d1f"), nil, nil, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := verifier(t, r, tc.dir, tc.cfg).Verify(context.Background(), r.token(tc.edit))
+			if err != tc.want {
+				t.Fatalf("got %v; want exactly %v", err, tc.want)
+			}
+			if err != nil {
+				return
+			}
+			proven := tc.service != ""
+			if got.ChatProven != proven || got.ChatAuthService != tc.service || got.ChatAuthData != tc.data ||
+				(got.ChatID == id) != proven {
+				t.Fatalf("proof %v %q %q %q; want %v %q %q", got.ChatProven, got.ChatID, got.ChatAuthService,
+					got.ChatAuthData, proven, tc.service, tc.data)
+			}
+		})
+	}
+}
+
+// The LDAP id claim may not be one the check reads otherwise: an LDAP account
+// would be proven by a value that is no LDAP id.
+func TestTheLDAPIDClaimIsNoClaimWithAnotherMeaning(t *testing.T) {
+	r := newRealm(t)
+	for _, name := range []string{"sub", "preferred_username", "azp", "groups", "jti"} {
+		cfg := r.config()
+		cfg.LDAPIDClaim = name
+		if _, err := New(context.Background(), cfg, human(nil)); err == nil {
+			t.Errorf("LDAPIDClaim %q was taken", name)
+		}
+	}
+	cfg := r.config()
+	cfg.LDAPIDClaim = "  "
+	got, err := cfg.withDefaults()
+	if err != nil || got.LDAPIDClaim != DefaultLDAPIDClaim {
+		t.Fatalf("blank: %q %v", got.LDAPIDClaim, err)
+	}
+}
+
+// RT-6.42 step 3 (#266): the console's path proves the binding as an agent's
+// does, and the chat refuses nothing there: a mismatch, a lookup that fails
+// or a name alone only leave the proof out.
+func TestTheConsolesPathProvesTheBindingAndRefusesNothingForIt(t *testing.T) {
+	r := newRealm(t)
+	const id = "abcdefghijklmnopqrstuvwxyz"
+	iat := time.Now().Add(-time.Minute).Unix()
+	tok := r.token(func(c jwt.MapClaims) { c["iat"] = iat; c["ldap_id"] = "8d1f" })
+	got, err := verifier(t, r, human(func(u *User) { u.ID, u.AuthService, u.AuthData = id, LDAPService, "8d1f" }), nil).
+		VerifyRealm(context.Background(), tok)
+	if err != nil || !got.ChatProven || got.ChatID != id || got.ChatAuthService != LDAPService ||
+		got.ChatAuthData != "8d1f" || !got.Approver || got.IssuedAt.Unix() != iat {
+		t.Fatalf("%+v %v", got, err)
+	}
+	for name, dir := range map[string]Directory{
+		"another LDAP id": human(func(u *User) { u.ID, u.AuthService, u.AuthData = id, LDAPService, "0000" }),
+		"another sub":     human(func(u *User) { u.ID, u.AuthData = id, "another-sub" }),
+		"a password":      human(func(u *User) { u.ID, u.AuthService, u.AuthData = id, "", "" }),
+		"a bot":           human(func(u *User) { u.ID, u.Bot = id, true }),
+		"no such account": chat{},
+		"the chat down":   brokenChat{},
+	} {
+		got, err := verifier(t, r, dir, nil).VerifyRealm(context.Background(), tok)
+		if err != nil || got.ChatProven || got.ChatID != "" || got.ChatAuthData != "" {
+			t.Errorf("%s: %+v %v", name, got, err)
+		}
+	}
+}
+
+// ApproverKnown: only a verifier with an approvers' group and a token whose
+// group claim is a list can say whether the identity is an approver (#266: a
+// console login that cannot tell keeps the stored flag).
+func TestApproverKnownNeedsTheGroupAndTheClaim(t *testing.T) {
+	r := newRealm(t)
+	for _, tc := range []struct {
+		name  string
+		group string
+		edit  func(jwt.MapClaims)
+		want  bool
+	}{
+		{"the group set, the claim there", group, nil, true},
+		{"the claim without the group", group, func(c jwt.MapClaims) { c["groups"] = []string{"staff"} }, true},
+		{"no claim", group, func(c jwt.MapClaims) { delete(c, "groups") }, false},
+		{"a claim that is no list", group, func(c jwt.MapClaims) { c["groups"] = group }, false},
+		{"no approvers' group", "", nil, false},
+	} {
+		v := verifier(t, r, human(nil), func(c *Config) { c.ApproverGroup = tc.group })
+		for path, check := range map[string]func(context.Context, string) (Identity, error){
+			"agent": v.Verify, "console": v.VerifyRealm} {
+			id, err := check(context.Background(), r.token(tc.edit))
+			if err != nil || id.ApproverKnown != tc.want {
+				t.Errorf("%s, %s: ApproverKnown %v, %v", tc.name, path, id.ApproverKnown, err)
+			}
+		}
 	}
 }

@@ -58,7 +58,9 @@ _MSG_CHARS = 80
 
 
 def path(uid: str) -> Path:
-    return session_file.state_dir() / f"last-{uid}.env"
+    """The kept record of the bot `uid`, under the session's state key (RT-6.2): the NATS
+    name with plan B piece 2 on, else the bot id."""
+    return session_file.state_dir() / f"last-{session_file.state_key(uid)}.env"
 
 
 def read(uid: str) -> dict[str, str]:
@@ -109,8 +111,15 @@ def signed_off(message: str, rec: dict[str, str] | None = None) -> bool:
 
 
 def remove(uid: str) -> None:
+    """Forget the bot's records: under the state key and under the bot id (the copy, RT-6.2)."""
     if uid:
         path(uid).unlink(missing_ok=True)
+        (session_file.state_dir() / f"last-{uid}.env").unlink(missing_ok=True)
+        threads_path(uid).unlink(missing_ok=True)
+        (session_file.state_dir() / f"threads-{uid}.env").unlink(missing_ok=True)
+        key = session_file.state_key(uid)
+        if key != uid:
+            (session_file.state_dir() / f"copied-{key}.env").unlink(missing_ok=True)
 
 
 # Guest threads (RT-6.22): at most this many are kept; a thread whose latest
@@ -120,7 +129,7 @@ CLOSED = ("DONE", "CANCEL", "BYE")
 
 
 def threads_path(uid: str) -> Path:
-    return session_file.state_dir() / f"threads-{uid}.env"
+    return session_file.state_dir() / f"threads-{session_file.state_key(uid)}.env"
 
 
 def guest_threads(uid: str) -> dict[str, tuple[str, str]]:

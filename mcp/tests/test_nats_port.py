@@ -58,6 +58,7 @@ class FakeNats:
         self.presence: dict[str, str] = {}  # agent -> online | away (fresh), else offline
         self.attestations: dict[str, Attestation] = {}  # agent -> the login service's record
         self.bots: dict[str, str] = {}  # agent -> the bot its presence names
+        self.homes: dict[str, str] = {}  # agent -> the home its record states (RT-6.41, #255)
         self.synced = True
         self.members: set[tuple[str, str]] = set()  # (channel, agent)
         self.linked_bot = ""
@@ -71,7 +72,6 @@ class FakeNats:
         self.prefixes: dict[str, str] = {}  # channel -> the bot prefix its signal named (RT-6.36 step 4)
         self.accounts: dict[str, str] = {}  # Mattermost account -> anchor
         self.approvers: set[str] = set()  # anchors with a fresh approver record
-        self.stale: set[str] = set()  # accounts whose own record is stale: bound, no approver
         # Plan B piece 3: dm_source is what use_bus sets (the home's switch, read for this
         # agent's own presence); `dms` are the agents whose presence says their home runs
         # agent DMs over NATS.
@@ -93,6 +93,10 @@ class FakeNats:
 
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         return {a: (self.server_now, s) for a, s in self.presence.items()}
+
+    def home_of(self, agent: str) -> str | None:
+        """The home a record states (RT-6.41, #255): this fake's map, absent as no word."""
+        return self.homes.get(agent)
 
     def claim_info(self, channel: str) -> dict[str, tuple[int, float]]:
         return dict(self.claims.get(channel, {}))
@@ -141,9 +145,6 @@ class FakeNats:
 
     def approver(self, anchor: str) -> bool:
         return anchor in self.approvers
-
-    def account_approver(self, account: str) -> bool:
-        return account not in self.stale and self.accounts.get(account, "-") in self.approvers
 
     def bound_accounts(self) -> dict[str, str]:
         return {a: x for a, x in self.accounts.items() if x != "-"}

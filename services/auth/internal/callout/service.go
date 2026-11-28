@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"sync"
 	"time"
 
@@ -77,7 +78,8 @@ type Anchors interface {
 // (directory.Anchors has it): it keeps the chat account index current from a
 // login. The service checks for it by type assertion and calls it only for a
 // login whose chat account is proven to be the token's (token.Identity.
-// ChatOpenID), never for a password account; an error refuses the login.
+// ChatProven: OpenID or LDAP), never for a password account; an error refuses
+// the login.
 type AccountIndex interface {
 	Account(ctx context.Context, sub, name string) error
 }
@@ -422,7 +424,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 	}
 	// Only a credential that is issued writes the chat account's record
 	// (RT-6.42): a refused one leaves the directory as it is.
-	if ai, ok := ah.(AccountIndex); ok && id.ChatOpenID {
+	if ai, ok := ah.(AccountIndex); ok && id.ChatProven {
 		if err := ai.Account(ctx, id.Subject, id.Owner); err != nil {
 			return "", append(who, "owner", id.Owner, "sub", id.Subject),
 				fmt.Errorf("%w: account index: %v", token.ErrDirectory, err)
@@ -433,6 +435,13 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		return "", who, err
 	}
 	who = append(who, "channels", channels)
+	// The hello's home as granted (RT-6.41): the record states the home the credential's crown
+	// claim is for, and "" when the hello named none or the human is no member of it - the same
+	// datum grant checked, never a claim of the agent beyond it.
+	home := ""
+	if hello.Home != "" && slices.Contains(channels, hello.Home) {
+		home = hello.Home
+	}
 
 	uc := jwt.NewUserClaims(req.UserNkey)
 	uc.Name = agent
@@ -465,7 +474,7 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		}
 	}
 	if at, tr := s.attestHooks(); at != nil {
-		att, err := s.attest(ctx, at, tr, agent, directory.Trusted{Anchor: anchor, Name: id.Owner},
+		att, err := s.attest(ctx, at, tr, agent, home, directory.Trusted{Anchor: anchor, Name: id.Owner},
 			hello.Trusted, hello.TrustedCut, now.Unix(), uc.Expires)
 		if err != nil {
 			return "", who, fmt.Errorf("attestation: %w", err)
@@ -482,7 +491,8 @@ func (s *Service) authorize(ctx context.Context, req *jwt.AuthorizationRequestCl
 		}
 		// The record of the chat account behind the login (RT-6.42 step 3).
 		guard, _ := s.anchorHook().(TokenGuard)
-		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, id.Approver, anchor, id.IssuedAt, now.Unix(), uc.Expires)
+		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, &id.Approver, anchor, id.IssuedAt, now.Unix(), uc.Expires,
+			id.ChatAuthService, id.ChatAuthData)
 		if err != nil {
 			return "", who, fmt.Errorf("account record: %w", err)
 		}

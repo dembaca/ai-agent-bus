@@ -23,10 +23,12 @@ import (
 // records (RT-6.42 step 3), made by the bridge at every start.
 const AccountsConsumer = "bridge_accounts"
 
-// AccountsFilter is the consumer's filter. The bridge's create right names the
-// consumer and the filter ($JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.
-// presence.account.mattermost.*.v1): it can make or change no other consumer.
-const AccountsFilter = "presence.account.mattermost.*.v1"
+// AccountsFilter is the consumer's filter: each account's record
+// (<id>.v1) and its binding's proof (<id>.auth.v1, #266). The bridge's create
+// right names the consumer and the filter ($JS.API.CONSUMER.CREATE.PRESENCE.
+// bridge_accounts.presence.account.mattermost.>): it can make or change no
+// other consumer, and read nothing but what the login service alone writes.
+const AccountsFilter = "presence.account.mattermost.>"
 
 // The bridge's own consumer: an idle heartbeat says nothing is pending, and a
 // consumer nobody listens to is gone after the threshold, before the next.
@@ -51,7 +53,10 @@ func (a *Accounts) beats() (heartbeat, inactive time.Duration) {
 // without a record that decodes, or with `anchor` null, is unbound: Anchor
 // answers "", and the bridge carries it under `-` (points 3, 4 and 10). The
 // record's `exp` and `approver` are the MCP server's to judge: a stale record
-// still names the person, it only approves nothing (point 8).
+// still names the person, it only approves nothing (point 8). Beside each
+// record the login service publishes the binding's proof on
+// `presence.account.mattermost.<user id>.auth.v1` (#266): Bound binds a post's
+// account only while it still logs in as it was proven.
 //
 // At every start the bridge makes its consumer bridge_accounts with a fresh
 // delivery subject (deliver.bridge.accounts.<nonce>): deliver last per
@@ -75,7 +80,25 @@ type Accounts struct {
 	mu       sync.Mutex
 	anchors  map[string]string // accounts with a record, "" for unbound
 	staging  map[string]string // a new consumer's records until it caught up
+	proofs   map[string]Proof  // accounts with a proof that decodes
+	sproofs  map[string]Proof  // a new consumer's proofs until it caught up
 	caughtUp bool
+}
+
+// Bound is the anchor a post of the Mattermost account userID goes out
+// under (RT-6.42 step 3, #266): the record's anchor, while the account still
+// logs in as its binding was proven (authService and authData as Mattermost
+// shows them now, equal to the proof's); "" for an account without a record
+// or a proof that decodes, for `anchor` null, and for one that logs in
+// otherwise now (another auth_data, a password, another way).
+func (a *Accounts) Bound(userID, authService, authData string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p, ok := a.proofs[userID]
+	if !ok || authService == "" || authData == "" || p.AuthService != authService || p.AuthData != authData {
+		return ""
+	}
+	return a.anchors[userID]
 }
 
 // Anchor is the anchor bound to a Mattermost user id, "" when unbound.
@@ -165,7 +188,7 @@ func (a *Accounts) consume(ctx context.Context, nc *nats.Conn) error {
 	// replaces the old one once caught up: an account unbound while NATS was
 	// away must not keep its old anchor. Until then no home carries.
 	a.mu.Lock()
-	a.staging, a.caughtUp = map[string]string{}, false
+	a.staging, a.sproofs, a.caughtUp = map[string]string{}, map[string]Proof{}, false
 	a.mu.Unlock()
 	if err := a.create(ctx, nc, name, deliver); err != nil {
 		return err // errStale: Run waits the threshold, unsubscribed
@@ -288,7 +311,8 @@ func (a *Accounts) caught() {
 	defer a.mu.Unlock()
 	if a.staging != nil {
 		a.anchors, a.staging = a.staging, nil
-		a.Log.Info("accounts: the account records are read", "accounts", len(a.anchors))
+		a.proofs, a.sproofs = a.sproofs, nil
+		a.Log.Info("accounts: the account records are read", "accounts", len(a.anchors), "proofs", len(a.proofs))
 	}
 	a.caughtUp = true
 }
@@ -299,8 +323,16 @@ func (a *Accounts) one(subject string, data []byte) {
 	a.take(subject, data)
 }
 
-// take records one record; a.mu is held.
+// take records one record or proof; a.mu is held.
 func (a *Accounts) take(subject string, data []byte) {
+	if uid, ok := proofSubject(subject); ok {
+		p, err := DecodeProof(data)
+		if err == nil && p.Account != uid {
+			err = fmt.Errorf("the proof names account %q", p.Account)
+		}
+		a.setProof(uid, p, err)
+		return
+	}
 	uid, ok := accountSubject(subject)
 	if !ok {
 		a.Log.Warn("accounts: unexpected subject", "subject", subject)
@@ -328,6 +360,77 @@ func (a *Accounts) set(uid, anchor string, err error) {
 		a.anchors = map[string]string{}
 	}
 	a.anchors[uid] = anchor
+}
+
+// setProof records an account's proof; one that does not decode is no proof
+// (the account binds nothing). a.mu is held.
+func (a *Accounts) setProof(uid string, p Proof, err error) {
+	proofs := a.sproofs
+	if proofs == nil {
+		if a.proofs == nil {
+			a.proofs = map[string]Proof{}
+		}
+		proofs = a.proofs
+	}
+	if err != nil {
+		a.Log.Warn("accounts: a proof that does not decode; unbound", "account", uid, "error", err)
+		delete(proofs, uid)
+		return
+	}
+	proofs[uid] = p
+}
+
+// proofSubject is the user id of presence.account.mattermost.<id>.auth.v1.
+func proofSubject(subject string) (string, bool) {
+	parts := strings.Split(subject, ".")
+	if len(parts) != 6 || parts[0] != "presence" || parts[1] != "account" ||
+		parts[2] != "mattermost" || parts[4] != "auth" || parts[5] != "v1" || !mmID.MatchString(parts[3]) {
+		return "", false
+	}
+	return parts[3], true
+}
+
+// Proof is a decoded proof of a binding (format v1).
+type Proof struct {
+	Account     string
+	AuthService string // "openid" or "ldap"
+	AuthData    string
+	Iat         int64
+}
+
+// proofFields are the proof's fields, all required, no other.
+var proofFields = []string{"v", "account", "auth_service", "auth_data", "iat"}
+
+// DecodeProof decodes a proof strictly, as DecodeAccount a record: format v1,
+// exactly its fields, no unknown or duplicate key; an auth_service other than
+// "openid" or "ldap", or an empty auth_data, is refused.
+func DecodeProof(data []byte) (Proof, error) {
+	fields, err := strictObject(data, proofFields, proofFields)
+	if err != nil {
+		return Proof{}, err
+	}
+	var p Proof
+	var v int
+	for key, dst := range map[string]any{"v": &v, "account": &p.Account, "auth_service": &p.AuthService,
+		"auth_data": &p.AuthData, "iat": &p.Iat} {
+		if string(fields[key]) == "null" {
+			return Proof{}, fmt.Errorf("%s is null", key)
+		}
+		if err := json.Unmarshal(fields[key], dst); err != nil {
+			return Proof{}, fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	switch {
+	case v != 1:
+		return Proof{}, fmt.Errorf("format %d, not 1", v)
+	case !mmID.MatchString(p.Account):
+		return Proof{}, fmt.Errorf("account %q is no Mattermost id", p.Account)
+	case p.AuthService != "openid" && p.AuthService != "ldap":
+		return Proof{}, fmt.Errorf("auth_service %q", p.AuthService)
+	case p.AuthData == "" || len(p.AuthData) > 256:
+		return Proof{}, errors.New("auth_data empty or longer than 256")
+	}
+	return p, nil
 }
 
 // accountSubject is the user id of presence.account.mattermost.<id>.v1.

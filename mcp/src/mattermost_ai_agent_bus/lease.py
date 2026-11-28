@@ -156,8 +156,9 @@ def crown_lease_sec() -> int:
 # --- local state ----------------------------------------------------------------
 
 def _file(kind: str, user_id: str) -> Path | None:
-    """presence-<uid>.env or coord-<uid>.env; None for an id that is none."""
-    return session_file.state_dir() / f"{kind}-{user_id}.env" if _UID.fullmatch(user_id) else None
+    """presence-<uid>.env or coord-<uid>.env; None for an id that is none. The key is a bot
+    id, or a NATS name (session_file.key_ok, RT-6.2: the kept state since plan B piece 2b)."""
+    return session_file.state_dir() / f"{kind}-{user_id}.env" if session_file.key_ok(user_id) else None
 
 
 def _read(path: Path | None) -> dict[str, str]:
