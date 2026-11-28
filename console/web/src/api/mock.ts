@@ -2,14 +2,14 @@
 // serve (ADR-015 point 10), on data shaped like today's bus, so the app can
 // be built and shown before the server exists. It changes on its own —
 // presence beats and turn ends are seconds apart at this scale — so the
-// Kanban and the graph view move without a backend: states change, an agent
+// agents list moves without a backend: states change, an agent
 // joins and leaves, an ask opens and closes.
 //
 // The operator of this console is "dembaca" (Ask.forMe / mayAnswer are
 // relative to that name).
 import type {
-  AgentCard, AgentState, AgentStatsRow, Ask, ConnState, ConsoleApi, FleetEvent, GraphData,
-  Operator, Post, Report, ReportStack, TaskRow, ThreadPage,
+  AgentCard, AgentState, AgentStatsRow, Ask, ConnState, ConsoleApi, FleetEvent, Group, GroupBy, GroupNumbers,
+  GroupsAnswer, Operator, Post, Report, ReportStack, Scope, TaskRow, ThreadPage,
 } from "./types"
 
 const now = () => Date.now()
@@ -317,50 +317,70 @@ const agentStats = (): AgentStatsRow[] => [
     posts24h: 12, wakes24h: 9, tools24h: 61 },
 ]
 
-const graph = (): GraphData => ({
-  nodes: [
-    { id: "dembaca", kind: "person", label: "dembaca", you: true },
-    { id: "carol", kind: "person", label: "carol" },
-    { id: "~ai-agent-bus-dev", kind: "channel", label: "~ai-agent-bus-dev" },
-    { id: "~chat-next", kind: "channel", label: "~chat-next" },
-    { id: "~bgl-infra", kind: "channel", label: "~bgl-infra" },
-    { id: "agent-mac-ai-agent-164534", kind: "agent", label: "164534", crown: true, harness: "claude-code", state: "working" },
-    { id: "agent-mac-ai-agent-bb8f09", kind: "agent", label: "bb8f09", harness: "opencode", state: "working" },
-    { id: "agent-mac-ai-agent-d2f798", kind: "agent", label: "d2f798", harness: "opencode", state: "bus" },
-    { id: "agent-mac-ai-agent-6d2afc", kind: "agent", label: "6d2afc", harness: "opencode", state: "working" },
-    { id: "agent-mac-ai-agent-b7ccf7", kind: "agent", label: "b7ccf7", harness: "claude-code", state: "listening" },
-    { id: "agent-mac-ai-agent-831e38", kind: "agent", label: "831e38", harness: "opencode", state: "idle" },
-    { id: "agent-mac-ai-agent-716d72", kind: "agent", label: "716d72", harness: "claude-code", state: "offline" },
-    { id: "agent-mac-chat-next-3b92c9", kind: "agent", label: "3b92c9", crown: true, harness: "claude-code", state: "silent" },
-  ],
-  edges: [
-    // trusts: an agent to its owner, an agent to each human on its trusted list
-    { id: "e1", from: "agent-mac-ai-agent-164534", to: "dembaca", kind: "trusts" },
-    { id: "e2", from: "agent-mac-ai-agent-bb8f09", to: "dembaca", kind: "trusts" },
-    { id: "e3", from: "agent-mac-ai-agent-d2f798", to: "dembaca", kind: "trusts" },
-    { id: "e4", from: "agent-mac-ai-agent-6d2afc", to: "dembaca", kind: "trusts" },
-    { id: "e5", from: "agent-mac-ai-agent-b7ccf7", to: "dembaca", kind: "trusts" },
-    { id: "e6", from: "agent-mac-ai-agent-831e38", to: "carol", kind: "trusts" },
-    { id: "e7", from: "agent-mac-ai-agent-716d72", to: "dembaca", kind: "trusts" },
-    { id: "e8", from: "agent-mac-chat-next-3b92c9", to: "dembaca", kind: "trusts" },
-    // members of a home: agents with their channel
-    { id: "m1", from: "agent-mac-ai-agent-164534", to: "~ai-agent-bus-dev", kind: "coordinates" },
-    { id: "m2", from: "agent-mac-ai-agent-bb8f09", to: "~ai-agent-bus-dev", kind: "coordinates" },
-    { id: "m3", from: "agent-mac-ai-agent-d2f798", to: "~ai-agent-bus-dev", kind: "coordinates" },
-    { id: "m4", from: "agent-mac-ai-agent-6d2afc", to: "~ai-agent-bus-dev", kind: "coordinates" },
-    { id: "m5", from: "agent-mac-ai-agent-b7ccf7", to: "~ai-agent-bus-dev", kind: "coordinates" },
-    { id: "m6", from: "agent-mac-chat-next-3b92c9", to: "~chat-next", kind: "coordinates" },
-    // a guest channel: a channel the agent only visits (RT-6.16)
-    { id: "g1", from: "agent-mac-ai-agent-bb8f09", to: "~bgl-infra", kind: "guest" },
-    { id: "g2", from: "agent-mac-ai-agent-164534", to: "~chat-next", kind: "guest" },
-    // the cut: followed further only to a depth of two, with a mark where it is cut
-    { id: "c1", from: "agent-mac-ai-agent-164534", to: "agent-mac-ai-agent-bb8f09", kind: "coordinates", cut: true },
-  ],
-  cutDepth: 2,
-})
+// The groups and the panel's numbers (`GET /v1/groups`, #283): the real server counts them; the
+// mock does the same from its own cards, so the list shows the same shapes without a backend.
+const STATUS: Record<string, readonly string[]> = {
+  working: ["working", "bus"], listening: ["listening", "online"],
+  idle: ["idle", "away", "silent"], offline: ["offline"],
+}
+const statusOf = (state: string): string =>
+  Object.keys(STATUS).find((g) => STATUS[g].includes(state)) ?? "other"
+
+function numbers(members: AgentCard[], open: Ask[], rows: AgentStatsRow[], mine: (c: AgentCard) => boolean): GroupNumbers {
+  const states: Record<string, number> = { working: 0, listening: 0, idle: 0, offline: 0, other: 0 }
+  for (const c of members) states[statusOf(c.state)] += 1
+  const names = new Set(members.map((c) => c.name))
+  const its = open.filter((a) => names.has(a.by))
+  const seen = members.filter(mine).map((c) => c.name)
+  const sums = rows.filter((r) => seen.includes(r.agent) && names.has(r.agent) && r.tok24h?.all != null)
+  return {
+    total: members.length, states, reachable: members.length - states.offline, working: states.working,
+    asksOpen: its.length, asksForYou: its.filter((a) => a.forMe === true).length,
+    asksMayAnswer: its.filter((a) => a.mayAnswer === true).length,
+    tokens: sums.length ? sums.reduce((n, r) => n + (r.tok24h?.all ?? 0), 0) : null,
+    tokensAgents: sums.length,
+  }
+}
+
+export function mockGroups(all: AgentCard[], asksNow: Ask[], rows: AgentStatsRow[],
+                           by: GroupBy, scope: Scope): GroupsAnswer {
+  const own = (c: AgentCard) => c.for === "dembaca"
+  const seeable = (c: AgentCard) => own(c) || c.trusts.includes("dembaca")
+  const open = asksNow.filter((a) => a.end !== "answered")
+  const shown = all.filter(scope === "mine" ? own : scope === "trusting" ? seeable : () => true)
+  const keyOf = (c: AgentCard): [string, string] =>
+    by === "home" ? [c.home, c.home || "no home"]
+      : by === "repo" ? [c.project, c.project || "no repo"]
+      : by === "owner" ? [c.for, c.for || "no owner"]
+      : by === "status" ? [statusOf(c.state), statusOf(c.state)[0].toUpperCase() + statusOf(c.state).slice(1)]
+      : ["all", "All agents"]
+  const keyed = new Map<string, { label: string; members: AgentCard[] }>()
+  for (const c of shown) {
+    const [key, label] = keyOf(c)
+    const g = keyed.get(key) ?? { label, members: [] }
+    g.members.push(c)
+    keyed.set(key, g)
+  }
+  const order = ["working", "listening", "idle", "offline", "other"]
+  const groups: Group[] = [...keyed].map(([key, g]) => ({
+    key, label: g.label, agents: g.members.map((c) => c.name).sort(),
+    ...numbers(g.members, open, rows, seeable),
+  })).sort((a, b) => by === "status"
+    ? order.indexOf(a.key) - order.indexOf(b.key)
+    : Number(a.asksForYou === 0) - Number(b.asksForYou === 0) || a.label.localeCompare(b.label))
+  return { by, scope, groups, glance: {
+    mine: numbers(all.filter(own), open, rows, seeable),
+    flock: numbers(all, open, rows, seeable),
+    asks: {
+      forYou: open.filter((a) => a.forMe === true).length,
+      mayAnswer: open.filter((a) => a.mayAnswer === true && a.forMe !== true).length,
+      open: open.length,
+    },
+  } }
+}
 
 // The moving part: turn ends change states, presence beats every 30 s. The
-// mock moves one agent every few seconds, so the Kanban visibly lives.
+// mock moves one agent every few seconds, so the list visibly lives.
 const cycle: Record<string, AgentState[]> = {
   "agent-mac-ai-agent-b7ccf7": ["working", "listening"],
   "agent-mac-ai-agent-831e38": ["idle", "silent", "idle"],
@@ -368,7 +388,7 @@ const cycle: Record<string, AgentState[]> = {
 }
 const step = {i: 0}
 
-// The graph view's live changes (#145): an agent joins and later leaves, an
+// The live changes (#145): an agent joins and later leaves, an
 // ask opens and later closes. Ticks of 4 s: the visitor is on the bus for
 // ticks 4 to 11 of every 16; the live ask opens at tick 10 and alternates
 // open and answered every 10 ticks after (the Asks view polls every 30 s,
@@ -385,7 +405,7 @@ export const liveAskEnd = (i: number): Ask["end"] | null =>
 const visitor = (): CardWire => ({
   name: "agent-mac-ai-agent-e41a07", home: "~ai-agent-bus-dev", guests: [], state: "working",
   crown: false, harness: "cursor", model: "Composer 2",
-  task: "a short look at the console's graph view, then gone again",
+  task: "a short look at the console, then gone again",
   role: "member", for: "dembaca", autonomous: false, trusts: ["dembaca"],
   capabilities: ["git"], project: "dembaca/ai-agent-bus",
   branch: null, pr: null, ctx: 12, limits: null, version: "0.97.0",
@@ -469,8 +489,9 @@ export function mockApi(): ConsoleApi {
       const all = askEnd ? [liveAsk(askEnd), ...asks()] : asks()
       return all.map((a): Ask => ({ ...a, displayName: short(a.by) }))
     },
-    async graph(): Promise<GraphData> {
-      return graph()
+    async groups(by: GroupBy, scope: Scope): Promise<GroupsAnswer> {
+      const open = await this.asks()
+      return mockGroups(cardsNow, open, agentStats(), by, scope)
     },
     async stats(): Promise<Report[]> {
       return stats()

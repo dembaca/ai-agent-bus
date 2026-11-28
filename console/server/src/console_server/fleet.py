@@ -492,6 +492,18 @@ class Fleet:
         att = self._attests.get(agent)
         return att[2] if att and att[2].exp > self.server_now else None
 
+    def own(self, anchor: str | None) -> set[str]:
+        """The agents whose fresh attestation names `anchor` as owner: the "Mine" of the
+        agents list (#283). Without the anchor, none."""
+        if not anchor or anchor == natsbus.NO_OWNER:
+            return set()
+        out = set()
+        for agent in self._attests:
+            att = self._fresh_attestation(agent)
+            if att and anchor == owner_token(att.owner_anchor):
+                out.add(agent)
+        return out
+
     def own_or_trusted(self, anchor: str | None) -> set[str]:
         """The agents whose fresh attestation (the login service's record, RT-6.41)
         names `anchor` — the operator's anchor in subject form, as `asks` takes it —

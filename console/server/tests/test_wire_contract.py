@@ -238,6 +238,16 @@ def test_the_agent_stats_row_the_fixture_states() -> None:
     assert book.agent_rows({FIXTURE["card"]["name"]}) == FIXTURE["agentStats"]
 
 
+def test_the_groups_the_fixture_states(fleet_scenario) -> None:
+    """#283: `/v1/groups` for the operator's own agent: counted on the server, the keys the
+    browser's types take as they are."""
+    from console_server import groups
+    f = fleet_scenario
+    got = groups.groups(f.cards("dembaca"), f.asks("dembaca"), [], by="home", scope="mine",
+                        own=f.own("dembaca"), own_or_trusted=f.own_or_trusted("dembaca"))
+    assert got == FIXTURE["groups"]
+
+
 def test_the_no_row_sentence_is_quoted_word_for_word() -> None:
     """#201 (Fable's review of #236): why an agent has no per-agent numbers is said by the
     app's two constants (`console/web/src/ui/agents.ts`); the web README, the CHANGELOG and
