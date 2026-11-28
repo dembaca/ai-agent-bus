@@ -4879,8 +4879,11 @@ which each piece reads for itself.
       - Moves: the plugin no longer registers a session whose every
         channel, the home, the guest channels, the lobby and the stats
         channel, runs over NATS with every piece on. A session with any
-        channel on Mattermost registers as before. The start hook
-        decides per session, at its start: until switching at a renewal
+        channel on Mattermost registers as before. The session decides
+        at its start (the owner's answer of 2026-11-28 to the plan's first
+        question: under corral the host process after its own NATS read,
+        since the start hook cannot see the switches; without corral the
+        MCP server in `session_start`): until switching at a renewal
         is built (guest channels and the lobby, piece 12), a flag
         changed for a channel reaches a running session only at its next
         start, since `compose.py` picks the transport there. Once every home runs every piece, no
@@ -4934,6 +4937,34 @@ which each piece reads for itself.
       - Test: hook tests: no registration and no Mattermost token for such
         a session, registration for a mixed one. Lab: the acceptance
         below.
+      - Built (14a, after 0.104.0; RT-6.18 step 13, RT-6.10 step 8): the
+        decision, in `nobot.py` with the predicate `NatsPort.bot_needed`.
+        A corral start whose every channel `CB_NATS_HOMES` lists
+        (`mm_bot_deferrable`, a pre-filter of the host's settings that can
+        only delay a registration) registers nothing and hands the host
+        process the bot's name and the registration secret in the start
+        line's `defer`; the host process registers only when its NATS read
+        shows a channel or piece off, and drops the secret either way.
+        Without corral `session_start` decides on the same predicate. The
+        predicate reads only this bus's copy of the login service's
+        records: every channel of the session (home, guests, lobby) one of
+        the bus's, each with pieces 1 to 13 in a fresh record, the stats
+        channel off or on NATS through the home's piece 13 (the plan's
+        second question, as recommended), and only once the bus is
+        connected and has read the presence replay; `CB_PLANB_TEST` does
+        not count. In doubt a bot: no login or replay within 60 s, no NATS
+        side, an error. Where the build settles what the text leaves open:
+        the decision is kept for the session's run, so a record that goes
+        stale or is switched off later leaves a session started without a
+        bot without Mattermost (what needs it fails with a text that says
+        to restart), never with a late token; the bot a host process
+        registers is not kept for `claude --continue`; a session that may
+        be fully switched starts its NATS bus without a bot id and links
+        the bot once registered. Everything a session holding no bot still
+        sends to Mattermost is the audit of every tool, hook route and
+        shell client (gate 9 of the plan), not 14a's. Unit tests and a real `nats-server` test in
+        `mcp/tests/test_planb_piece14.py`, hook tests in
+        `tests/hooks/test_planb_piece14_hooks.py`.
 - **Order (proposed).** First the pieces that move no message of
   people: channels from the directory, the roster and the link, DMs
   between agents, and the trusted humans from the attestation (pieces 1

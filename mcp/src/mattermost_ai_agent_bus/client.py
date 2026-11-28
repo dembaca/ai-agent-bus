@@ -404,6 +404,9 @@ class MattermostAdapter:
     # CB_MM_PROJECT_CHANNEL entries 2..n (RT-6.22); a list given as
     # project_channel_name is split into the home and these.
     guest_channel_names: list[str] = field(default_factory=list)
+    # Plan B piece 14a (nobot.py, RT-6.18 step 13): why this session holds no bot, kept for its
+    # whole run; what still needs Mattermost fails with it, and nothing registers one later.
+    no_bot: str = field(default="", repr=False, init=False)
     _client: httpx.AsyncClient | None = field(default=None, repr=False, init=False)
     # (when read, the guest channel ids): the bot's memberships (RT-6.22).
     _guests: tuple[float, frozenset[str]] | None = field(default=None, repr=False, init=False)
@@ -535,7 +538,7 @@ class MattermostAdapter:
     def _auth_headers(self, bearer: str | None = None) -> dict[str, str]:
         tok = bearer if bearer is not None else self.token
         if not tok:
-            raise RuntimeError("bot token required (session_start or CB_MM_BOT_TOKEN)")
+            raise RuntimeError(self.no_bot or "bot token required (session_start or CB_MM_BOT_TOKEN)")
         return {"Authorization": f"Bearer {tok}"}
 
     async def _api(
@@ -570,6 +573,8 @@ class MattermostAdapter:
         """
         if marker := corral_sandbox():
             raise RuntimeError(sandbox_refusal(marker))
+        if self.no_bot:  # plan B piece 14a: decided at the start, kept (nobot.py)
+            raise RuntimeError(self.no_bot)
         if not self.reg_secret:
             raise RuntimeError("MM_REG_SECRET is required for session_start")
         if not self.register_url:

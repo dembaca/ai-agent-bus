@@ -7,6 +7,26 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **Registration ends, all or nothing: plan B piece 14a, the decision** (#244, ADR-014
+  phase 5 item 14, RT-6.18 step 13, RT-6.10 step 8). A session whose home, guest
+  channels, lobby and stats channel all run over NATS with every plan B piece on
+  registers no Mattermost bot and holds no Mattermost token. Under corral the start
+  hook registers nothing when `CB_NATS_HOMES` lists every channel of the session; the
+  session's host process decides after its own NATS read and registers the bot only
+  when a channel or piece is off, with the registration secret the start hook handed
+  it on stdin, which it drops afterwards. Without corral `session_start` decides the
+  same way and answers `registered: false` with `no_bot`; `bus_info` says `no_bot`
+  too. The decision reads only the login service's records on the presence stream,
+  never the environment. When it cannot be taken (no login or no presence replay
+  within 60 s, no NATS side, a stale or missing record) the session registers as
+  before. It is kept for the session: a switch turned off later leaves the session
+  without Mattermost, and what needs Mattermost fails with a message that says to
+  restart. With the switches off, as everywhere today, and for every session whose
+  channels `CB_NATS_HOMES` does not all list, nothing changes. The release that
+  carries this with the release notice from the bridge and the identity by NATS name
+  (pieces 14b and 14c) is planned with
+  `Needs: bridge and login service at 0.106.0 or newer, release record from the bridge.`
+
 - **Files over the bridge: plan B piece 8** (#244, RT-6.23, RT-6.33). In a home over
   NATS with `planb.on(8, <channel>)` on, the session makes no Mattermost call for
   files: an upload's bytes go to the bridge in parts on `<req>.file.<agent>` (the

@@ -560,6 +560,9 @@ class NatsPort:
         self._bus: BusLike | None = None
         self._fatal: NatsPortError | None = None
         self._up = False  # the bus is started: once it is synced the switch can be read
+        # Plan B piece 14a (RT-6.18 step 13, RT-6.10 step 8): the session may be fully switched and
+        # has no bot yet, so the bus starts without one (nobot.deferrable); compose sets it.
+        self.bot_deferred = False
         self._ids: dict[str, str] | None = None  # channel name -> Mattermost id
         # Plan B piece 12 (RT-6.22 step 7): the guests and the lobby switched to NATS whose id the
         # channel record does not name, latched with _ids: not reachable, never Mattermost; and
@@ -707,7 +710,8 @@ class NatsPort:
                 bus.shown_source = lease.presence_shown  # plan B piece 9: None while it is off
                 bus.ask_source = self._asks
                 try:
-                    bus.link_bot(bot, await self._bot_name())
+                    if bot or not self.bot_deferred:  # piece 14a: no bot yet, linked once registered
+                        bus.link_bot(bot, await self._bot_name())
                 except ValueError:
                     # A bot id that is no Mattermost user id (a bad CB_MM_BOT_USER_ID): the NATS
                     # home still starts, only without a link between bot and NATS name.
@@ -781,7 +785,53 @@ class NatsPort:
         inner: Any = self.inner
         if inner.session:
             return str(inner.session.user_id)
+        if self.bot_deferred and not getattr(inner, "token", None):
+            return ""  # plan B piece 14a: no bot yet, maybe none at all (nobot.py)
         return config.env("CB_MM_BOT_USER_ID") or (await inner.get_me()).id
+
+    NOT_READ = "the plan B records are not read yet"
+
+    def bot_needed(self) -> str:
+        """Plan B piece 14a (RT-6.18 step 13, RT-6.10 step 8): '' when this session needs no
+        Mattermost bot, else why it does. None is needed only when every channel of the session -
+        the home, each guest, the lobby - runs over NATS on this bus with every plan B piece on
+        (1 to 13) in its record, and the stats channel is off or its STATS go over NATS (piece
+        13 of the home, plan B question 2). Read from the login service's records as this bus
+        holds them (`planb_pieces`: a stale record reads as none), never from the environment;
+        only once the bus is up, connected and has read the presence replay (synced), else
+        NOT_READ. Never raises for a missing reading: that answers a reason."""
+        from . import nobot, stats
+
+        bus = self._live()
+        if not self._up or bus is None or not bus.connected or not getattr(bus, "synced", False):
+            return self.NOT_READ
+        pieces_of = getattr(bus, "planb_pieces", None)
+        if pieces_of is None:
+            return "this bus reads no plan B records"
+        on_nats = set(getattr(bus, "channels", ()))
+        chans = nobot.session_channels(self.inner)
+        if not chans:
+            return "the session names no channel"
+        for ch in chans:
+            if ch not in on_nats:
+                return f"~{ch} does not run over NATS"
+            missing = nobot.ALL_PIECES - pieces_of(ch)
+            if missing:
+                return f"plan B piece {min(missing)} is off in ~{ch}"
+        if stats.channel() and 13 not in pieces_of(chans[0]):
+            return "the stats channel is on Mattermost"
+        return ""
+
+    def link_bot(self, bot_id: str, username: str = "") -> None:
+        """A bot registered after the bus started (plan B piece 14a): its presence names it from
+        the next one on (RT-6.37)."""
+        bus = self._bus
+        if bus is None:
+            return
+        bus.link_bot(bot_id, username)
+        soon = getattr(bus, "presence_soon", None)
+        if soon is not None:
+            soon()
 
     async def _bot_name(self) -> str:
         """The bot's username, for the presence (the name the operator console shows,

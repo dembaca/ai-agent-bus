@@ -224,6 +224,16 @@ if [[ "$KEEP" -eq 1 ]]; then
 fi
 [[ -d "$hosted" && ! -L "$hosted" ]] && rm -rf "$hosted"
 
+# A session started without a bot (plan B piece 14a, RT-6.18 step 13): its file holds no token.
+# The host process registered one only if a channel or piece was off, and its exit work above
+# unregistered it; nothing is left here to unregister with.
+if [[ -z "${CB_MM_BOT_TOKEN:-}" && -n "${MM_REG_BOT_NAME:-}" ]] &&
+   ! grep -Eq '^(CB_MM_BOT_TOKEN|MM_BOT_TOKEN|MATTERMOST_TOKEN)=.' "$SESSION_FILE"; then
+  log "no bot token in the session file of ${MM_REG_BOT_NAME} (started without a bot, RT-6.18 step 13); removing it"
+  rm -f "$SESSION_FILE"
+  exit 0
+fi
+
 if [[ -z "${MM_REG_BOT_NAME:-}" ]]; then
   log "session file has no MM_REG_BOT_NAME; removing it"
   rm -f "$SESSION_FILE"

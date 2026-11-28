@@ -98,7 +98,7 @@ CB_ENV_NAMES=(
   "CB_AGENT_SESSION_FILE MM_AGENT_SESSION_FILE" "CB_BUS_DEADLINE MM_BUS_DEADLINE"
   "CB_BUS_HOST_DIR MM_BUS_HOST_DIR" "CB_BUS_MAX_TIME MM_BUS_MAX_TIME" "CB_BUS_UPLOAD MM_BUS_UPLOAD"
   "CB_LISTEN_POLL_SEC MM_LISTEN_POLL_SEC" "CB_MM_TEAM_ID MM_TEAM_ID" "CB_REL_GIT_DIR MM_REL_GIT_DIR"
-  "CB_REL_TMP MM_REL_TMP" "CB_BUS_HOOK_DISPATCH MM_BUS_HOOK_DISPATCH"
+  "CB_REL_TMP MM_REL_TMP" "CB_BUS_HOOK_DISPATCH MM_BUS_HOOK_DISPATCH" "CB_NATS_HOMES MM_NATS_HOMES"
 )
 # mm_env_all: mm_env for each of them; 2 when any refuses (CB_ENV_ERR says which).
 mm_env_all() {
@@ -351,6 +351,28 @@ mm_home_channel() {
   local first
   first="$(mm_project_channels | head -n 1)"
   printf '%s' "${first:-$(mm_channel)}"
+}
+
+# Plan B piece 14a (RT-6.18 step 13): may this session run with no Mattermost bot at all?
+# Only when CB_NATS_HOMES lists every channel of it, the home, each guest and the lobby, as
+# compose.nats_homes_from_env reads it (comma or space separated, a leading ~ dropped, any
+# case). A pre-filter of the host's own settings, never the decision: the host process then
+# reads the login service's records and registers the bot when a channel or piece is off.
+mm_bot_deferrable() {
+  local listed=" " n ch
+  local -a parts=()
+  IFS=$', \t\n' read -r -a parts <<<"${CB_NATS_HOMES:-}"
+  for n in "${parts[@]+"${parts[@]}"}"; do
+    n="${n#\~}"
+    [[ -n "$n" ]] && listed+="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]') "
+  done
+  [[ "$listed" != " " ]] || return 1
+  while IFS= read -r ch; do
+    [[ -n "$ch" ]] || continue
+    ch="$(printf '%s' "${ch#\~}" | tr '[:upper:]' '[:lower:]')"
+    [[ "$listed" == *" ${ch} "* ]] || return 1
+  done < <(mm_project_channels; mm_channel; echo)
+  return 0
 }
 
 # Should a session hook register a bot for this session on its own?
