@@ -24,8 +24,8 @@ before 0.5.0 are described in the git history.
 - **A stranded counter claim keeps the takeover open: plan B piece 14c-1c** (#244, RT-6.2
   step 9), behind piece 2's switch. A claim the counter move leaves behind (its pid runs
   again, or an append whose journal line failed) no longer lets the takeover be marked
-  done: the source gets no `CB_TAKEN_BY`, the intent narrows to the counters (`CB_MOVING`,
-  the `CB_APPENDING` lines kept), and a later start moves only the counters, so a file the
+  done: the source gets no `CB_TAKEN_BY`, the intent narrows to the counters (`CB_MOVING`),
+  and a later start moves only the counters, so a file the
   name deleted while it ran does not come back. An append cut short by a full disk is cut
   back to its journaled size. The narrowing resolves the journal while the name still owns
   its file (`CB_APPENDED` for a claim appended whole whose removal failed: removed later,
