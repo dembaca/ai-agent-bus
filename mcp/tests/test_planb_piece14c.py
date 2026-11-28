@@ -7,6 +7,7 @@ in bus_info (lease.nats_notes). Switch off: every file name is that of 0.104.0."
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import os
 from pathlib import Path
 
@@ -81,9 +82,10 @@ def test_latch_copies_every_kind_and_skips_locks(state: Path, monkeypatch: pytes
     assert copied == list(session_file.STATE_KINDS)
     for kind in session_file.STATE_KINDS:
         assert (state / session_file._kind_file(kind, NAME)).read_text() == f"{kind}\n"
-        assert (state / session_file._kind_file(kind, UID)).exists()  # the way back
+        # The way back keeps every copied source; the counters are moved (published once).
+        assert (state / session_file._kind_file(kind, UID)).exists() == (kind not in session_file.MOVED_KINDS)
     assert not any((state / f"{lock}-{NAME}.lock").exists() for lock in ("asks", "remind", "stats"))
-    assert (state / f"copied-{NAME}.env").read_text() == f"CB_COPIED_FROM={UID}\n"
+    assert (state / f"copied-{NAME}.env").read_text() == f"CB_COPIED_FROM={UID}\nCB_TIE={session_file.tie()}\n"
     assert (state / f"key-{NAME}.lock").exists()
 
 
@@ -115,7 +117,8 @@ def test_the_copy_comes_before_the_key(state: Path, monkeypatch: pytest.MonkeyPa
 def test_latch_without_a_bot_writes_the_marker(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CB_PLANB_TEST", "2")
     assert session_file.latch(NAME, HOME, "") == []
-    assert (state / f"copied-{NAME}.env").read_text() == ""  # the sweep's day rule applies
+    # No bot id to tie to: the sweep's day rule applies; the tie names the session.
+    assert (state / f"copied-{NAME}.env").read_text() == f"CB_TIE={session_file.tie()}\n"
     assert session_file.state_key("") == NAME
 
 
@@ -265,3 +268,121 @@ def test_a_repeated_latch_moves_nothing(state: Path, monkeypatch: pytest.MonkeyP
 def test_the_copy_source_is_the_bot_id_today() -> None:
     assert session_file._copy_source(UID, NAME) == UID
     assert session_file._copy_source("", NAME) is None
+
+
+# --- the takeover across a restart (owner's decision on #328: CB_LOGIN_NKEY stays ephemeral) ---
+
+NAME_B = "b3d5f7h2" * 3 + "k"  # the next process's name
+TIES = {"claude": "CLAUDE_CODE_SESSION_ID", "opencode": "OPENCODE_SESSION_ID", "pi": "PI_SESSION_ID"}
+KEPT = ("asks", "remind", "read", "gate", "stall", "notice", "askmode", "crown.log", "permission.log")
+
+
+def _harness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, harness: str, sid: str = "s-1") -> None:
+    for var in TIES.values():
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CB_WORKSPACE", str(tmp_path))
+    if harness in TIES:
+        monkeypatch.setenv(TIES[harness], sid)
+
+
+def _restart(monkeypatch: pytest.MonkeyPatch, *, release: bool = True) -> None:
+    """The process ends (its lock with it, unless `release` is False: it still runs) and a new
+    one starts, with a new NATS name."""
+    for fd in session_file._key_fds.values():
+        if release:
+            os.close(fd)
+    monkeypatch.setattr(session_file, "_key_fds", {})
+    monkeypatch.setattr(session_file, "_nats_name", None)
+    monkeypatch.setattr(session_file, "_mirrors", {})
+
+
+def _first_run(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (state / f"stats-{UID}.jsonl").write_text('{"k":"old","t":1}\n')
+    _on(monkeypatch)
+    for kind in KEPT:
+        (state / session_file._kind_file(kind, NAME)).write_text(f"{kind} of run 1\n")
+    stats.record("wake", reason="run1")
+
+
+@pytest.mark.parametrize("harness", ["claude", "opencode", "pi", "workspace"])
+def test_a_restart_takes_over_the_predecessors_state(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                     harness: str) -> None:
+    _harness(monkeypatch, tmp_path, harness)
+    assert session_file.session_tie()[0] == harness
+    _first_run(state, monkeypatch)
+    _restart(monkeypatch)
+    copied = session_file.latch(NAME_B, HOME, UID)
+    assert set(KEPT) | {"stats.jsonl"} <= set(copied)
+    for kind in KEPT:
+        assert (state / session_file._kind_file(kind, NAME_B)).read_text() == f"{kind} of run 1\n"
+    # The counters moved: the bot id's and run 1's lines once, under the new name alone.
+    lines = (state / f"stats-{NAME_B}.jsonl").read_text().splitlines()
+    assert len(lines) == 2 and '"old"' in lines[0] and "run1" in lines[1]
+    assert not (state / f"stats-{NAME}.jsonl").exists() and not (state / f"stats-{UID}.jsonl").exists()
+    assert f"CB_TAKEN_BY={NAME_B}" in (state / f"copied-{NAME}.env").read_text().splitlines()
+    marker = (state / f"copied-{NAME_B}.env").read_text().splitlines()
+    assert f"CB_TIE={session_file.tie()}" in marker and f"CB_COPIED_FROM={UID}" in marker
+    assert session_file.state_key(UID) == NAME_B
+
+
+@pytest.mark.parametrize("harness", ["claude", "workspace"])
+def test_a_predecessor_that_still_runs_is_not_taken_over(state: Path, tmp_path: Path,
+                                                         monkeypatch: pytest.MonkeyPatch, harness: str) -> None:
+    _harness(monkeypatch, tmp_path, harness)
+    _first_run(state, monkeypatch)
+    (state / f"asks-{UID}.env").write_text("asks of the bot id\n")
+    _restart(monkeypatch, release=False)  # run 1 holds key-<name>.lock still
+    session_file.latch(NAME_B, HOME, UID)
+    assert (state / f"asks-{NAME_B}.env").read_text() == "asks of the bot id\n"  # from the bot id
+    assert (state / f"asks-{NAME}.env").exists() and (state / f"stats-{NAME}.jsonl").exists()
+    assert "CB_TAKEN_BY" not in (state / f"copied-{NAME}.env").read_text()
+
+
+def test_two_ties_never_take_each_others_state(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _harness(monkeypatch, tmp_path, "claude", "s-1")
+    _first_run(state, monkeypatch)
+    _restart(monkeypatch)
+    _harness(monkeypatch, tmp_path, "claude", "s-2")  # another Claude session
+    session_file.latch(NAME_B, HOME, "")
+    assert sorted(p.name for p in state.glob(f"*-{NAME_B}.*")) == [f"copied-{NAME_B}.env", f"key-{NAME_B}.lock"]
+    assert (state / f"asks-{NAME}.env").exists() and (state / f"stats-{NAME}.jsonl").exists()
+    # The same id under another harness is another tie too.
+    claude = session_file.tie()
+    _harness(monkeypatch, tmp_path, "opencode", "s-2")
+    assert session_file.tie() != claude
+
+
+def test_a_taken_over_name_is_not_taken_again(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _harness(monkeypatch, tmp_path, "opencode")
+    _first_run(state, monkeypatch)
+    _restart(monkeypatch)
+    session_file.latch(NAME_B, HOME, UID)
+    _restart(monkeypatch)
+    third = "c4e6g2j3" * 3 + "m"
+    session_file.latch(third, HOME, UID)
+    assert (state / f"asks-{third}.env").read_text() == "asks of run 1\n"  # from NAME_B, the newest
+    assert f"CB_TAKEN_BY={third}" in (state / f"copied-{NAME_B}.env").read_text()
+    lines = (state / f"stats-{third}.jsonl").read_text().splitlines()
+    assert len(lines) == 2  # still once each
+
+
+def test_the_tie_holds_no_raw_id(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _harness(monkeypatch, tmp_path, "claude", "secret-session-id")
+    assert session_file.tie() == "claude:" + hashlib.sha1(b"secret-session-id").hexdigest()[:16]
+    _harness(monkeypatch, tmp_path, "workspace")
+    assert session_file.tie() == "workspace:" + hashlib.sha1(str(tmp_path.resolve()).encode()).hexdigest()[:16]
+    # The workspace's hash is keyed_path's: the two stay comparable.
+    assert session_file.keyed_path("x").name == f"x-{session_file.tie().split(':')[1]}.env"
+
+
+def test_switch_off_nothing_moves_for_any_harness(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Piece 2 off, the ephemeral key: no marker, no tie, no lock, and the nonce and endpoint
+    files keep their names (session_id and keyed_path ignore OPENCODE_SESSION_ID and PI_SESSION_ID)."""
+    for harness in ("opencode", "pi"):
+        _harness(monkeypatch, tmp_path, harness)
+        before = session_file.keyed_path("nonce")
+        assert session_file.session_id() == ""
+        assert before == state / f"nonce-{hashlib.sha1(str(tmp_path.resolve()).encode()).hexdigest()[:16]}.env"
+        (state / f"asks-{UID}.env").write_text("x\n")
+        assert session_file.latch(NAME, HOME, UID) == []
+        assert sorted(p.name for p in state.iterdir()) == [f"asks-{UID}.env"]

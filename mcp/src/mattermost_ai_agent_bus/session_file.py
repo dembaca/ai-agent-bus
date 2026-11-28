@@ -333,6 +333,8 @@ _nats_name: tuple[str, str] | None = None
 # stays keyed by the bot id) and the files of one turn the hooks keep (listen-, update-, turn-).
 STATE_KINDS = ("last", "threads", "unanswered", "asks", "read", "remind", "gate", "stall", "notice",
                "askmode", "presence", "coord", "stats.jsonl", "crown.log", "permission.log")
+# Moved, not copied: the counters, so no part publishes them twice (RT-6.9 step 2).
+MOVED_KINDS = frozenset({"stats.jsonl"})
 
 
 def _kind_file(kind: str, key: str) -> str:
@@ -403,8 +405,11 @@ def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS) -
     by a source with a newer mtime (a switch that was off in between wrote the bot id's
     file), never by an older source. A symlink as source or target is refused. The source
     stays where it is, so the old plugin still finds its copy. The marker
-    `copied-<name>.env` holds the source ids. Returns the kinds copied."""
-    if not (_BOT_ID_RE.fullmatch(uid) and key_ok(name)) or uid == name:
+    `copied-<name>.env` holds the source ids. The source is a bot id or, at a takeover
+    (_copy_source), the name of a predecessor. The counters (`stats.jsonl`) are moved, not
+    copied: appended to the name's file and removed at the source, so no part publishes them
+    twice. Returns the kinds copied."""
+    if not (key_ok(uid) and key_ok(name)) or uid == name:
         return []
     d = state_dir()
     marker = d / f"copied-{name}.env"
@@ -419,6 +424,12 @@ def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS) -
         try:
             if dst.is_symlink() or src.is_symlink() or not src.is_file():
                 continue
+            if kind in MOVED_KINDS:
+                if text := src.read_text():
+                    append_private(dst, text)
+                    done.append(kind)
+                src.unlink()
+                continue
             src_at = src.stat().st_mtime_ns
             if dst.exists():
                 if src_at <= dst.stat().st_mtime_ns:
@@ -430,11 +441,29 @@ def copy_state_once(uid: str, name: str, kinds: tuple[str, ...] = STATE_KINDS) -
         except OSError:
             continue
     if done or uid not in ids:
-        try:
-            write_private(marker, "".join(f"CB_COPIED_FROM={i}\n" for i in (ids if uid in ids else [*ids, uid])))
-        except OSError:
-            pass
+        _mark(marker, add_ids=[uid])
     return done
+
+
+def _marker_lines(marker: Path) -> list[str]:
+    try:
+        return marker.read_text().splitlines() if not marker.is_symlink() else []
+    except OSError:
+        return []
+
+
+def _mark(marker: Path, add_ids: tuple[str, ...] | list[str] = (), add: tuple[str, ...] | list[str] = ()) -> None:
+    """Rewrite `marker` (copied-<name>.env) with the ids `add_ids` among its CB_COPIED_FROM
+    lines and the lines `add`, keeping every line it has (CB_TIE, CB_TAKEN_BY). Never raises."""
+    lines = _marker_lines(marker)
+    ids = [ln for ln in lines if ln.startswith("CB_COPIED_FROM=")]
+    rest = [ln for ln in lines if ln and not ln.startswith("CB_COPIED_FROM=")]
+    ids += [f"CB_COPIED_FROM={i}" for i in add_ids if f"CB_COPIED_FROM={i}" not in ids]
+    rest += [ln for ln in add if ln not in rest]
+    try:
+        write_private(marker, "".join(f"{ln}\n" for ln in ids + rest))
+    except OSError:
+        pass
 
 
 # --- the latch: one holder per name (plan B piece 14c-1, RT-6.2 step 9) ---------------
@@ -508,15 +537,75 @@ def drop_mirror(path: Path) -> None:
     _mirrors.pop(str(path), None)
 
 
+def session_tie() -> tuple[str, str]:
+    """Which session this process serves, across its restarts (RT-6.2 step 9, the takeover):
+    ("claude", CLAUDE_CODE_SESSION_ID), ("opencode", OPENCODE_SESSION_ID, the OpenCode
+    session the plugin bound, RT-6.20), ("pi", PI_SESSION_ID, the pi session's id the
+    extension passes, RT-6.27), else ("workspace", the workspace keyed_path keys on). Only
+    read: keyed_path and session_id are unchanged, so no endpoint, session or nonce file
+    moves."""
+    for harness, var in (("claude", "CLAUDE_CODE_SESSION_ID"), ("opencode", "OPENCODE_SESSION_ID"),
+                         ("pi", "PI_SESSION_ID")):
+        if value := os.environ.get(var, "").strip():
+            return harness, value
+    return "workspace", project_dir()
+
+
+def tie() -> str:
+    """CB_TIE as the marker holds it: `<harness>:<first 16 hex of sha1(id)>`, the hash
+    keyed_path uses, so no raw session id or directory goes into a file."""
+    harness, value = session_tie()
+    return f"{harness}:{hashlib.sha1(value.encode()).hexdigest()[:16]}"
+
+
+def _gone(name: str) -> bool:
+    """Whether no process holds key-<name>.lock: a non-blocking flock on it succeeds (it is
+    released at once), or there is no lock file. A symlink or an unreadable lock is not gone."""
+    path = state_dir() / f"key-{name}.lock"
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def _predecessor(name: str) -> str | None:
+    """The newest other name (by its marker's mtime) whose marker carries this process's
+    CB_TIE and no CB_TAKEN_BY: the name this session ran under before a restart."""
+    me, best = f"CB_TIE={tie()}", None
+    for marker in state_dir().glob("copied-*.env"):
+        pred = marker.name.removeprefix("copied-").removesuffix(".env")
+        if pred == name or not key_ok(pred) or _BOT_ID_RE.fullmatch(pred) or marker.is_symlink():
+            continue
+        lines = _marker_lines(marker)
+        if me not in lines or any(ln.startswith("CB_TAKEN_BY=") for ln in lines):
+            continue
+        try:
+            at = marker.stat().st_mtime_ns
+        except OSError:
+            continue
+        if best is None or at > best[0]:
+            best = (at, pred)
+    return best[1] if best else None
+
+
 def _copy_source(bot_id: str, name: str) -> str | None:
-    """The key whose kept state the latch copies to `name` (RT-6.2 step 9): today the bot id,
-    None without one. The one place for the owner's pending decision on a restart under
-    CB_LOGIN_NKEY=ephemeral, where every process has a new name and this copy goes back to
-    what the bot id held at the first latch (PR #328, open point): either carry over from the
-    newest predecessor name of the same Claude session id (else workspace), the tie written
-    into the marker, a non-blocking flock on its key-<name>.lock proving that predecessor
-    gone, and the counters moved, not copied; or require CB_LOGIN_NKEY=host. Neither is
-    built."""
+    """The key whose kept state the latch copies to `name` (RT-6.2 step 9). Decided by the
+    owner (#328): the state carries over across a restart for every harness, CB_LOGIN_NKEY
+    stays ephemeral (every process a new name). So: the newest predecessor name of the same
+    session (_predecessor, by CB_TIE), when its lock proves it gone (_gone); else, with no
+    such name or the predecessor still running, the bot id; None without either."""
+    pred = _predecessor(name)
+    if pred is not None and _gone(pred):
+        return pred
     return bot_id if _BOT_ID_RE.fullmatch(bot_id) and bot_id != name else None
 
 
@@ -542,11 +631,14 @@ def latch(name: str, home: str, uid: str) -> list[str]:
     copied = copy_state_once(src_key, name) if src_key else []
     d = state_dir()
     marker = d / f"copied-{name}.env"
-    try:
-        if not marker.exists() and not marker.is_symlink():
-            write_private(marker, "")
-    except OSError:
-        pass
+    if first and not marker.is_symlink():
+        # The tie names the session for its next restart; the bot id ties the name to the
+        # bot for the sweep (RT-6.1 step 7), also after a takeover from a predecessor name.
+        _mark(marker, add_ids=[uid] if _BOT_ID_RE.fullmatch(uid) else [], add=[f"CB_TIE={tie()}"])
+        if src_key and src_key != uid:
+            # The predecessor's files are taken over: its marker says by whom, so no later
+            # start takes them again and the sweep no longer ties them to the bot.
+            _mark(d / f"copied-{src_key}.env", add=[f"CB_TAKEN_BY={name}"])
     # channel-<key>.env says this process confirmed the channel (RT-6.12): an earlier process
     # of the name left nothing that counts, and a confirmation made under the bot id moves.
     src, dst = d / f"channel-{uid}.env", d / f"channel-{name}.env"

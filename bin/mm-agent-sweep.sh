@@ -41,7 +41,9 @@
 # line per bot that used it). A name's files go when no running server names it,
 # its marker names no bot with a session file or a running MCP server and none
 # of them was touched for a day; without a marker nothing ties the name to a
-# session, so they stay (--force includes them by the day rule).
+# session, so they stay (--force includes them by the day rule). A name whose
+# marker says a later start of its session took it over (CB_TAKEN_BY=<name>,
+# RT-6.2 step 9) is tied to no bot: its files go by the day rule.
 #
 # A keyless corral session (RT-6.18) has its MCP server running on the host:
 # its session file records CB_BUS_HOST_PID, and the process keeps its files in
@@ -73,7 +75,7 @@ for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=1 ;;
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -319,10 +321,14 @@ for n in $NAMES; do
   marker="$STATE_DIR/copied-$n.env"
   if [[ -f "$marker" && ! -L "$marker" ]]; then
     tied=0
+    taken=0
     while IFS='=' read -r k v; do
       [[ "$k" == CB_COPIED_FROM && "$v" =~ ^[a-z0-9]{26}$ && "$KEEP_UIDS" == *" $v "* ]] && tied=1
+      [[ "$k" == CB_TAKEN_BY ]] && taken=1
     done <"$marker"
-    [[ "$tied" -eq 1 ]] && continue
+    # A name a later start of its session took over (CB_TAKEN_BY) is tied to no bot:
+    # the day rule alone decides.
+    [[ "$tied" -eq 1 && "$taken" -eq 0 ]] && continue
   elif [[ "$FORCE" -eq 0 ]]; then
     untied=$((untied + ${#files[@]}))
     continue
