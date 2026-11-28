@@ -118,7 +118,7 @@ func run(log *slog.Logger) error {
 			hist.Bots = bots
 		}
 		handlers["history"] = hist.Piece
-		fh := &files.Handler{Log: log, Team: cfg.MMTeam, Bridge: client, Presence: snapshot,
+		fh := &files.Handler{Log: log, Team: cfg.MMTeam, Presence: snapshot,
 			Switches: planb, People: accounts}
 		if bots != nil {
 			fh.Bots = bots

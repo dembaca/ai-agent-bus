@@ -59,14 +59,6 @@ def attribute(hints: Any) -> str:
                      for h in hints if isinstance(h, dict) and h.get("id"))
 
 
-def image_format(mime_type: str, has_preview: bool) -> str:
-    """'' or the format an MCP client shows as a picture: a preview is a
-    JPEG whatever the original is, else the original's own format."""
-    if has_preview:
-        return "jpeg"
-    return _IMAGE_FORMATS.get(mime_type.split(";")[0].strip().lower(), "")
-
-
 def kind(f: FileInfo) -> str:
     """image, text or '' (neither: metadata only)."""
     mime = f.mime_type.split(";")[0].strip().lower()
@@ -155,7 +147,7 @@ async def fetch(client: ChatPort, file_id: str) -> Fetched:
     out = Fetched(meta)
     what = kind(info)
     if what == "image":
-        fmt = image_format(info.mime_type, info.has_preview_image)
+        fmt = "jpeg" if info.has_preview_image else _IMAGE_FORMATS.get(info.mime_type.lower(), "")
         if not fmt:
             meta["note"] = f"no preview and {info.mime_type or info.extension} is no format shown as a picture"
         elif not info.has_preview_image and info.size > IMAGE_MAX:

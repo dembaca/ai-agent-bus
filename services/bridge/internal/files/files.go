@@ -25,17 +25,27 @@
 //
 // Both ops check the agent's announced membership of the channel
 // (presence.MemberFresh, RT-6.37) and piece 8's switch there (RT-6.39
-// step 5), and answer in the same words. The put op re-implements the file
-// rules of the MCP side's attach.check — the sender checked them already,
-// but the bridge answers for itself: a clean base name of at most 100
-// characters with the extension kept, the extension in the allowed set, the
-// type by the part's magic bytes matching it, SVG refused, the file not
-// empty and at most 10 MB. One transfer per agent is open at a time (a new
-// first part replaces it), at most 16 across the agents, and an unfinished
-// transfer is dropped 60 s after its last part; a gap in the parts, a part
-// for a dropped transfer and a hash that does not match each answer their
-// own words, and a broken transfer is never half-uploaded: only a whole
-// file whose length and hash match is sent to Mattermost.
+// step 5), and answer in the same words — before any read, so the answer
+// tells nothing about channels the agent may not read. The get op carries
+// the channel in its payload beside the file's id; the file's post must be
+// of that same channel, or the answer is the membership's own words.
+//
+// The put op re-implements the file rules of the MCP side's attach.check —
+// the sender checked them already, but the bridge answers for itself: a
+// clean base name of at most 100 characters with the extension kept, the
+// extension (its case disregarded) in the allowed set, the type by the magic
+// bytes matching it, SVG refused, the file not empty and at most 10 MB.
+// The type check runs on the first part's bytes and again, as the exact
+// whole-buffer sniff, on the assembled file before it is uploaded. One
+// transfer per agent is open at a time (a new first part replaces it), at
+// most 16 across the agents, and no part carries no bytes. An unfinished
+// transfer is dropped 60 s after its last part and five minutes after its
+// first, and one that asks for more parts than its declared length can hold
+// is dropped too — the sweep runs on both ops' entries, so no ticker is
+// needed. A gap in the parts, a part for a dropped transfer and a hash that
+// does not match each answer their own words, and a broken transfer is
+// never half-uploaded: only a whole file whose length, hash and type match
+// is sent to Mattermost.
 package files
 
 import (
@@ -79,9 +89,18 @@ const (
 	partMax = 700 << 10
 	// maxOpen is the transfers open across all agents; one more answers busy.
 	maxOpen = 16
-	// dropAfter is how long an unfinished transfer is kept: the whole one is
-	// at most 15 parts, each answered within its own request's deadline.
+	// dropAfter is how long an unfinished transfer is kept past its last
+	// part: the whole one is at most 15 parts, each answered within its own
+	// request's deadline.
 	dropAfter = 60 * time.Second
+	// lifetime is the absolute bound of one transfer, from its first part:
+	// an upload that trickles tiny parts forever is dropped at it even
+	// though no 60 s ever passed between two of them.
+	lifetime = 5 * time.Minute
+	// maxParts is the most parts one transfer may take: a whole at today's
+	// size limit in 700 KiB parts, and a couple to spare. A transfer that
+	// would take more is dropped: no whole of that length fits in its parts.
+	maxParts = (MaxFile+partMax-1)/partMax + 2
 	// ImageMax is the most an image is served as: its preview, else the
 	// original. The MCP side's files.IMAGE_MAX.
 	ImageMax = 5 << 20
@@ -150,16 +169,9 @@ type People interface {
 
 // Handler answers one file request. Every field is set once at start.
 type Handler struct {
-	Log  *slog.Logger
-	Team string // CB_BRIDGE_MM_TEAM
-	Bots BotClient
-	// Bridge is the bridge's own bot, and the get op's bootstrap alone: the
-	// file's channel cannot be known before a client reads the file, and the
-	// agent's own bot cannot be had without the channel (its Client checks
-	// the membership of one). The bootstrap reads the file's info, the post
-	// it is attached to and the channel's name — nothing else; every serving
-	// read is the agent's own bot's, behind the membership and the switch.
-	Bridge   *mm.Client
+	Log      *slog.Logger
+	Team     string // CB_BRIDGE_MM_TEAM
+	Bots     BotClient
 	Presence Membership
 	Switches Switches
 	People   People
@@ -181,7 +193,8 @@ type transfer struct {
 	bot     *mm.Client
 	buf     []byte    // the parts kept so far
 	next    int       // the part the transfer waits for
-	at      time.Time // its last part's moment; dropped 60 s after it
+	born    time.Time // its first part's moment
+	at      time.Time // its last part's moment; dropped 60 s after it, and 5 min after born
 }
 
 // Piece is the requests.Handler.Handlers entry for the kind "file".
@@ -200,8 +213,15 @@ func (h *Handler) Piece(ctx context.Context, agent string, req requests.Request)
 }
 
 // put is the upload: the checks of part 1 before any part is kept, then the
-// parts in order, the last one assembled, checked and uploaded.
+// parts in order, the last one assembled, checked and uploaded. The whole op
+// runs under its own deadline, a later part's Mattermost work too: no part
+// holds a worker of the scaffold's pool (the review of #286).
 func (h *Handler) put(ctx context.Context, agent string, p payload) ([]requests.Reply, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	// The sweep of the open transfers runs on both ops' entries, so no
+	// ticker is needed: a stale transfer is gone before its next part.
+	h.dropStale()
 	// The membership first, as the history read has it: a channel that is not
 	// the agent's is refused alike whether the piece is on there or not.
 	if h.Presence == nil || !h.Presence.MemberFresh(p.Channel, agent) {
@@ -210,9 +230,6 @@ func (h *Handler) put(ctx context.Context, agent string, p payload) ([]requests.
 	if h.Switches == nil || !h.Switches.On(Piece, p.Channel) {
 		return nil, fmt.Errorf("piece 8 is off in %s", p.Channel)
 	}
-	// The stale ones go before the cap counts: a dropped transfer frees its
-	// slot, and a part of it is answered as dropped below.
-	h.dropStale()
 	if p.Part == 1 {
 		return h.firstPart(ctx, agent, p)
 	}
@@ -237,8 +254,22 @@ func (h *Handler) put(ctx context.Context, agent string, p payload) ([]requests.
 		return nil, fmt.Errorf("part %d carries %d bytes, more than the %d a part may carry",
 			p.Part, len(data), partMax)
 	}
+	if len(data) == 0 {
+		// No part carries no bytes: an empty one would refresh a transfer's
+		// life without moving it, and the last of a whole file is never empty.
+		h.mu.Unlock()
+		return nil, fmt.Errorf("part %d carries no bytes", p.Part)
+	}
 	tr.buf = append(tr.buf, data...)
 	tr.at = h.now()
+	tr.next++
+	if tr.next > maxParts {
+		// More parts than its declared length can hold: the transfer is
+		// dropped, its slot free (the review of #286).
+		delete(h.open, agent)
+		h.mu.Unlock()
+		return nil, errDropped
+	}
 	if int64(len(tr.buf)) > tr.length {
 		// More than the whole it declared: the hash can no longer match, and
 		// the buffer is not grown past the declared file.
@@ -268,8 +299,6 @@ func (h *Handler) firstPart(ctx context.Context, agent string, p payload) ([]req
 	if h.Bots == nil {
 		return nil, errors.New("the bridge has no bots for the agents; an upload needs the agent's own")
 	}
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
 	bot, err := h.Bots.Client(ctx, agent, p.Channel)
 	if err != nil {
 		// The bot's absence from the channel is the upload's own answer, in
@@ -284,8 +313,9 @@ func (h *Handler) firstPart(ctx context.Context, agent string, p payload) ([]req
 	if err != nil {
 		return nil, fmt.Errorf("the channel ~%s: %w", p.Channel, err)
 	}
+	now := h.now()
 	tr := &transfer{name: name, length: p.Length, sum: p.SHA256,
-		channel: p.Channel, cid: cid, bot: bot, buf: data, next: 2, at: h.now()}
+		channel: p.Channel, cid: cid, bot: bot, buf: data, next: 2, born: now, at: now}
 	// One transfer per agent — a new first part replaces it — and at most 16
 	// across the agents: the 17th is told busy. The cap is checked with the
 	// store, under one lock, so two first parts cannot both slip past it.
@@ -310,8 +340,10 @@ func (h *Handler) firstPart(ctx context.Context, agent string, p payload) ([]req
 }
 
 // whole checks the assembled file against what its first part declared — the
-// length and the SHA-256 of all its parts — and only a whole that matches is
-// uploaded; a mismatch is the hash's own answer, and the transfer is gone.
+// length, the SHA-256 of all its parts, and the type of its bytes, the exact
+// whole-buffer sniff that part 1 could only run on its own — and only a whole
+// that matches is uploaded; a mismatch is its own answer, and the transfer
+// is gone (the review of #286: a text first part with other bytes behind it).
 func (h *Handler) whole(ctx context.Context, agent string, tr *transfer) ([]requests.Reply, error) {
 	if int64(len(tr.buf)) != tr.length {
 		return nil, errHash
@@ -319,6 +351,18 @@ func (h *Handler) whole(ctx context.Context, agent string, tr *transfer) ([]requ
 	sum := sha256.Sum256(tr.buf)
 	if !strings.EqualFold(hex.EncodeToString(sum[:]), tr.sum) {
 		return nil, errHash
+	}
+	ext := strings.ToLower(tr.name[strings.LastIndex(tr.name, ".")+1:])
+	want, ok := types[ext]
+	if !ok {
+		return nil, errHash // unreachable: check judged the name on part 1
+	}
+	if got := sniff(tr.buf); got != want {
+		what := "no allowed type (binary, or not UTF-8)"
+		if got != "" {
+			what = "a " + got + " file"
+		}
+		return nil, fmt.Errorf("%s is named .%s but its bytes are %s", tr.name, ext, what)
 	}
 	return h.upload(ctx, agent, tr)
 }
@@ -361,10 +405,10 @@ func ack(part int) requests.Reply {
 
 // check runs the file rules on the first part, before any part is kept — the
 // MCP side's attach.check, its words included: a clean base name, an allowed
-// extension whose type the part's magic bytes must match, SVG refused, the
-// file not empty and at most 10 MB. A text file's part may end inside a rune
-// (a part boundary cuts raw bytes); the whole's hash check at the end is what
-// a later part cannot slip past.
+// extension (its case disregarded, as attach has it) whose type the part's
+// magic bytes must match, SVG refused, the file not empty and at most 10 MB.
+// A text file's part may end inside a rune (a part boundary cuts raw bytes);
+// the whole's own check at the end is what a later part cannot slip past.
 func (h *Handler) check(p payload) (data []byte, name string, err error) {
 	name, err = cleanName(p.Name)
 	if err != nil {
@@ -376,7 +420,7 @@ func (h *Handler) check(p payload) (data []byte, name string, err error) {
 	if p.Length > MaxFile {
 		return nil, "", errors.New("the file is over 10 MB")
 	}
-	ext := name[strings.LastIndex(name, ".")+1:]
+	ext := strings.ToLower(name[strings.LastIndex(name, ".")+1:])
 	if ext == "svg" {
 		return nil, "", errors.New("SVG is refused: it can carry script; render it as PNG")
 	}
@@ -392,6 +436,9 @@ func (h *Handler) check(p payload) (data []byte, name string, err error) {
 		return nil, "", fmt.Errorf("part 1 carries %d bytes, more than the %d a part may carry",
 			len(data), partMax)
 	}
+	if len(data) == 0 {
+		return nil, "", errors.New("part 1 carries no bytes")
+	}
 	if got := sniff1(data); got != want {
 		what := "no allowed type (binary, or not UTF-8)"
 		if got != "" {
@@ -402,38 +449,23 @@ func (h *Handler) check(p payload) (data []byte, name string, err error) {
 	return data, name, nil
 }
 
-// get is the download: the file's channel found, the membership and the
-// switch checked, then the metadata and the bytes answered in parts.
+// get is the download: the membership and the switch of the channel the
+// payload names, checked before any read, then the file's info and its post
+// with the agent's own bot — the post's channel must be that same channel,
+// or the answer is the membership's own words, telling nothing about files
+// of channels the agent may not read (the review of #286) — and the metadata
+// and the bytes answered in parts.
 func (h *Handler) get(ctx context.Context, agent string, p payload) ([]requests.Reply, error) {
-	if h.Bridge == nil {
-		return nil, errors.New("the bridge's own bot is not set; a file read needs it to find the channel")
-	}
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-	// The bootstrap: the channel cannot be known before a client reads the
-	// file, and the agent's own bot cannot be had without the channel — so
-	// the bridge's own bot resolves the channel alone, and every serving
-	// read below is the agent's own bot's, behind the checks.
-	info, err := h.Bridge.FileInfo(ctx, p.ID)
-	if err != nil {
-		return nil, fmt.Errorf("the file %s: %w", p.ID, err)
-	}
-	if info.PostID == "" {
-		return nil, errors.New("the file is attached to no post: its channel cannot be found")
-	}
-	post, err := h.Bridge.PostByID(ctx, info.PostID)
-	if err != nil {
-		return nil, fmt.Errorf("the file's post: %w", err)
-	}
-	token, err := h.Bridge.ChannelName(ctx, post.ChannelID)
-	if err != nil {
-		return nil, fmt.Errorf("the file's channel: %w", err)
-	}
-	if h.Presence == nil || !h.Presence.MemberFresh(token, agent) {
+	// The sweep of the open transfers runs on both ops' entries, so no
+	// ticker is needed.
+	h.dropStale()
+	// The checks first, before any read: a channel that is not the agent's
+	// is refused alike whether the piece is on there or not.
+	if h.Presence == nil || !h.Presence.MemberFresh(p.Channel, agent) {
 		return nil, errNotChannel
 	}
-	if h.Switches == nil || !h.Switches.On(Piece, token) {
-		return nil, fmt.Errorf("piece 8 is off in %s", token)
+	if h.Switches == nil || !h.Switches.On(Piece, p.Channel) {
+		return nil, fmt.Errorf("piece 8 is off in %s", p.Channel)
 	}
 	if h.Bots == nil {
 		return nil, errors.New("the bridge has no bots for the agents; a file read needs the agent's own")
@@ -441,7 +473,9 @@ func (h *Handler) get(ctx context.Context, agent string, p payload) ([]requests.
 	if h.People == nil || !h.People.CaughtUp() {
 		return nil, errors.New("the bridge's account records are not read yet; ask again")
 	}
-	bot, err := h.Bots.Client(ctx, agent, token)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	bot, err := h.Bots.Client(ctx, agent, p.Channel)
 	if err != nil {
 		var notIn *agentbots.NotInChannel
 		if errors.As(err, &notIn) {
@@ -449,11 +483,27 @@ func (h *Handler) get(ctx context.Context, agent string, p payload) ([]requests.
 		}
 		return nil, fmt.Errorf("the agent's bot: %w", err)
 	}
-	// The info read with the agent's own bot: its access is the file's gate,
-	// and the answer is what it reads now.
-	info, err = bot.FileInfo(ctx, p.ID)
+	cid, err := bot.ChannelIDByName(ctx, h.Team, p.Channel)
+	if err != nil {
+		return nil, fmt.Errorf("the channel ~%s: %w", p.Channel, err)
+	}
+	// The info and its post are read with the agent's own bot, whose access
+	// is the file's gate.
+	info, err := bot.FileInfo(ctx, p.ID)
 	if err != nil {
 		return nil, fmt.Errorf("the file %s: %w", p.ID, err)
+	}
+	if info.PostID == "" {
+		return nil, errors.New("the file is attached to no post: its channel cannot be checked")
+	}
+	post, err := bot.PostByID(ctx, info.PostID)
+	if err != nil {
+		return nil, fmt.Errorf("the file's post: %w", err)
+	}
+	if post.ChannelID != cid {
+		// A file of another channel: refused in the membership's own words,
+		// telling nothing about that channel.
+		return nil, errNotChannel
 	}
 	fid := info.ID
 	if fid == "" {
@@ -466,26 +516,24 @@ func (h *Handler) get(ctx context.Context, agent string, p payload) ([]requests.
 	case "image":
 		// Mirroring the MCP side's fetch: a preview whenever there is one,
 		// else the original in a format shown as a picture, up to 5 MB —
-		// anything else the reader notes from the metadata alone.
+		// anything else the reader notes from the metadata alone. The read
+		// itself takes no more than the 5 MB it may serve.
 		if imageFormat(info) != "" && (info.HasPreviewImage || info.Size <= ImageMax) {
-			if data, err = bot.FileBytes(ctx, fid, info.HasPreviewImage); err != nil {
+			if data, err = bot.FileBytes(ctx, fid, info.HasPreviewImage, ImageMax); err != nil {
 				return nil, fmt.Errorf("the file's bytes: %w", err)
 			}
 		}
 	case "text":
-		raw, rerr := bot.FileBytes(ctx, fid, false)
-		if rerr != nil {
-			return nil, fmt.Errorf("the file's bytes: %w", rerr)
+		// The read takes the 80 KB served and no more: the rest of a long
+		// text file is never buffered (the review of #286).
+		if data, err = bot.FileBytes(ctx, fid, false, textBytes); err != nil {
+			return nil, fmt.Errorf("the file's bytes: %w", err)
 		}
-		if len(raw) > textBytes {
-			raw = raw[:textBytes]
-		}
-		data = raw
 	}
 	sum := sha256.Sum256(data)
 	meta := metadata{V: 1, ID: fid, Name: info.Name, Extension: strings.ToLower(info.Extension),
 		Size: info.Size, MimeType: info.MimeType, Width: info.Width, Height: info.Height,
-		PostID: info.PostID, Channel: token, ChannelID: post.ChannelID,
+		PostID: info.PostID, Channel: p.Channel, ChannelID: post.ChannelID,
 		Author: info.UserID, AuthorName: username, Anchor: anchor, Account: rec,
 		Bot: isBot, Kind: kind, Length: len(data),
 		SHA256: hex.EncodeToString(sum[:]), Preview: info.HasPreviewImage}
@@ -514,14 +562,15 @@ func (h *Handler) parts(meta metadata, data []byte) ([]requests.Reply, error) {
 	return out, nil
 }
 
-// dropStale forgets the transfers whose last part is older than 60 s: an
-// unfinished transfer holds its slot only that long.
+// dropStale forgets the transfers whose life is over: 60 s past their last
+// part, or five minutes past their first — an upload that trickles tiny
+// parts forever holds its slot only that long.
 func (h *Handler) dropStale() {
 	now := h.now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for agent, tr := range h.open {
-		if now.Sub(tr.at) > dropAfter {
+		if now.Sub(tr.at) > dropAfter || now.Sub(tr.born) > lifetime {
 			delete(h.open, agent)
 		}
 	}
@@ -621,10 +670,10 @@ func decode(raw json.RawMessage) (payload, error) {
 	default:
 		return p, fmt.Errorf("the file request's op %q is neither put nor get", p.Op)
 	}
+	if !channelRE.MatchString(p.Channel) {
+		return p, fmt.Errorf("channel %q is no channel token", p.Channel)
+	}
 	if p.Op == "put" {
-		if !channelRE.MatchString(p.Channel) {
-			return p, fmt.Errorf("channel %q is no channel token", p.Channel)
-		}
 		if p.Part < 1 {
 			return p, errors.New("the upload's parts start at 1")
 		}
@@ -768,10 +817,9 @@ var magic = []struct {
 	{[]byte("%PDF-"), "pdf"},
 }
 
-// sniff1 is the type of a first part's bytes: the magic prefixes whole, and a
-// text file's part may end inside a multi-byte character (a part boundary cuts
-// raw bytes), so a partial rune at its end reads as text.
-func sniff1(data []byte) string {
+// sniff is the type of a whole file's bytes, the MCP side's attach.sniff
+// exact: the magic prefixes, and text only as valid UTF-8 without NUL.
+func sniff(data []byte) string {
 	for _, m := range magic {
 		if bytes.HasPrefix(data, m.pre) {
 			return m.kind
@@ -783,10 +831,22 @@ func sniff1(data []byte) string {
 	if bytes.IndexByte(data, 0) >= 0 {
 		return ""
 	}
-	if utf8.Valid(data) || cutRune(data) {
+	if utf8.Valid(data) {
 		return "text"
 	}
 	return ""
+}
+
+// sniff1 is sniff over a first part's bytes: a text file's part may end
+// inside a multi-byte character (a part boundary cuts raw bytes), so a
+// partial rune at its end reads as text — the whole's own check at the end
+// is what the later parts answer to.
+func sniff1(data []byte) string {
+	got := sniff(data)
+	if got == "" && bytes.IndexByte(data, 0) < 0 && cutRune(data) {
+		return "text"
+	}
+	return got
 }
 
 // cutRune says the bytes read as text once a partial rune at their end is

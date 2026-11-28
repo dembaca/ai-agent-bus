@@ -1,6 +1,7 @@
 package mm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -578,27 +579,34 @@ func TestFileInfo(t *testing.T) {
 	}
 }
 
-// A file's bytes: the preview when it has one, else the file itself.
+// A file's bytes: the preview when it has one, else the file itself — and
+// the head alone of a long body, the limit named by the read.
 func TestFileBytes(t *testing.T) {
 	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v4/files/file0123456789abcdefghijk/preview":
 			_, _ = w.Write([]byte("the preview"))
 		case "/api/v4/files/file0123456789abcdefghijk":
-			_, _ = w.Write([]byte("the original"))
+			_, _ = w.Write(bytes.Repeat([]byte("x"), 1000))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
-	data, err := c.FileBytes(context.Background(), "file0123456789abcdefghijk", true)
+	data, err := c.FileBytes(context.Background(), "file0123456789abcdefghijk", true, 512<<10)
 	if err != nil || string(data) != "the preview" {
 		t.Fatalf("the preview: %q %v", data, err)
 	}
-	data, err = c.FileBytes(context.Background(), "file0123456789abcdefghijk", false)
-	if err != nil || string(data) != "the original" {
-		t.Fatalf("the original: %q %v", data, err)
+	// the limit is honoured: only its head of a long body is read
+	data, err = c.FileBytes(context.Background(), "file0123456789abcdefghijk", false, 100)
+	if err != nil || len(data) != 100 {
+		t.Fatalf("the limit: %d bytes %v", len(data), err)
 	}
-	if _, err := c.FileBytes(context.Background(), "gone000000000000000000000", false); err == nil {
+	// no limit of the caller's own: the cap is the ceiling
+	data, err = c.FileBytes(context.Background(), "file0123456789abcdefghijk", false, 0)
+	if err != nil || len(data) != 1000 {
+		t.Fatalf("the whole body: %d bytes %v", len(data), err)
+	}
+	if _, err := c.FileBytes(context.Background(), "gone000000000000000000000", false, 64); err == nil {
 		t.Fatal("a missing file is no error")
 	}
 }
@@ -627,23 +635,5 @@ func TestPostByID(t *testing.T) {
 	}
 	if _, err := c.PostByID(context.Background(), "gone123"); err == nil {
 		t.Fatal("a missing post is no error")
-	}
-}
-
-// A channel's name by id: the token the bus carries the channel under.
-func TestChannelName(t *testing.T) {
-	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v4/channels/ch7" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		_, _ = w.Write([]byte(`{"id":"ch7","name":"home","display_name":"Home"}`))
-	})
-	name, err := c.ChannelName(context.Background(), "ch7")
-	if err != nil || name != "home" {
-		t.Fatalf("got %q %v, want home", name, err)
-	}
-	if _, err := c.ChannelName(context.Background(), "gone"); err == nil {
-		t.Fatal("a missing channel is no error")
 	}
 }

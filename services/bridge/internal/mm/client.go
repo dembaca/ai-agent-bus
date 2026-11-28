@@ -625,15 +625,20 @@ func (c *Client) FileInfo(ctx context.Context, fileID string) (FileInfo, error) 
 	return info, nil
 }
 
-// maxFileBytes is what one file read takes: an image the piece serves is at
-// most 5 MB (its preview, else the original) and a text file 80 KB, so a file
-// past the cap is the read's own error, never a half answer.
+// maxFileBytes is the ceiling of what one file read may ask: an image the
+// piece serves is at most 5 MB (its preview, else the original) and a text
+// file 80 KB, so a limit past the cap is taken as the cap, never more.
 const maxFileBytes = 32 << 20
 
-// FileBytes reads a file's bytes: its preview image when it has one and the
-// caller asks (GET /api/v4/files/{id}/preview), else the file itself
-// (GET /api/v4/files/{id}).
-func (c *Client) FileBytes(ctx context.Context, fileID string, preview bool) ([]byte, error) {
+// FileBytes reads the head of a file's bytes: at most limit of the body, its
+// preview image when it has one and the caller asks
+// (GET /api/v4/files/{id}/preview), else the file itself
+// (GET /api/v4/files/{id}). A limit of zero or less, or past maxFileBytes,
+// reads maxFileBytes.
+func (c *Client) FileBytes(ctx context.Context, fileID string, preview bool, limit int64) ([]byte, error) {
+	if limit <= 0 || limit > maxFileBytes {
+		limit = maxFileBytes
+	}
 	path := "/api/v4/files/" + url.PathEscape(fileID)
 	if preview {
 		path += "/preview"
@@ -654,14 +659,7 @@ func (c *Client) FileBytes(ctx context.Context, fileID string, preview bool) ([]
 			Err: fmt.Errorf("mattermost GET %s: %s: %s", path, resp.Status,
 				strings.TrimSpace(string(msg)))}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxFileBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxFileBytes {
-		return nil, fmt.Errorf("mattermost GET %s: %w", path, ErrTooLarge)
-	}
-	return data, nil
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
 }
 
 // PostByID reads one post (GET /api/v4/posts/{id}): its channel, author,
@@ -677,23 +675,6 @@ func (c *Client) PostByID(ctx context.Context, postID string) (Post, error) {
 		return Post{}, fmt.Errorf("mattermost: no post %q", postID)
 	}
 	return raw.post(), nil
-}
-
-// ChannelName reads a channel's name (GET /api/v4/channels/{id}): the token
-// the bus carries the channel under, the same the presence membership and the
-// plan B switch go by.
-func (c *Client) ChannelName(ctx context.Context, channelID string) (string, error) {
-	var ch struct {
-		Name string `json:"name"`
-	}
-	path := "/api/v4/channels/" + url.PathEscape(channelID)
-	if err := c.do(ctx, "GET", path, nil, &ch); err != nil {
-		return "", fmt.Errorf("mattermost: channel %q: %w", channelID, err)
-	}
-	if ch.Name == "" {
-		return "", fmt.Errorf("mattermost: no channel %q", channelID)
-	}
-	return ch.Name, nil
 }
 
 // catchUpCap is what PostsSince may read: `since` answers up to a

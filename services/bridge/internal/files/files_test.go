@@ -55,6 +55,11 @@ func part(whole []byte, name, ch, declared string, n int, last bool, chunk []byt
 		name, ch, len(whole), declared, n, last, base64.StdEncoding.EncodeToString(chunk))
 }
 
+// get is one get op's payload: the file's id in the channel it is asked of.
+func get(id, ch string) string {
+	return `{"op":"get","id":"` + id + `","channel":"` + ch + `"}`
+}
+
 // putAll is the payload the MCP side sends for a whole small file: part 1,
 // the last.
 func putAll(name, ch string, whole []byte) string {
@@ -70,7 +75,6 @@ type fakeMM struct {
 	calls    []string
 	team     string
 	channels map[string]string // channel name -> id
-	names    map[string]string // channel id -> name
 	posts    map[string]map[string]any
 	infos    map[string]map[string]any
 	data     map[string][]byte
@@ -90,7 +94,7 @@ type upload struct {
 
 func newFakeMM(t *testing.T) *fakeMM {
 	t.Helper()
-	f := &fakeMM{team: "team", channels: map[string]string{}, names: map[string]string{},
+	f := &fakeMM{team: "team", channels: map[string]string{},
 		posts: map[string]map[string]any{}, infos: map[string]map[string]any{},
 		data: map[string][]byte{}, previews: map[string][]byte{}, users: map[string]map[string]any{}}
 	f.users["u-alice"] = map[string]any{"id": "u-alice", "username": "alice", "is_bot": false}
@@ -101,8 +105,10 @@ func newFakeMM(t *testing.T) *fakeMM {
 	return f
 }
 
+// client is the agent's own bot. The fake still takes the bridge bot's
+// token too: a read that is not the agent's own is recorded as one, and the
+// tests pin that none happens.
 func (f *fakeMM) client() *mm.Client { return mm.New(f.srv.URL, botTok).As("bot-id") }
-func (f *fakeMM) bridge() *mm.Client { return mm.New(f.srv.URL, bridgeTok).As("bridge-id") }
 
 func (f *fakeMM) seen() []string {
 	f.mu.Lock()
@@ -202,16 +208,6 @@ func (f *fakeMM) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out(p)
-	case r.Method == "GET" && strings.HasPrefix(path, "/api/v4/channels/"):
-		id := strings.TrimPrefix(path, "/api/v4/channels/")
-		f.mu.Lock()
-		name, ok := f.names[id]
-		f.mu.Unlock()
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		out(map[string]any{"id": id, "name": name})
 	case r.Method == "GET" && strings.HasPrefix(path, "/api/v4/users/"):
 		id := strings.TrimPrefix(path, "/api/v4/users/")
 		f.mu.Lock()
@@ -284,7 +280,6 @@ func newRig(t *testing.T, pieces ...int) *rig {
 	now := time.Now()
 	f := newFakeMM(t)
 	f.channels[channel] = cid
-	f.names[cid] = channel
 	snap := presence.New()
 	snap.ObservedMember(channel, agent, now, 1)
 	sw := &presence.Switches{}
@@ -295,7 +290,7 @@ func newRig(t *testing.T, pieces ...int) *rig {
 			Account: "u-alice", Anchor: "alice", Name: "Alice", Approver: true,
 			TokenIat: 10, Iat: 11, Exp: now.Add(10 * time.Minute).Unix(),
 		}}}
-	return &rig{h: &Handler{Log: quiet, Team: "team", Bots: b, Bridge: f.bridge(),
+	return &rig{h: &Handler{Log: quiet, Team: "team", Bots: b,
 		Presence: snap, Switches: sw, People: ppl},
 		mm: f, bots: b, snap: snap, sw: sw, now: now, ppl: ppl}
 }
@@ -555,6 +550,145 @@ func TestABadHashRefusesAndDropsTheTransfer(t *testing.T) {
 	}
 }
 
+// The type check part 1 ran on its own bytes alone: the assembled whole must
+// still be what its name says, or nothing is uploaded (the review of #286: a
+// text first part whose later parts are a PNG's bytes, its declared length
+// and hash matching).
+func TestTheAssembledWholeMustStillMatchItsName(t *testing.T) {
+	r := newRig(t, Piece)
+	whole := append([]byte("hello, "), png(50)...)
+	if _, err := r.ask(t, part(whole, "notes.txt", channel, sum(whole), 1, false, whole[:7])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ask(t, part(whole, "notes.txt", channel, sum(whole), 2, false, whole[7:27])); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.ask(t, part(whole, "notes.txt", channel, sum(whole), 3, true, whole[27:]))
+	if err == nil || err.Error() !=
+		"notes.txt is named .txt but its bytes are no allowed type (binary, or not UTF-8)" {
+		t.Fatalf("the assembled whole: %v", err)
+	}
+	if took := r.mm.took(); len(took) != 0 {
+		t.Fatalf("the whole of another type was uploaded: %+v", took)
+	}
+}
+
+// No part carries no bytes: an empty one moves nothing, so it is refused and
+// the transfer stays open for the real part behind it (the review of #286).
+func TestAnEmptyPartIsRefused(t *testing.T) {
+	r := newRig(t, Piece)
+	whole := png(30)
+	if _, err := r.ask(t, part(whole, "chart.png", channel, sum(whole), 1, false, nil)); err == nil ||
+		err.Error() != "part 1 carries no bytes" {
+		t.Fatalf("an empty part 1: %v", err)
+	}
+	if _, err := r.ask(t, part(whole, "chart.png", channel, sum(whole), 1, false, whole[:10])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ask(t, part(whole, "chart.png", channel, sum(whole), 2, false, nil)); err == nil ||
+		err.Error() != "part 2 carries no bytes" {
+		t.Fatalf("an empty middle part: %v", err)
+	}
+	// the transfer survived both, and the parts still arrive in order
+	if _, err := r.ask(t, part(whole, "chart.png", channel, sum(whole), 2, false, whole[10:20])); err != nil {
+		t.Fatal(err)
+	}
+	replies, err := r.ask(t, part(whole, "chart.png", channel, sum(whole), 3, true, whole[20:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := one(t, replies, err); m["size"] != float64(len(whole)) {
+		t.Fatalf("the completed transfer: %v", m)
+	}
+}
+
+// A transfer that asks for more parts than its declared length can hold is
+// dropped, its slot free (the review of #286).
+func TestATransferThatOutgrowsItsPartsIsDropped(t *testing.T) {
+	r := newRig(t, Piece)
+	many := []byte(strings.Repeat("a", 100))
+	if _, err := r.ask(t, part(many, "many.txt", channel, sum(many), 1, false, many[:1])); err != nil {
+		t.Fatal(err)
+	}
+	for i := 2; i < maxParts; i++ { // parts 2..16: kept, the cap not yet reached
+		if _, err := r.ask(t, part(many, "many.txt", channel, sum(many), i, false, many[:1])); err != nil {
+			t.Fatalf("part %d: %v", i, err)
+		}
+	}
+	// part 17 pushes next past the cap: the transfer is dropped
+	if _, err := r.ask(t, part(many, "many.txt", channel, sum(many), maxParts, false, many[:1])); err == nil ||
+		err.Error() != "the transfer was dropped: send again" {
+		t.Fatalf("the part past the cap: %v", err)
+	}
+	if _, err := r.ask(t, part(many, "many.txt", channel, sum(many), maxParts+1, true, many[1:])); err == nil ||
+		err.Error() != "the transfer was dropped: send again" {
+		t.Fatalf("a part of the dropped transfer: %v", err)
+	}
+	// the slot is free: a new upload goes through
+	replies, err := r.ask(t, putAll("mine.png", channel, png(9)))
+	if err != nil {
+		t.Fatalf("after the drop: %v", err)
+	}
+	if m := one(t, replies, err); m["name"] != "mine.png" {
+		t.Fatalf("after the drop: %v", m)
+	}
+}
+
+// Five minutes past its first part a transfer is dropped even though its
+// parts kept it fresh: no trickle of tiny parts holds a slot for ever (the
+// review of #286).
+func TestATransferOlderThanFiveMinutesIsDropped(t *testing.T) {
+	r := newRig(t, Piece)
+	slow := []byte(strings.Repeat("a", 64))
+	if _, err := r.ask(t, part(slow, "slow.txt", channel, sum(slow), 1, false, slow[:1])); err != nil {
+		t.Fatal(err)
+	}
+	for i := 2; i <= 6; i++ { // each part within the 60 s idle bound
+		r.now = r.now.Add(59 * time.Second)
+		if _, err := r.ask(t, part(slow, "slow.txt", channel, sum(slow), i, false, slow[:1])); err != nil {
+			t.Fatalf("part %d: %v", i, err)
+		}
+	}
+	// the next would be 59 s after the last: fresh, but five minutes after
+	// the first
+	r.now = r.now.Add(59 * time.Second)
+	if _, err := r.ask(t, part(slow, "slow.txt", channel, sum(slow), 7, false, slow[:1])); err == nil ||
+		err.Error() != "the transfer was dropped: send again" {
+		t.Fatalf("a transfer older than its lifetime: %v", err)
+	}
+	// its slot is free
+	if _, err := r.ask(t, putAll("mine.png", channel, png(9))); err != nil {
+		t.Fatalf("after the drop: %v", err)
+	}
+}
+
+// An upper-case extension is judged as its lower case, its name kept: parity
+// with attach.check (the review of #286).
+func TestAnUpperCaseExtensionIsJudgedAsItsLowerCase(t *testing.T) {
+	r := newRig(t, Piece)
+	whole := png(9)
+	replies, err := r.ask(t, putAll("chart.PNG", channel, whole))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := one(t, replies, err); m["name"] != "chart.PNG" {
+		t.Fatalf("the upper-case name: %v", m)
+	}
+	if took := r.mm.took(); len(took) != 1 || took[0].name != "chart.PNG" {
+		t.Fatalf("the upload: %+v", took)
+	}
+	// the refusals name the lower-case extension
+	r2 := newRig(t, Piece)
+	if _, err := r2.ask(t, putAll("NOTES.TXT", channel, []byte{0x00, 0x01})); err == nil ||
+		err.Error() != "NOTES.TXT is named .txt but its bytes are no allowed type (binary, or not UTF-8)" {
+		t.Fatalf("an upper-case text name: %v", err)
+	}
+	if _, err := r2.ask(t, putAll("chart.EXE", channel, whole)); err == nil ||
+		err.Error() != ".exe is not allowed: csv, gif, jpeg, jpg, json, log, md, pdf, png, tsv, txt, webp, yaml, yml" {
+		t.Fatalf("an upper-case extension not allowed: %v", err)
+	}
+}
+
 // At most 16 transfers are open across the agents; the 17th is told busy, and
 // an agent's own new first part replaces its open one instead.
 func TestTheSeventeenthOpenTransferIsBusy(t *testing.T) {
@@ -564,7 +698,7 @@ func TestTheSeventeenthOpenTransferIsBusy(t *testing.T) {
 	for i := range names {
 		names[i] = fmt.Sprintf("agent-%02d", i)
 		r.snap.ObservedMember(channel, names[i], r.now, 1)
-		if _, err := r.askAs(t, names[i], part(whole, "chart.png", channel, sum(whole), 1, false, whole)); err != nil {
+		if _, err := r.askAs(t, names[i], part(whole, "chart.png", channel, sum(whole), 1, false, whole[:8])); err != nil {
 			t.Fatalf("%s's part 1: %v", names[i], err)
 		}
 	}
@@ -582,7 +716,7 @@ func TestTheSeventeenthOpenTransferIsBusy(t *testing.T) {
 		t.Fatalf("the replacement: %v", m)
 	}
 	// an own part 2 goes through too, and completes its transfer
-	if _, err := r.askAs(t, names[1], part(whole, "chart.png", channel, sum(whole), 2, true, nil)); err != nil {
+	if _, err := r.askAs(t, names[1], part(whole, "chart.png", channel, sum(whole), 2, true, whole[8:])); err != nil {
 		t.Fatalf("the agent's own part 2: %v", err)
 	}
 	// a stale transfer frees its slot for the 17th
@@ -602,7 +736,7 @@ func TestGetATextFile(t *testing.T) {
 	r := newRig(t, Piece)
 	text := []byte("hello world")
 	r.mm.file(t, fileID, "notes.txt", "txt", "text/plain", int64(len(text)), false, text)
-	replies, err := r.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err := r.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,16 +766,14 @@ func TestGetATextFile(t *testing.T) {
 	if got := theData(t, replies); string(got) != string(text) {
 		t.Fatalf("the bytes: %q", got)
 	}
-	// the serving reads are the agent's own bot's; the bridge's resolved the
-	// channel alone
+	// every read of the answer went through the agent's own bot: the
+	// bridge's own is asked for nothing at all (the review of #286)
 	if got := r.bots.called; len(got) != 1 || got[0] != agent+"@"+channel {
 		t.Fatalf("the bots asked: %v", got)
 	}
 	for _, call := range r.mm.seen() {
-		if strings.HasSuffix(call, " as bridge") &&
-			!strings.Contains(call, "/info") && !strings.Contains(call, "/posts/") &&
-			!strings.Contains(call, "/channels/") {
-			t.Fatalf("the bridge bot served: %s", call)
+		if strings.HasSuffix(call, " as bridge") {
+			t.Fatalf("the bridge bot was read: %s", call)
 		}
 	}
 	// an unbound author carries no record and is no bot; a bot's author is
@@ -651,7 +783,7 @@ func TestGetATextFile(t *testing.T) {
 		"has_preview_image": false}
 	r2.mm.posts[postID] = map[string]any{"id": postID, "channel_id": cid}
 	r2.mm.data[fileID] = []byte("abc")
-	replies, err = r2.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err = r2.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +795,7 @@ func TestGetATextFile(t *testing.T) {
 		t.Fatalf("an unbound person: %v", meta)
 	}
 	r2.mm.infos[fileID]["user_id"] = "u-bot"
-	replies, err = r2.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err = r2.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -682,7 +814,7 @@ func TestGetAnImage(t *testing.T) {
 	preview := []byte("the preview bytes")
 	r.mm.file(t, fileID, "photo.png", "png", "image/png", int64(len(original)), true, original)
 	r.mm.previews[fileID] = preview
-	replies, err := r.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err := r.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +828,7 @@ func TestGetAnImage(t *testing.T) {
 	// no preview: the original, in a format shown as a picture
 	r2 := newRig(t, Piece)
 	r2.mm.file(t, fileID, "photo.png", "png", "image/png", int64(len(original)), false, original)
-	replies, err = r2.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err = r2.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -707,7 +839,7 @@ func TestGetAnImage(t *testing.T) {
 	r3 := newRig(t, Piece)
 	big := png(20)
 	r3.mm.file(t, fileID, "big.png", "png", "image/png", ImageMax+1, false, big)
-	replies, err = r3.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err = r3.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -721,7 +853,7 @@ func TestGetAnImage(t *testing.T) {
 	// a format no client shows as a picture, without a preview: metadata only
 	r4 := newRig(t, Piece)
 	r4.mm.file(t, fileID, "photo.bmp", "bmp", "image/bmp", 4, false, []byte("bmpe"))
-	replies, err = r4.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err = r4.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +866,7 @@ func TestGetAnImage(t *testing.T) {
 func TestGetAnythingElseIsMetadataOnly(t *testing.T) {
 	r := newRig(t, Piece)
 	r.mm.file(t, fileID, "sheet.xlsx", "xlsx", "application/vnd.ms-excel", 12, false, []byte("excel bytes"))
-	replies, err := r.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err := r.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -754,7 +886,7 @@ func TestTheBytesComeInPartsOf700KiB(t *testing.T) {
 	r := newRig(t, Piece)
 	big := png(1500 * 1024) // 1.5 MB: three parts
 	r.mm.file(t, fileID, "big.png", "png", "image/png", int64(len(big)), false, big)
-	replies, err := r.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err := r.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -782,7 +914,7 @@ func TestTheTextIsCutAt80KB(t *testing.T) {
 	r := newRig(t, Piece)
 	text := []byte(strings.Repeat("a", textBytes+1))
 	r.mm.file(t, fileID, "long.txt", "txt", "text/plain", int64(len(text)), false, text)
-	replies, err := r.ask(t, `{"op":"get","id":"`+fileID+`"}`)
+	replies, err := r.ask(t, get(fileID, channel))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,22 +935,38 @@ func TestTheGetRefusals(t *testing.T) {
 	// a foreign channel
 	r := newRig(t, Piece)
 	r.mm.channels["elsewhere"] = "another0000000000000000001"
-	r.mm.names["another0000000000000000001"] = "elsewhere"
 	r.mm.infos[fileID] = map[string]any{"id": fileID, "name": "chart.png", "extension": "png",
 		"size": len(whole), "mime_type": "image/png", "post_id": postID, "user_id": "u-alice"}
 	r.mm.posts[postID] = map[string]any{"id": postID, "channel_id": "another0000000000000000001"}
 	r.mm.data[fileID] = whole
-	if _, err := r.ask(t, `{"op":"get","id":"`+fileID+`"}`); err == nil ||
+	if _, err := r.ask(t, get(fileID, "elsewhere")); err == nil ||
 		err.Error() != "not a channel of that agent" {
 		t.Fatalf("a foreign channel: %v", err)
 	}
 	if len(r.bots.called) != 0 {
 		t.Fatalf("a bot was asked for: %v", r.bots.called)
 	}
+	if calls := r.mm.seen(); len(calls) != 0 {
+		t.Fatalf("Mattermost was read before the checks: %v", calls)
+	}
+	// a file of another channel the agent is a member of, with the piece on:
+	// refused in the membership's own words, after the agent's own bot read
+	// the file's info and its post (the review of #286)
+	second := "second000000000000000000001"
+	r.snap.ObservedMember("second", agent, r.now, 1)
+	r.sw.Observed("second", []int{Piece}, r.now)
+	r.mm.channels["second"] = second
+	if _, err := r.ask(t, get(fileID, "second")); err == nil ||
+		err.Error() != "not a channel of that agent" {
+		t.Fatalf("a file of another channel: %v", err)
+	}
+	if took := r.mm.took(); len(took) != 0 {
+		t.Fatalf("a file of another channel was uploaded: %+v", took)
+	}
 	// the piece off
 	r2 := newRig(t)
 	r2.mm.file(t, fileID, "chart.png", "png", "image/png", int64(len(whole)), false, whole)
-	if _, err := r2.ask(t, `{"op":"get","id":"`+fileID+`"}`); err == nil ||
+	if _, err := r2.ask(t, get(fileID, channel)); err == nil ||
 		err.Error() != "piece 8 is off in home" {
 		t.Fatalf("the piece off: %v", err)
 	}
@@ -830,7 +978,7 @@ func TestTheGetRefusals(t *testing.T) {
 	r3.mm.file(t, fileID, "chart.png", "png", "image/png", int64(len(whole)), false, whole)
 	r3.ppl.waiting = true
 	r3.h.People = r3.ppl
-	if _, err := r3.ask(t, `{"op":"get","id":"`+fileID+`"}`); err == nil ||
+	if _, err := r3.ask(t, get(fileID, channel)); err == nil ||
 		!strings.Contains(err.Error(), "not read yet") {
 		t.Fatalf("unread records: %v", err)
 	}
@@ -838,20 +986,21 @@ func TestTheGetRefusals(t *testing.T) {
 	r4 := newRig(t, Piece)
 	r4.mm.file(t, fileID, "chart.png", "png", "image/png", int64(len(whole)), false, whole)
 	r4.bots.err = &agentbots.NotInChannel{Channel: channel}
-	if _, err := r4.ask(t, `{"op":"get","id":"`+fileID+`"}`); err == nil ||
+	if _, err := r4.ask(t, get(fileID, channel)); err == nil ||
 		err.Error() != "the agent's bot is not in home" {
 		t.Fatalf("a bot outside the channel: %v", err)
 	}
-	// a file attached to no post: its channel cannot be found
+	// a file attached to no post: its channel cannot be checked
 	r5 := newRig(t, Piece)
 	r5.mm.infos[fileID] = map[string]any{"id": fileID, "name": "loose.png", "extension": "png",
 		"size": len(whole), "mime_type": "image/png", "user_id": "u-alice"}
-	if _, err := r5.ask(t, `{"op":"get","id":"`+fileID+`"}`); err == nil ||
+	if _, err := r5.ask(t, get(fileID, channel)); err == nil ||
 		!strings.Contains(err.Error(), "attached to no post") {
 		t.Fatalf("a loose file: %v", err)
 	}
 	// a file Mattermost does not have
-	if _, err := r5.ask(t, `{"op":"get","id":"`+fileID+`x"}`); err == nil {
+	if _, err := r5.ask(t, get("gone0000000000000000000000", channel)); err == nil ||
+		!strings.Contains(err.Error(), "the file gone") {
 		t.Fatal("an unknown file id is no error")
 	}
 }
@@ -873,7 +1022,8 @@ func TestThePayloadIsDecodedStrictly(t *testing.T) {
 			`"part":1,"last":true,"data":""}`, "names no sha256"},
 		{"part 0", `{"op":"put","name":"chart.png","channel":"home","length":1,` +
 			`"sha256":"` + sum(whole) + `","part":0,"last":true,"data":""}`, "parts start at 1"},
-		{"a bad file id", `{"op":"get","id":"short"}`, "no file id"},
+		{"a get without its channel", `{"op":"get","id":"` + fileID + `"}`, "no channel token"},
+		{"a bad file id", `{"op":"get","id":"short","channel":"home"}`, "no file id"},
 	} {
 		if _, err := r.ask(t, tc.pay); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err %v, want %q", tc.name, err, tc.want)

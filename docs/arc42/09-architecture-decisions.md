@@ -4595,8 +4595,9 @@ which each piece reads for itself.
        holds the transfers within the decided bounds and uploads with
        the agent's own bridge bot, and answers a download with the
        metadata (the author's account record beside it, RT-6.42) and the
-       bytes, the flags computed on the session side from the answer
-       alone. A file id no seen post of the session named takes today's
+       bytes, the trust computed by the port's own classifier (an
+       attested anchor plus a fresh record, RT-6.42 step 9). A file id
+       no seen post of the session named takes today's
        path, for the session cannot tell its channel without a
        Mattermost read (open point, with a follow-up when piece 5's
        reads name every file); files of a DM stay on Mattermost, for a

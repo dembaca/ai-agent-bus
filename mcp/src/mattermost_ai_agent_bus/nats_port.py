@@ -1455,12 +1455,30 @@ class NatsPort:
     async def fetch_file(self, file_id: str) -> files.Fetched | None:
         """A person's file over the bridge (RT-6.23 steps 2–4) when piece 8 is
         on for a channel a seen post carried the file in; None keeps today's
-        path (files.fetch), also for a file no seen post names."""
+        path (files.fetch), also for a file no seen post names. The channel
+        names itself in the request, and the author fields come from the
+        port's own classifier (_file_author), never a Mattermost read."""
         bus = self._bus
         token = self._files_on(files.channel_of(file_id))
         if bus is None or not isinstance(bus, natsbus.NatsBus) or not token or not bus.connected:
             return None
-        return await natsfiles.fetch(bus, file_id)
+        return await natsfiles.fetch(bus, file_id, token, self._file_author)
+
+    def _file_author(self, answer: Mapping[str, Any]) -> dict[str, Any]:
+        """The fetched file's author, judged as the port judges a person over
+        NATS (RT-6.42 step 9): a bot account is an agent's; a person's file is
+        trusted only when the login service's record binds the account to an
+        anchor of the session's own fresh attestation (_account_anchor, a
+        fresh record by the binding it reads); unsure stays not trusted
+        (RT-6.16), and a foreign owner is not told apart here."""
+        out: dict[str, Any] = {"author": str(answer.get("author_name") or answer.get("author") or ""),
+                              "from_trusted_human": False, "from_agent": False}
+        if answer.get("bot"):
+            out["from_agent"] = True
+            return out
+        uid = str(answer.get("author") or "")
+        out["from_trusted_human"] = bool(uid) and bool(self._account_anchor(uid))
+        return out
 
 
     # --- sending ---------------------------------------------------------------------
