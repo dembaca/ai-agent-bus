@@ -7,6 +7,19 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The session's identity without a bot: plan B piece 14c-2a** (#244, RT-6.6 step 13,
+  RT-6.38 step 10, RT-6.2 step 9, ADR-014). Every place that decides "is this me, my
+  state, may I act" (the crown, asks, the read watermark, the gate, receipts, the inbox,
+  own posts, the counters and the presence card) asks one module, `identity.py`: with a
+  Mattermost bot the bot's id and username, exactly as before; in a session that decided
+  to run without one, its NATS name, and for mentions the bridge's bot of that name, else
+  the name. The crown command and the NATS beat take any state key, not only a
+  26-character id; without a bot the home's id comes from the channel directory and the
+  inbox reads NATS alone. A test lists every remaining read of Mattermost's users/me with
+  its reason. Inert: no setting changes behaviour, with a bot nothing changes, and every
+  session still registers its bot; the hook API and status without a token (14c-2b) and
+  the flip (14c-2c) follow. The docs no longer say the crown claim carries the bot's id:
+  it is `{"v":1}` under the session's NATS name.
 - **Every kept state file keyed by the NATS name: plan B piece 14c-1** (#244, RT-6.2
   step 9, ADR-014). Behind piece 2's switch (`planb.on(2, home)`, off by default; no new
   switch), the asks, the read watermark, reminders, the gate, the stall and release-notice

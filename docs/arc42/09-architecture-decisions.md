@@ -4958,8 +4958,9 @@ which each piece reads for itself.
       - Built (14a, after 0.104.0; RT-6.18 step 13, RT-6.10 step 8): the
         decision, in `nobot.py` with the predicate `NatsPort.bot_needed`.
         Inert until 14c: the crown still needs the bot's identity (the
-        lease heartbeat and its NATS beat run only with a token, the claim
-        carries the bot's id), so the predicate always names that reason
+        lease heartbeat and its NATS beat run only with a token; the claim
+        names no bot, corrected by 14c-2a, which moved the identity to the
+        NATS name, identity.py), so the predicate always names that reason
         (`nobot.CROWN_NEEDS_BOT`, which 14c deletes; RT-6.6 step 13) and
         every session registers; the corral start hook defers none either
         (`CB_CROWN_NEEDS_BOT` in `bin/mm-agent-lib.sh`, which 14c flips in
