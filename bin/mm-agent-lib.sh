@@ -788,7 +788,7 @@ mm_bus_me() {
 
 # The key of this session's kept state (RT-6.2 step 9, plan B piece 14c-1): the NATS
 # name once the MCP server keys its state by it (plan B piece 2 on), as its endpoint
-# file says (CB_STATE_KEY), else its /v1/me answer (state_key, kept by mm_bus_me in
+# file says (CB_STATE_KEY, only while that server runs: mm_pid_gone), else its /v1/me answer (state_key, kept by mm_bus_me in
 # mm_state_key_me; an inherited CB_STATE_KEY variable is never read);
 # else the bot id, $1 or CB_MM_BOT_USER_ID. Fails without a key. The one place the
 # scripts take a per-bot state file's key from (tests/hooks/test_state_key_shell.py):
@@ -798,9 +798,18 @@ mm_state_key_me=""
 # (26 [a-z0-9]) or a NATS name (25 lower-case base32). The key names files, so
 # nothing looser: no capitals, no dot, slash, underscore or dash.
 mm_state_key_re='^([a-z0-9]{26}|[a-z2-7]{25})$'
+# Whether the process $1 is surely gone: no pid, or the system says there is no such
+# process. One this shell may not signal (a sandbox, EPERM) counts as running.
+mm_pid_gone() {
+  [[ "${1:-}" =~ ^[0-9]+$ ]] || return 0
+  kill -0 "$1" 2>/dev/null && return 1
+  [[ "$(LC_ALL=C kill -0 "$1" 2>&1)" == *"No such process"* ]]
+}
 mm_state_key() {
   local key="" f
-  if f="$(mm_bus_file 2>/dev/null)"; then key="$(mm_kv "$f" CB_STATE_KEY)"; fi
+  if f="$(mm_bus_file 2>/dev/null)" && ! mm_pid_gone "$(mm_kv "$f" CB_BUS_PID)"; then
+    key="$(mm_kv "$f" CB_STATE_KEY)"
+  fi
   [[ -n "$key" ]] || key="${mm_state_key_me:-}"
   [[ "$key" =~ $mm_state_key_re ]] || key="${1:-${CB_MM_BOT_USER_ID:-}}"
   [[ "$key" =~ $mm_state_key_re ]] || return 1

@@ -358,6 +358,36 @@ def test_a_name_whose_lock_is_held_stays(mm, run):
     assert not lock.exists() and not any((run.state_dir / f).exists() for f in files)
 
 
+def test_the_lock_probe_takes_no_exclusive_lock(mm, run):
+    """RT-6.1 step 7, RT-6.2 step 9: the sweep probes key-<name>.lock with a shared lock, so
+    another shared holder (a second sweep's probe) reads as not held, and the probe never
+    holds the exclusive lock a starting MCP server takes."""
+    import fcntl
+
+    files = name_state(run, NAME, uid=DEAD_UID, days_old=3)
+    lock = run.state_dir / f"key-{NAME}.lock"
+    lock.write_text("")
+    old = os.path.getmtime(run.state_dir / files[0])
+    os.utime(lock, (old, old))
+    fd = os.open(lock, os.O_RDONLY)
+    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    try:
+        r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    finally:
+        os.close(fd)
+    assert f"removed {len(files) + 1} state file(s) keyed by a NATS name" in r.stderr
+    assert not lock.exists()
+
+
+def test_a_bots_counter_claim_a_kill_left_goes_with_the_bot(mm, run):
+    """RT-6.2 step 9: the counter move claims on the source side, so a kill leaves
+    stats-<bot id>.jsonl.moving-<pid>: the bot's state file, by the same rules."""
+    f = state_file(run, f"stats-{DEAD_UID}.jsonl.moving-4242", days_old=3)
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert "removed 1 state file(s) of bots without a session" in r.stderr
+    assert not (run.state_dir / f).exists()
+
+
 def test_a_counter_move_a_crash_left_goes_with_its_name(mm, run):
     """RT-6.2 step 9: stats-<name>.jsonl.moving-<pid> is the name's file, by the same rules."""
     files = name_state(run, NAME, uid=DEAD_UID, days_old=3)

@@ -65,7 +65,8 @@ def test_the_key_is_the_bot_id_while_the_server_names_none(tmp_path):
 
 
 def test_the_key_is_the_name_the_endpoint_file_names(tmp_path):
-    env = _key_env(tmp_path, f"CB_BUS_ENDPOINT=http://127.0.0.1:1\nCB_BUS_KEY=k\nCB_STATE_KEY={NATS25}\n")
+    env = _key_env(tmp_path, f"CB_BUS_ENDPOINT=http://127.0.0.1:1\nCB_BUS_KEY=k\nCB_BUS_PID={os.getpid()}\n"
+                             f"CB_STATE_KEY={NATS25}\n")
     state = f"{tmp_path}/s/mm-agent-bus"
     assert _lib("mm_state_key", env).stdout == NATS25
     assert _lib("mm_turn_state_file", env).stdout == f"{state}/turn-{NATS25}.env"
@@ -76,6 +77,17 @@ def test_the_key_is_the_name_the_endpoint_file_names(tmp_path):
     r = _lib("mm_stat wake reason=digest", env)
     assert r.returncode == 0
     assert '"k":"wake"' in (tmp_path / "s" / "mm-agent-bus" / f"stats-{NATS25}.jsonl").read_text()
+
+
+@pytest.mark.parametrize("pid", ["999999", "", "x"])
+def test_a_dead_servers_endpoint_file_names_no_key(tmp_path, pid):
+    """RT-6.2 step 9: an endpoint file whose server is gone (CB_BUS_PID no such process, or
+    none) names no key: the scripts take the bot id, as the sweep keeps no name by it
+    (RT-6.1 step 7). A pid this shell may not signal (a sandbox) counts as running."""
+    env = _key_env(tmp_path, f"CB_BUS_ENDPOINT=http://127.0.0.1:1\nCB_BUS_KEY=k\nCB_BUS_PID={pid}\n"
+                             f"CB_STATE_KEY={NATS25}\n")
+    assert _lib("mm_state_key", env).stdout == BOT
+    assert _lib('mm_pid_gone "$1" || echo running', env, "1").stdout == "running\n"
 
 
 def test_a_junk_key_falls_back_to_the_bot_id(tmp_path):
@@ -171,9 +183,10 @@ def test_the_hooks_preambles_are_the_ones_tested():
 
 
 def test_the_prompt_hook_clears_the_name_keyed_turn_from_the_endpoint_file(tmp_path):
-    """No server: the real prompt hook (hooks/turn-status.sh) still finds the name-keyed turn
-    and listen files by the endpoint file's CB_STATE_KEY and removes them."""
-    env = _key_env(tmp_path, f"CB_BUS_ENDPOINT=http://127.0.0.1:9\nCB_BUS_KEY=x\nCB_BUS_PID=999999\n"
+    """A server that does not answer (its process runs): the real prompt hook
+    (hooks/turn-status.sh) still finds the name-keyed turn and listen files by the endpoint
+    file's CB_STATE_KEY and removes them."""
+    env = _key_env(tmp_path, f"CB_BUS_ENDPOINT=http://127.0.0.1:9\nCB_BUS_KEY=x\nCB_BUS_PID={os.getpid()}\n"
                              f"CB_MM_BOT_USER_ID={BOT}\nCB_STATE_KEY={NATS25}\n", CB_MM_BOT_USER_ID="")
     state = tmp_path / "s" / "mm-agent-bus"
     (state / f"turn-{NATS25}.env").write_text("DRAINS=1\n")

@@ -102,7 +102,9 @@ is_live() {
 }
 
 # Per-bot state, not a session: the uid in its name, never a token.
-STATE_RE='^(asks|coord|gate|last|listen|nonce|presence|turn|update)-[a-z0-9]{26}\.env$|^stats-[a-z0-9]{26}\.jsonl$|^(permission|crown)-[a-z0-9]{26}\.log$'
+# A counter move a kill interrupted leaves its claim on the source side,
+# stats-<uid>.jsonl.moving-<pid> (RT-6.2 step 9): the bot's file too.
+STATE_RE='^(asks|coord|gate|last|listen|nonce|presence|turn|update)-[a-z0-9]{26}\.env$|^stats-[a-z0-9]{26}\.jsonl(\.moving-[0-9]+)?$|^(permission|crown)-[a-z0-9]{26}\.log$'
 # The MCP server's hook API endpoint (RT-6.17, endpoint-[sid-]<key>.env): no
 # session and no token. A server removes its own at exit; one left by a crash
 # names a port nobody listens on, and the hooks stay quiet. Section 4 removes
@@ -119,11 +121,14 @@ is_state_file() { [[ "$(basename "$1")" =~ $STATE_RE ]]; }
 # the name's file too.
 NAME_STATE_RE='^[a-z]+-[a-z2-7]{25}\.(env|jsonl|log|lock)(\.moving-[0-9]+)?$'
 # Whether a process holds the flock on $1 (macOS has no flock(1): perl's flock, the same
-# BSD lock the MCP server takes). Without perl a lock file counts as held: kept.
+# BSD lock the MCP server takes). Without perl a lock file counts as held: kept. The probe
+# takes a shared lock, never the exclusive one the server holds: a held exclusive lock
+# refuses it, another probe does not, and a server that starts in the probe's instant
+# tries again (session_file._flock, RT-6.2 step 9).
 lock_held() {
   [[ -f "$1" && ! -L "$1" ]] || return 1
   command -v perl >/dev/null 2>&1 || return 0
-  perl -e 'use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 1 : 0)' "$1"
+  perl -e 'use Fcntl qw(:flock); open(my $f, "<", $ARGV[0]) or exit 1; exit(flock($f, LOCK_SH | LOCK_NB) ? 1 : 0)' "$1"
 }
 is_name_state_file() {
   [[ "$(basename "$1")" =~ $NAME_STATE_RE ]] || return 1
@@ -301,7 +306,7 @@ for f in "$STATE_DIR"/endpoint-*.env; do
   KEEP_NAMES+="$(field "$f" CB_STATE_KEY) "
 done
 stale=0
-for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/stats-*.jsonl "$STATE_DIR"/permission-*.log "$STATE_DIR"/crown-*.log; do
+for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/stats-*.jsonl "$STATE_DIR"/stats-*.jsonl.moving-* "$STATE_DIR"/permission-*.log "$STATE_DIR"/crown-*.log; do
   is_state_file "$f" || continue
   uid="$(basename "$f")"; uid="${uid#*-}"; uid="${uid%%.*}"
   [[ "$KEEP_UIDS" == *" $uid "* ]] && continue
