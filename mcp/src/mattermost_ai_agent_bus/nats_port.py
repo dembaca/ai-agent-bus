@@ -1086,8 +1086,8 @@ class NatsPort:
         return channel in self._homes and self._switch_known() and planb.on(5, channel)
 
     def _note_mm(self, post_id: str, channel: str) -> None:
-        """Keep a Mattermost post id's channel, so its thread and reactions can ask the bridge
-        for it (a Mattermost id names no channel itself). Bounded like the NATS memory."""
+        """Keep a Mattermost post id's channel (a name, or a DM's id no home has), so its
+        thread and reactions can ask the bridge for it (a Mattermost id names no channel)."""
         if not post_id:
             return
         self._mm_post_channel[post_id] = channel
@@ -1361,7 +1361,7 @@ class NatsPort:
         sender = self._sender_of(home, seq) if self._bot_prefix(home) else None
         if sender is not None:
             return await self._agent_bot(user_id, home, {sender})
-        bus = self._bus
+        bus = self._live()
         name = bus.name if bus is not None else ""
         if not name or seq in self._posts.get(home, {}):
             return False
@@ -1471,10 +1471,28 @@ class NatsPort:
         if await self._person_on_mattermost(event):
             return True
         self._judge_on_mattermost(event)  # plan B piece 4
+        self._note_mattermost(event)
         if isinstance(event, PostEvent) and self._ids is not None:
             # plan B piece 7: a reaction on a post of a channel not over NATS stays on Mattermost
             self._saw_mm(event.post.id, self._name_now(event.post.channel_id) or "")
         return False
+
+    def _note_mattermost(self, event: ChatEvent) -> None:
+        """A post or reaction that stays on Mattermost: keep its channel, so its thread and
+        reactions skip the bridge (piece 5 reads only a home's people). A DM channel has no
+        home name; its id is kept, which is equally no piece-5 home."""
+        if isinstance(event, PostEvent):
+            post_id, channel_id = event.post.id, event.post.channel_id
+        elif isinstance(event, ReactionEvent):
+            post_id, channel_id = event.reaction.post_id, event.channel_id
+        else:
+            return
+        try:
+            name = self._name_now(channel_id) if self._ids is not None else None
+        except Exception:  # noqa: BLE001 — not resolvable: its id is no home either
+            name = None
+        if name is None or not self._piece5(name):
+            self._note_mm(post_id, name or channel_id)
 
     async def _copy_event(self, event: ChatEvent) -> bool:
         if not self._bridge_bot and not any(self._bot_prefix(h) for h in self._channels()):

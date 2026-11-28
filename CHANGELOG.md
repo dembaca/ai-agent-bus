@@ -31,7 +31,10 @@ before 0.5.0 are described in the git history.
   raises. A thread answer drops a reply whose Mattermost root is not the thread's root
   (and a root that is itself a reply), and after a restart a post by the session's own
   bot naming an open ask's sequence still counts as the bridge's copy, any other
-  unknown sequence not.
+  unknown sequence not. A post the agent's own bot may not read at all (a DM answer,
+  a permission prompt) is the bridge's `the thread is not in ~<channel>` on the first
+  page, and a post the session saw on Mattermost outside a switched home is known with
+  its channel, so it skips the bridge.
 
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
   RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote

@@ -89,6 +89,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"sync"
 	"time"
@@ -318,6 +319,15 @@ func (h *Handler) threadRead(ctx context.Context, bot *mm.Client, cid, channel, 
 	for page := 0; page < maxThreadPages; page++ {
 		posts, hasNext, err := bot.ThreadPage(ctx, asked, from, fromAt, mm.ThreadCap)
 		if err != nil {
+			// The bot is a member of this home already (Bots.Client), so Mattermost
+			// refusing the first read means the post is not in a channel that bot may
+			// read (a DM answer, a permission prompt, any id after a restart): the
+			// same answer as a post of another channel, never Mattermost's 403/404.
+			var refused *mm.StatusError
+			if first && errors.As(err, &refused) &&
+				(refused.Status == http.StatusForbidden || refused.Status == http.StatusNotFound) {
+				return "", nil, false, fmt.Errorf("the thread is not in ~%s", channel)
+			}
 			return "", nil, false, err
 		}
 		if len(posts) == 0 {

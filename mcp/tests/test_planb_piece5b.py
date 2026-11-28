@@ -27,6 +27,7 @@ from test_natsbus import Rig, _login_service
 
 from mattermost_ai_agent_bus import a2a, planb
 from mattermost_ai_agent_bus.client import post_of
+from mattermost_ai_agent_bus.events import PostEvent
 from mattermost_ai_agent_bus.model import ChannelUser, Post, Reaction
 from mattermost_ai_agent_bus.nats_port import NatsPort
 from mattermost_ai_agent_bus.natsbus import NatsSettings, OpenAsk
@@ -734,5 +735,30 @@ async def test_after_a_restart_the_sessions_own_bot_copy_of_an_open_ask_counts(
             by_id = {p.id: p for p in await port.channel_posts(WORK)}
             assert by_id[P1].root_id == "n1:home:7"  # the own bot's copy of an open ask
             assert by_id[P2].root_id == "m" * 26  # any other unknown sequence is no copy
+        finally:
+            await port.stop()
+
+
+async def test_a_dm_post_known_from_mattermost_skips_the_bridge(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: a post the session saw on Mattermost outside a piece-5 home (a DM
+    answer, a permission prompt) is read there; a known id does not ask the bridge first."""
+    port, inner = await _setup(rig, monkeypatch, [5])
+    dm_channel = "d" * 26
+    dm = Post(id="v" * 26, channel_id=dm_channel, user_id=UNBOUND, message="a DM")
+    inner.posts = [dm]
+    inner.reacts = {dm.id: [Reaction(user_id=UNBOUND, post_id=dm.id, emoji_name="+1")]}
+
+    def bridge(_payload: dict[str, Any]) -> Any:
+        return "the thread is not in ~home"  # it must not be asked
+
+    async with Bridge(rig, bridge) as fake:
+        try:
+            assert await port.skip(PostEvent(dm, "D", False)) is False
+            thread = await port.thread(dm.id)
+            assert [p.id for p in thread.posts] == [dm.id]
+            assert [r.emoji_name for r in await port.reactions(dm.id)] == ["+1"]
+            assert fake.asked == []  # the known DM channel skipped the bridge
+            assert "thread" in inner.log and "reactions" in inner.log
         finally:
             await port.stop()

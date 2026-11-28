@@ -556,6 +556,22 @@ func TestAThreadOutsideTheChannelIsRefused(t *testing.T) {
 	}
 }
 
+// A thread Mattermost refuses (a DM answer, a permission prompt, any id after a
+// restart) answers "not in ~<channel>", never Mattermost's 403/404: the bot is a
+// member of the home already, so the post cannot be this channel's.
+func TestAThreadMattermostRefusesIsNotInTheChannel(t *testing.T) {
+	r := newRig(t, 5)
+	// The fake has no thread for "dm-answer", so it answers 404 as Mattermost does
+	// for a post of a DM the bot is in none of.
+	_, err := r.ask(t, fmt.Sprintf(`{"channel":%q,"thread":"dm-answer"}`, channel))
+	if err == nil || !strings.Contains(err.Error(), "the thread is not in ~home") {
+		t.Fatalf("err %v", err)
+	}
+	if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "mattermost") {
+		t.Fatalf("Mattermost's refusal must not leak: %v", err)
+	}
+}
+
 // Without the agent's own bot there is no read, and never the bridge bot's.
 func TestNoBotRefusesTheRead(t *testing.T) {
 	r := newRig(t, 5)
