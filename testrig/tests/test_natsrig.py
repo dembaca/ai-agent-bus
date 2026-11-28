@@ -216,7 +216,7 @@ def test_summary_has_a_row_per_fault_with_p50_p95_max_loss_duplicates():
     cut = _run("cut", {0: 0.010, 2: 2.0})
     cut.arrive(2, at=101.0)  # a second copy
     rows = runner.summary_rows([base, cut])
-    assert rows[0] == ("bus-nats", "none", "3", "0", "0", "20.0", "30.0", "30.0", "-", "-")
+    assert rows[0] == ("bus-nats", "none", "3", "0", "0", "20.0", "30.0", "30.0", "-", "-", "-", "-")
     assert rows[1][:5] == ("bus-nats", "cut", "3", "1", "1")
     assert rows[1][7] == "2000.0"
     table = runner.summary([base, cut]).splitlines()
@@ -230,7 +230,7 @@ def test_summary_of_a_coordinator_run_shows_the_take_over():
     run.sent_frames = 3
     row = runner.summary_rows([run])[0]
     assert row[3:5] == ("-", "-")  # no delivery numbers for a run that sent nothing
-    assert row[8:] == ("118.0", "118.0")
+    assert row[8:] == ("118.0", "118.0", "-", "-")  # no roster from NATS: no told gone
     assert run.measure()["takeover_p95"]["value"] == 118.0
 
 
@@ -238,6 +238,147 @@ def test_a_delivery_run_names_where_the_take_over_is_measured():
     entry = _run("none", {0: 0.01}, sent=1).measure()["takeover_p95"]
     assert entry["value"] is None and entry["status"] == "measured"
     assert "coord-run" in entry["why"]
+
+
+# --- told gone with the roster from NATS (#252) ----------------------------------------
+
+LIVE = "agent-" + "r" * 25
+
+
+def _roster_run(fault: str = "cut") -> runner.Run:
+    run = _run(fault, {0: 0.01, 1: 0.01, 2: 0.01})
+    run.roster_on, run.planb, run.started = True, "2", 100.0
+    run.window_opened_at, run.window_closed_at = 110.0, 112.0
+    return run
+
+
+def test_a_run_s_phases_are_before_in_and_after_the_window():
+    run = _roster_run()
+    assert [run.phase(t) for t in (105.0, 110.0, 111.9, 112.0, 130.0)] == [
+        "before", "window", "window", "after", "after"]
+    assert runner.Run(name="x").phase(5.0) == "before"  # no window: all before
+
+
+def test_a_post_message_answer_tells_gone_misses_and_proves_the_check():
+    """RT-6.14 step 10: `not_reachable` names the agents a TASK mentions that the roster
+    does not show as reachable. Gone is told gone, any other reason of a live agent a
+    roster miss; the canary, which no agent has, counts the check and nothing else."""
+    run = _roster_run()
+    nobody = f"{natsrig.NOBODY} (not in this channel, no agent of this bus by that name that I can see)"
+    natsrig.read_result(run, {"id": "p1", "not_reachable": [nobody]}, {LIVE}, 105.0)
+    natsrig.read_result(run, {"id": "p2", "not_reachable": [
+        nobody, f"{LIVE} (gone since 10:00 UTC, its lease ran out)"]}, {LIVE}, 112.5)
+    natsrig.read_result(run, {"id": "p3", "not_reachable": [nobody, f"{LIVE} (offline)"]}, {LIVE}, 111.0)
+    natsrig.read_result(run, {"id": "p4"}, {LIVE}, 113.0)  # all reachable: no check to see
+    natsrig.read_result(run, None, {LIVE}, 113.0)  # a failed send
+    assert run.roster_checks == {"before": 1, "after": 1, "window": 1}
+    assert [(e["name"], e["phase"], e["via"]) for e in run.told_gone] == [(LIVE, "after", "post_message")]
+    assert run.told_gone[0]["why"].startswith("gone since")
+    assert [(e["why"], e["phase"]) for e in run.roster_misses] == [("offline", "window")]
+
+
+def test_events_tell_gone_by_departed_and_by_the_server_s_answer():
+    """RT-6.21: the answering server marks the event `departed` (or `not_here`) and answers
+    in the thread `<agent> is gone …`; a name that is no live agent of the run is not counted."""
+    run = _roster_run()
+    events = [
+        {"kind": "mention", "departed": f"{LIVE}, agent-old", "post": {"id": "a", "message": "TASK"}},
+        {"kind": "mention", "not_here": f"{LIVE} (~elsewhere)", "post": {"id": "b", "message": "x"}},
+        {"kind": "gated", "post": {"id": "c", "message": f"{LIVE} is gone since 10:00 UTC (BYE). "
+                                                        "I route this instead."}},
+        {"kind": "mention", "post": {"id": "d", "message": "agent-old is gone (BYE)."}},
+        "not an event",
+    ]
+    natsrig.read_events(run, events, {LIVE}, 113.0)
+    assert [(e["via"], e["why"]) for e in run.told_gone] == [("event", "departed"), ("event", "a reply: is gone")]
+    assert [e["why"] for e in run.roster_misses] == ["not_here"]
+    natsrig.read_events(run, None, {LIVE}, 113.0)  # a failed wait reads as nothing
+
+
+def test_told_gone_is_measured_only_with_the_roster_from_nats():
+    off = _run("cut", {0: 0.01}, sent=1).measure()["told_gone"]
+    assert off["value"] is None and "CB_PLANB_TEST=2" in off["why"]
+    run = _roster_run()
+    assert run.measure()["told_gone"]["value"] == 0
+    natsrig.read_result(run, {"not_reachable": [f"{LIVE} (gone, BYE)"]}, {LIVE}, 113.0)
+    assert run.measure()["told_gone"]["value"] == 1
+    report = run.report()
+    assert report["planb_test"] == "2" and report["roster"]["told_gone"][0]["name"] == LIVE
+
+
+def test_summary_shows_told_gone_and_roster_misses_with_the_roster_on():
+    run = _roster_run()
+    natsrig.read_result(run, {"not_reachable": [f"{LIVE} (gone, BYE)", f"{LIVE} (offline)"]}, {LIVE}, 113.0)
+    rows = runner.summary_rows([_run("cut", {0: 0.01}, sent=1), run])
+    assert rows[0][-2:] == ("-", "-") and rows[1][-2:] == ("1", "1")
+    assert runner.summary([run]).splitlines()[0].split()[-4:] == ["told", "gone", "roster", "miss"]
+
+
+def _nats_cli(monkeypatch, run: runner.Run, planb: str = "2") -> tuple[int, dict]:
+    from bus_testrig import cli
+
+    seen: dict = {}
+
+    async def fake(**kwargs):
+        seen.update(kwargs)
+        return run
+
+    monkeypatch.setattr(natsrig, "nats_bus_run", fake)
+    monkeypatch.setenv("CB_PLANB_TEST", planb)
+    run.recovered = True
+    return cli.main(["bus-run", "--transport", "nats", "--fault", run.fault]), seen
+
+
+def test_a_live_agent_told_gone_fails_the_run(monkeypatch, capsys):
+    """#252: told gone must be 0; the CLI hands CB_PLANB_TEST to the run and fails one
+    that told a live agent gone, saying who, how and in which phase."""
+    run = _roster_run()
+    run.roster_checks = {"after": 3}
+    natsrig.read_result(run, {"not_reachable": [f"{LIVE} (gone, BYE)"]}, {LIVE}, 113.0)
+    code, seen = _nats_cli(monkeypatch, run)
+    assert seen["planb"] == "2" and code == 1
+    err = capsys.readouterr().err
+    assert "told as gone 1 time(s)" in err and "post_message in the phase after" in err
+
+
+def test_a_clean_roster_run_passes_and_one_without_a_check_fails(monkeypatch, capsys):
+    run = _roster_run()
+    run.roster_checks = {"before": 2, "after": 5}
+    assert _nats_cli(monkeypatch, run)[0] == 0
+    unchecked = _roster_run()
+    assert _nats_cli(monkeypatch, unchecked)[0] == 1
+    assert "no roster check ran" in capsys.readouterr().err
+
+
+def test_a_faulted_run_without_a_check_after_the_window_fails(monkeypatch, capsys):
+    """#252: sends fail during the window, so only a check after it proves the roster was
+    read again; a faulted run with checks before and in the window alone fails."""
+    run = _roster_run()
+    assert run.fault != "none"
+    run.roster_checks = {"before": 4, "window": 1}
+    assert _nats_cli(monkeypatch, run)[0] == 1
+    assert "no roster check after the fault's window" in capsys.readouterr().err
+
+
+def test_kill_client_reports_told_gone_without_failing(monkeypatch):
+    """kill-client really stops the receiver for the window: its count is a report."""
+    run = _roster_run("kill-client")
+    run.roster_checks = {"after": 1}
+    natsrig.read_result(run, {"not_reachable": [f"{LIVE} (gone, its lease ran out)"]}, {LIVE}, 111.0)
+    assert _nats_cli(monkeypatch, run)[0] == 0
+
+
+def test_the_presence_filters_carry_what_the_roster_from_nats_reads():
+    """manager.go desired() is the original: the bridge's records and the plan B record
+    must reach the sessions, or the rig's roster has no linked bot."""
+    manager = (REPO / "services" / "auth" / "internal" / "consumers" / "manager.go").read_text()
+    for part in ('".account.mattermost.*.v1"', '".bot.*.v1"', '".bridge."+ch+".v1"', '".planb."+ch+".v1"'):
+        assert part in manager
+    pres = {name: cfg for _, name, cfg in natsrig.consumer_specs("a", ["agents"])}["a_presence"]
+    for subject in ("presence.*.*", "presence.account.mattermost.*.v1", "presence.bot.*.v1",
+                    "presence.crown.agents.*", "presence.member.agents.*",
+                    "presence.bridge.agents.v1", "presence.planb.agents.v1"):
+        assert subject in pres["filter_subjects"]
 
 
 # --- the coordinator run's reading of the crown log -----------------------------------
@@ -352,6 +493,18 @@ async def test_a_nats_restart_is_survived():
     assert max(run.received) > at_send, (at_send, sorted(run.received))
     # A failed send and a lost post are different: `lost_seqs` names only the latter.
     assert not run.report()["lost_seqs"], run.report()
+
+
+@pytest.mark.bus
+async def test_nobody_is_told_as_gone_during_a_cut():
+    """#252, plan B piece 2: with the roster from NATS a cut tells no live agent as gone,
+    and the roster is checked after the window, not only before it."""
+    _live()
+    run = await natsrig.nats_bus_run(count=10, fault="cut", fault_sec=1.0, planb="2")
+    report = run.report()
+    assert run.roster_on and not run.unknown and not run.unmeasured, report
+    assert report["measured"]["told_gone"]["value"] == 0, report["roster"]
+    assert run.roster_checks.get("after", 0) > 0, report["roster"]
 
 
 @pytest.mark.bus
