@@ -79,7 +79,8 @@ def install() -> FakeLogin:
         raise SystemExit("bus_testrig.natsserver: TESTRIG_NKEY_SEED is not set")
     fake = FakeLogin(seed, os.environ.get("TESTRIG_OWNER", "testrig"))
 
-    def start(_get_client: Any) -> None:
+    def start(*_args: Any) -> None:
+        # login.start() takes no argument since piece 14c-3; an older server may pass one.
         login._current = fake  # type: ignore[assignment]  # noqa: SLF001
         return None
 
