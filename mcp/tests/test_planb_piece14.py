@@ -598,3 +598,27 @@ async def test_a_route_during_the_registration_says_it_is_being_registered(
     assert seen["no_bot"] == nobot.REGISTERING and seen["registering"] is True
     assert inner.no_bot == "" and inner.registering is False  # type: ignore[attr-defined]
     assert nobot.status() == ""
+
+
+async def test_a_bot_not_recorded_in_the_session_file_is_unregistered_at_once(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.18 step 13: the session file cannot take the token (here: a write error), so the stop
+    hook would read "no token" and remove it; the host process unregisters the bot at once and
+    the session goes on in the failed state."""
+    from mattermost_ai_agent_bus import session_file
+
+    _corral_file(tmp_path, monkeypatch)
+    bus = Bus()
+    bus.pieces["home"] = ALL - {4}
+    port, inner, _ = _port(bus)
+
+    def no_space(path: Path, text: str, *, create: bool = True) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(session_file, "append_private", no_space)
+    out = await nobot.host_decide(port, "host-proj-abc", "", "the-secret", timeout=0)
+    assert out == "registration failed (RuntimeError)", out
+    assert inner.registrar.calls[:2] == ["session_start host-proj-abc", "session_end host-proj-abc"]
+    assert inner.session is None and inner.reg_secret is None  # type: ignore[attr-defined]
+    assert "registering the bot failed" in nobot.status() and inner.no_bot == nobot.status()  # type: ignore[attr-defined]
+    assert nobot.record_token(FakeRegistrar().info) is False

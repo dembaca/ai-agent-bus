@@ -200,7 +200,14 @@ async def register_now(client: Any, name: str, display: str) -> dict[str, Any]:
     from . import attest, stats
 
     info = await client.session_start(name, display or None, unique=False)
-    record_token(info)
+    if not record_token(info):
+        # Not in the session file, the stop hook would read "no token" and remove the file, and
+        # neither it nor the sweep could unregister the bot: unregister it now, and fail.
+        try:
+            await client.session_end(name)
+        except Exception as exc:  # noqa: BLE001 — logged, the registration fails all the same
+            log.warning("registration: the unrecorded bot is not unregistered: %s", type(exc).__name__)
+        raise RuntimeError("the bot could not be recorded in the session file")
     stats.set_user(info.user_id)
     setup = await client.finish_session_setup()
     await attest.start(client)
@@ -213,26 +220,28 @@ async def register_now(client: Any, name: str, display: str) -> dict[str, Any]:
     return dict(setup)
 
 
-def record_token(info: Any) -> None:
+def record_token(info: Any) -> bool:
     """The bot the host process registered, in the corral session file the moment the
     registrar answered (RT-6.18 step 13): the host-side 0600 file preStart wrote and marked
     DEFERRED=1, appended to (the last line of a key wins, as mm_kv reads it), never through a
     symlink. postEnd unregisters the bot with it when the exit work did not, and
     mm-agent-sweep.sh when postEnd could not either (the registrar unreachable, the process
     killed): the state directory hosted/<key>/ alone would not do, postEnd removes it. Nothing
-    without corral (no such file), and nothing once postEnd removed the file."""
+    without corral (no such file), and nothing once postEnd removed the file. True when the bot
+    is recorded or there is no corral session file to record it in; False when it is not
+    (register_now then unregisters it at once)."""
     from . import session_file
 
     path = session_file.corral_session_file()
     if path is None:
-        return
+        return True
     vals = (info.username, info.user_id, info.bot_token)
     if not all(isinstance(v, str) and v and not any(c in v for c in "\0\r\n") for v in vals):
         log.warning("registration: the registrar's answer is not one line each; not in the session file")
-        return
+        return False
     if path.is_symlink() or not path.is_file():
         log.warning("registration: no session file to record the bot in (%s)", path.name)
-        return
+        return False
     user, uid, tok = vals
     try:
         session_file.append_private(path, create=False, text=(
@@ -242,6 +251,8 @@ def record_token(info: Any) -> None:
             f"CB_MM_BOT_TOKEN={tok}\nMM_BOT_TOKEN={tok}\nMATTERMOST_TOKEN={tok}\n"))
     except OSError as exc:
         log.warning("registration: the bot is not in the session file: %s", type(exc).__name__)
+        return False
+    return True
 
 
 async def host_decide(client: Any, name: str, display: str, secret: str,
