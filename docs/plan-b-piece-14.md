@@ -3,7 +3,7 @@
 A plan, not a decision, for the last piece of plan B (#244; #151 step 5). The
 piece itself is specified in [ADR-014](arc42/09-architecture-decisions.md),
 phase 5 as plan B, item 14 of "The pieces, in order"; this file says how to get
-there and what the owner still decides. Written 2026-11-28 against `origin/main`
+there and what the owner decided (section 5). Written 2026-11-28 against `origin/main`
 8b5977f7. Where a fact could not be checked in the code or the docs it says
 "unverified".
 
@@ -23,7 +23,7 @@ there and what the owner still decides. Written 2026-11-28 against `origin/main`
   registers before any NATS login, and the plan B switches reach only the MCP
   server with its credential: the trusted-humans piece (piece 4) already found
   that "the start hook cannot know the switch". So the hook cannot decide on its
-  own (question 1 below).
+  own (question 1 below, decided: the host process decides).
 
 ## Four steps and the shutdown
 
@@ -151,38 +151,40 @@ go into the entry's text.
   Corral then protects the host from the agent, no longer a bus secret from the
   agent (ADR-014, "nothing runs outside the sandbox at the end").
 
-## 5. Questions for the owner
+## 5. Questions for the owner (DECIDED)
+
+Decided by the owner on 2026-11-28 08:41, ask qbsb7zr1sbnmx8sm8ca9xto48a: all eight recommendations stand as written.
 
 1. **How does a corral session decide not to register, when its start hook cannot
    see the switches?** (a) The hook starts the host process without a bot, and the
    host process registers only once its own NATS read (it already runs the NATS
    adapter on the relayed login, RT-6.18 step 12) shows a channel or piece off;
    (b) a host setting listing fully switched homes; (c) the relay's word from the
-   sandbox. Recommendation: (a). It reads the login service's records, needs no
+   sandbox. Recommendation, decided: (a). It reads the login service's records, needs no
    host setting that must match, and ADR-014 item 14 is amended to say so.
 2. **The stats channel**: does it count as "over NATS" once STATS are written only
    to NATS (piece 13), or only once they are read there too, which needs a STATS
-   right that today would show every agent's lines (RISK-22)? Recommendation: once
+   right that today would show every agent's lines (RISK-22)? Recommendation, decided: once
    written to NATS only; the report reads them through the console or a filtered
    right later.
 3. **Which known gaps does the owner accept rather than have fixed before the removal release?**
-   Recommendation: fix the two that lose a person's words (the outage beyond the
+   Recommendation, decided: fix the two that lose a person's words (the outage beyond the
    bridge's 10-minute catch-up, piece 11; unknown post ids, piece 5b); accept the
    foreign crown (piece 9), the 7 h of a revoked membership (piece 5) and a flag
    taking effect at the next start (piece 12).
 4. **The pinned keys of the release record**, `MM_REGISTRAR_KEYS` today: its new
    name is open (ADR-014, "the hosts' setting for the bridge's address").
-   Recommendation: decide it with the decision release, beside `CB_RECORDS_URL`, which the decision release needs.
-5. **The offline token's maximum lifetime and DPoP before the removal release?** Recommendation:
+   Recommendation, decided: decide it with the decision release, beside `CB_RECORDS_URL`, which the decision release needs.
+5. **The offline token's maximum lifetime and DPoP before the removal release?** Recommendation, decided:
    the maximum lifetime before the removal release (a realm setting, after its lab check, RISK-26);
    DPoP may follow.
 6. **Must the console's signature check (#192) be built before the decision release or only the removal release?**
-   Recommendation: the decision release reads the record as the bridge serves it; the removal release waits for #192.
+   Recommendation, decided: the decision release reads the record as the bridge serves it; the removal release waits for #192.
 7. **the decision release's release notice** for hosts that still run the host release check: show
-   both until the removal release, or only the record? Recommendation: only the record, so there is
+   both until the removal release, or only the record? Recommendation, decided: only the record, so there is
    one source.
 8. **Steps as four pull requests** (14a to 14d) plus the shutdown, each reviewed as
-   usual? Recommendation: yes; 14a and 14c touch `server.py`, so they are
+   usual? Recommendation, decided: yes; 14a and 14c touch `server.py`, so they are
    serialised.
 
 ## 6. Risks and the test plan
