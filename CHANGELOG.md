@@ -10,7 +10,10 @@ before 0.5.0 are described in the git history.
 - **Registration ends, all or nothing: plan B piece 14a, the decision** (#244, ADR-014
   phase 5 item 14, RT-6.18 step 13, RT-6.10 step 8). A session whose home, guest
   channels, lobby and stats channel all run over NATS with every plan B piece on
-  registers no Mattermost bot and holds no Mattermost token. Under corral the start
+  registers no Mattermost bot and holds no Mattermost token, once piece 14c is in:
+  until then the decision always names a reason, "the crown needs the bot's identity
+  until piece 14c" (RT-6.6 step 13), since the crown's lease and its claim on NATS still
+  need the bot, so every session still registers; piece 14c removes that line. Under corral the start
   hook registers nothing when `CB_NATS_HOMES` lists every channel of the session; the
   session's host process decides after its own NATS read and registers the bot only
   when a channel or piece is off, with the registration secret the start hook handed

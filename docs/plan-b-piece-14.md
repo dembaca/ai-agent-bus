@@ -34,7 +34,7 @@ removal release and the shutdown release.
 
 | Step | What it does | Release |
 |---|---|---|
-| 14a, the decision | A session whose home, guest channels, lobby and stats channel all run over NATS with every piece on registers no bot and holds no Mattermost token; any channel off: registers as today | the decision release |
+| 14a, the decision | A session whose home, guest channels, lobby and stats channel all run over NATS with every piece on registers no bot and holds no Mattermost token; any channel off: registers as today. Inert until 14c: until then its predicate always names a reason, the crown needs the bot's identity (RT-6.6 step 13), so every session still registers | the decision release |
 | 14b, the release notice | The MCP server reads the release record the bridge signs (`GET …/register/v1/release`, already routed in `services/bridge/cmd/bridged/main.go`) and tells its human; no host release check | the decision release |
 | 14c, identity and state | The session's own identity is its NATS name, not the bot's Mattermost id (`_bot_id`, `_bot_name`, `ownpost.py`, `unanswered.py`); the state files still keyed by the bot id move to the name; the login approval loses its DM and its ask (`login_notice.py`) | the decision release |
 | 14d, the host side goes | Once every home runs every piece: corral's hooks, the host process, the relay, the signed host copy and its updater are removed | the removal release |
@@ -104,7 +104,7 @@ off; "lab" needs the switch on in the test home; "before the removal release" ne
 | 13 | piece 5: the tombstone at a revocation, or the owner accepts the 7 h | #270 comment | lab |
 | 14 | piece 12: switching transport at a renewal, or the owner accepts that a flag takes effect at the next start | ADR-014 item 12 | lab |
 | 15 | the old bridge copies of #297: open asks with a reacted copy asked again after the bridge update | #298 comment | lab |
-| 16 | the acceptance: the phase 4 rows again with `testrig`; phase 5's criterion (ask, approval by reaction, mention, file, change of coordinator) with no agent holding a Mattermost token; the identity rows over the bridge (forged verdict, replayed approval and ask, an approval read from history with and without a fresh record) | ADR-014 "Acceptance" | lab, before the removal release |
+| 16 | 14c merged (until then 14a's predicate always names a reason, the crown needs the bot's identity, and every session registers); the acceptance: the phase 4 rows again with `testrig`; phase 5's criterion (ask, approval by reaction, mention, file, change of coordinator) with no agent holding a Mattermost token; the identity rows over the bridge (forged verdict, replayed approval and ask, an approval read from history with and without a fresh record) | ADR-014 "Acceptance" | lab, before the removal release |
 | 17 | the signed records and release record from the bridge, keyed by the bound channel's Mattermost id from the directory | ADR-014 acceptance, #151 steps 3 and 4 | before the decision release |
 | 18 | the console's check of the release signature (#192, open) | ADR-014 acceptance | before the removal release |
 | 19 | the offline token's maximum lifetime and DPoP built, or the owner's word to go without (RISK-26) | ADR-014 acceptance | before the removal release |

@@ -799,7 +799,8 @@ class NatsPort:
         13 of the home, plan B question 2). Read from the login service's records as this bus
         holds them (`planb_pieces`: a stale record reads as none), never from the environment;
         only once the bus is up, connected and has read the presence replay (synced), else
-        NOT_READ. Never raises for a missing reading: that answers a reason."""
+        NOT_READ. Never raises for a missing reading: that answers a reason. Until piece 14c it
+        always answers one: with all on, `nobot.CROWN_REASON` (the crown needs the bot)."""
         from . import nobot, stats
 
         bus = self._live()
@@ -820,6 +821,8 @@ class NatsPort:
                 return f"plan B piece {min(missing)} is off in ~{ch}"
         if stats.channel() and 13 not in pieces_of(chans[0]):
             return "the stats channel is on Mattermost"
+        if nobot.CROWN_NEEDS_BOT:  # until piece 14c, which deletes this check (nobot.py)
+            return nobot.CROWN_REASON
         return ""
 
     def link_bot(self, bot_id: str, username: str = "") -> None:

@@ -4952,6 +4952,12 @@ which each piece reads for itself.
         below.
       - Built (14a, after 0.104.0; RT-6.18 step 13, RT-6.10 step 8): the
         decision, in `nobot.py` with the predicate `NatsPort.bot_needed`.
+        Inert until 14c: the crown still needs the bot's identity (the
+        lease heartbeat and its NATS beat run only with a token, the claim
+        carries the bot's id), so the predicate always names that reason
+        (`nobot.CROWN_NEEDS_BOT`, which 14c deletes; RT-6.6 step 13) and
+        every session registers; what follows is built and tested with it
+        off.
         A corral start whose every channel `CB_NATS_HOMES` lists
         (`mm_bot_deferrable`, a pre-filter of the host's settings that can
         only delay a registration) registers nothing and hands the host

@@ -5,7 +5,8 @@ A session whose every channel - the home, each guest channel, the lobby and the 
 runs over NATS with every plan B piece on registers no Mattermost bot and holds no Mattermost
 token. With any channel or piece off it registers as before. The answer comes from the login
 service's records alone, as this session's NATS bus read them (`NatsPort.bot_needed`): never
-from the environment, CB_PLANB_TEST included.
+from the environment, CB_PLANB_TEST included. Until piece 14c the predicate always names a
+reason (CROWN_NEEDS_BOT, RT-6.6 step 13): the crown still needs the bot's identity.
 
 Who decides: the host process of a corral session that preStart started without a bot (it
 registers one only when its own NATS read, on the login the relay passes it, shows a channel or
@@ -40,6 +41,16 @@ ALL_PIECES = frozenset(range(1, planb.MAX_PIECE + 1))
 # before: the relay connects within seconds of the start, and a stored login needs no approval.
 DECIDE_SEC = 60.0
 POLL_SEC = 0.1
+
+# Fail closed toward registering until plan B piece 14c: the crown (RT-6.6, RT-6.38) still needs
+# the bot's identity - the lease heartbeat and its NATS beat run only with a token, the crown
+# claim carries the bot's user id - so a session without a bot would publish no crown claim and
+# a fully switched home would have no coordinator. While this is True, `NatsPort.bot_needed`
+# names CROWN_REASON even when every channel and piece runs over NATS: the decision logic is
+# built and tested, but every session still registers. Piece 14c (the identity on the NATS name)
+# deletes this constant and its check.
+CROWN_NEEDS_BOT = True
+CROWN_REASON = "the crown needs the bot's identity until piece 14c"
 
 # The decision once taken without a bot: why (the error text of what needs Mattermost).
 _held = ""

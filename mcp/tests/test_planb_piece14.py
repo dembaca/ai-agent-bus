@@ -63,6 +63,9 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.delenv("CB_MM_STATS_CHANNEL", raising=False)
     monkeypatch.delenv("MM_STATS_CHANNEL", raising=False)
     monkeypatch.delenv("CB_PLANB_TEST", raising=False)
+    # The decision logic as piece 14c will run it: until then the crown needs the bot
+    # (nobot.CROWN_NEEDS_BOT), test_until_14c_the_crown_keeps_a_fully_switched_session_registering.
+    monkeypatch.setattr(nobot, "CROWN_NEEDS_BOT", False)
     yield
     nobot.reset()
     hosted._defer = None
@@ -95,6 +98,18 @@ def test_every_channel_with_every_piece_on_needs_no_bot() -> None:
     port, _, _ = _port()
     assert port.bot_deferred
     assert port.bot_needed() == ""
+
+
+async def test_until_14c_the_crown_keeps_a_fully_switched_session_registering(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.18 step 13, RT-6.6 step 13, RT-6.38 step 10: until piece 14c the crown needs the bot's identity, so with every
+    channel and piece on the predicate still names a reason and the host process registers."""
+    monkeypatch.setattr(nobot, "CROWN_NEEDS_BOT", True)
+    port, inner, _ = _port()
+    assert port.bot_needed() == nobot.CROWN_REASON == "the crown needs the bot's identity until piece 14c"
+    out = await nobot.host_decide(port, "host-proj-abc", "", "the-secret", timeout=0)
+    assert out == f"registered ({nobot.CROWN_REASON})", out
+    assert inner.registrar.calls[0] == "session_start host-proj-abc" and not nobot.held()
 
 
 @pytest.mark.parametrize("channel", CHANNELS)
