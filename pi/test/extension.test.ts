@@ -153,7 +153,7 @@ function fakePi(env: Record<string, string | undefined> = { CB_BUS_ENDPOINT: end
     return out
   }
   live.push(() => emit("session_shutdown", { reason: "quit" }))
-  return { pi, ext, emit, registered, sent, messages, box, handlers }
+  return { pi, ext, emit, registered, sent, messages, box, handlers, ctx: ctx as any }
 }
 
 const started = async (env?: Record<string, string | undefined>) => {
@@ -174,13 +174,22 @@ test("RT-6.27 step 1: the MCP server and the skill at session_start, nothing whe
   await f.emit("session_start", { reason: "startup" })
   assert.deepEqual(f.registered, [{ name: SERVER, config: {
     command: "uv", args: ["run", "--locked", "--project", join(REPO, "mcp"), "mattermost-ai-agent-bus-mcp"],
-    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "",
+    env: { CLAUDE_CODE_SESSION_ID: "", CLAUDE_PROJECT_DIR: "", PI_SESSION_ID: "",
            CB_CHANNEL_PUSH: "0", MM_CHANNEL_PUSH: "0", CB_WORKSPACE: ws, MM_WORKSPACE: ws,
            UV_PROJECT_ENVIRONMENT: join(homedir(), ".cache", "mm-agent-bus", `venv-${sha16(realpathSync(REPO))}`) },
     cwd: ws, exposure: "direct", timeout: MCP_TIMEOUT_SEC,
     description: f.registered[0].config.description } }])
   assert.deepEqual(await f.emit("resources_discover", { cwd: ws, reason: "startup" }),
                    { skillPaths: [join(REPO, "skills", SKILL)] })
+})
+
+test("RT-6.27 step 1, RT-6.2 step 9: the pi session's id reaches the server as PI_SESSION_ID", async () => {
+  const f = fakePi()
+  f.ctx.sessionManager = { getSessionId: () => "pi-session-1" }
+  await f.emit("session_start", { reason: "startup" })
+  assert.equal(f.registered[0].config.env.PI_SESSION_ID, "pi-session-1")
+  assert.equal(f.registered[0].config.env.CLAUDE_CODE_SESSION_ID, "")
+  assert.equal(mcpConfig(REPO, ws, {}).env.PI_SESSION_ID, "")  // none: blank, never inherited
 })
 
 test("RT-6.27 step 1: the server's instructions reach the model as a system prompt section (#153)", async () => {

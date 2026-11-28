@@ -52,7 +52,7 @@ class Mark(NamedTuple):
 
 
 def path(uid: str) -> Path:
-    return session_file.state_dir() / f"read-{uid}.env"
+    return session_file.state_dir() / f"read-{session_file.state_key(uid)}.env"
 
 
 def read(uid: str) -> dict[str, Mark]:
@@ -132,5 +132,7 @@ def hold(uid: str, channel_id: str, created: int, post_id: str = "") -> None:
 
 
 def remove(uid: str) -> None:
+    """Forget the marks: under the state key and under the bot id (the copy, RT-6.2 step 9)."""
     if uid:
         path(uid).unlink(missing_ok=True)
+        (session_file.state_dir() / f"read-{uid}.env").unlink(missing_ok=True)

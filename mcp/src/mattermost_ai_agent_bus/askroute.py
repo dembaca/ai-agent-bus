@@ -186,7 +186,8 @@ REFRESH_SEC = 120
 
 
 def _path(uid: str) -> Path | None:
-    return session_file.state_dir() / f"askmode-{uid}.env" if session_file.key_ok(uid) else None
+    key = session_file.state_key(uid)
+    return session_file.state_dir() / f"askmode-{key}.env" if session_file.key_ok(key) else None
 
 
 def signed() -> bool:

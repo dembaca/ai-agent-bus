@@ -317,6 +317,56 @@ def test_name_keyed_state_of_a_live_session_stays(mm, run):
     assert all((run.state_dir / x).exists() for x in kept + served)
 
 
+def test_a_taken_over_name_of_a_live_bot_goes_by_the_day_rule(mm, run):
+    """RT-6.1 step 7, RT-6.2 step 9: a name a later start of its session took over
+    (CB_TAKEN_BY in its marker) is tied to no bot, even a live one: its files untouched for
+    a day go; the name that took it over stays tied to the bot."""
+    session(run, "mac-proj-ggg777", pid=str(os.getpid()))
+    f = run.state_dir / "mac-proj-ggg777.env"
+    f.write_text(f.read_text() + f"MM_BOT_USER_ID={LIVE}\n")
+    old = name_state(run, NAME, uid=LIVE, days_old=3)
+    m = run.state_dir / f"copied-{NAME}.env"
+    t = os.path.getmtime(m)
+    m.write_text(f"CB_COPIED_FROM={LIVE}\nCB_TIE=claude:{'0' * 16}\nCB_TAKEN_BY={OTHER}\n")
+    os.utime(m, (t, t))
+    new = name_state(run, OTHER, uid=LIVE, days_old=3)
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert f"removed {len(old)} state file(s) keyed by a NATS name" in r.stderr
+    assert not any((run.state_dir / x).exists() for x in old)
+    assert all((run.state_dir / x).exists() for x in new)
+
+
+def test_a_name_whose_lock_is_held_stays(mm, run):
+    """RT-6.1 step 7, RT-6.2 step 9: a process holding key-<name>.lock runs under that name:
+    none of its files go, however old, its lock file neither."""
+    import fcntl
+
+    files = name_state(run, NAME, uid=DEAD_UID, days_old=3)
+    lock = run.state_dir / f"key-{NAME}.lock"
+    lock.write_text("")
+    fd = os.open(lock, os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+        assert "keyed by a NATS name" not in r.stderr
+        assert all((run.state_dir / f).exists() for f in files) and lock.exists()
+    finally:
+        os.close(fd)
+    old = os.path.getmtime(run.state_dir / files[0])
+    os.utime(lock, (old, old))
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)  # released: by the rules
+    assert not lock.exists() and not any((run.state_dir / f).exists() for f in files)
+
+
+def test_a_counter_move_a_crash_left_goes_with_its_name(mm, run):
+    """RT-6.2 step 9: stats-<name>.jsonl.moving-<pid> is the name's file, by the same rules."""
+    files = name_state(run, NAME, uid=DEAD_UID, days_old=3)
+    files.append(state_file(run, f"stats-{NAME}.jsonl.moving-4242", days_old=3))
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert f"removed {len(files)} state file(s) keyed by a NATS name" in r.stderr
+    assert not any((run.state_dir / f).exists() for f in files)
+
+
 def test_name_keyed_state_touched_today_stays(mm, run):
     """RT-6.1 step 7: one file of the name written within a day keeps the name's files."""
     files = name_state(run, NAME, uid=DEAD_UID, days_old=3)

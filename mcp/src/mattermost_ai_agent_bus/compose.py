@@ -274,12 +274,11 @@ def _keep_state_key(client: object, port: NatsPort) -> None:
         name, home = port.own_name(), port.home_name()
         if not name or not home or not planb.on(2, home):
             return
-        session_file.use_nats_name(name, home)
-        uid = getattr(client, "bot_id", "")
-        if uid:
-            copied = session_file.copy_state_once(uid, name)
-            if copied:
-                log.info("kept state copied to the NATS name: %s", ", ".join(copied))
+        # The copy comes before the key is latched (piece 14c-1): a hook that learns the
+        # name appends its counters to a file that holds the bot id's already.
+        copied = session_file.latch(name, home, getattr(client, "bot_id", "") or "")
+        if copied:
+            log.info("kept state copied to the NATS name: %s", ", ".join(copied))
     except Exception as exc:  # noqa: BLE001 — bookkeeping
         log.debug("state key not changed: %s", type(exc).__name__)
 
