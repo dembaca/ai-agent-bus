@@ -65,6 +65,35 @@ type People interface {
 	Person(ctx context.Context, username string) (string, error)
 }
 
+// Members, when People has it, says whether an account is a member of a
+// channel. Only for the log: a kept mention of a person outside the home is
+// logged, never changed (the owner's decision on #281, an open point).
+type Members interface {
+	Member(ctx context.Context, channelID, userID string) (bool, error)
+}
+
+// logOutsider logs a kept mention of a person who is no member of the home's
+// channel, or whose membership could not be read; what is posted stays as is.
+func (m *Mirror) logOutsider(ctx context.Context, channelID, sender, keep string) {
+	mem, ok := m.People.(Members)
+	if keep == "" || !ok {
+		return
+	}
+	id, _ := m.person(ctx, keep) // cached by ask
+	if id == "" {
+		return
+	}
+	in, err := mem.Member(ctx, channelID, id)
+	switch {
+	case err != nil:
+		m.Log.Info("bridge: an ask's mention is kept; the person's membership was not read",
+			"home", m.Home, "agent", sender, "error", err)
+	case !in:
+		m.Log.Warn("bridge: an ask mentions a person who is no member of the home",
+			"home", m.Home, "agent", sender, "person", keep)
+	}
+}
+
 // Directory names the person the login service's account record binds a
 // Mattermost account to ("" for none): the people an ask may mention
 // (ADR-014 phase 5, piece 6; inbound.Accounts).

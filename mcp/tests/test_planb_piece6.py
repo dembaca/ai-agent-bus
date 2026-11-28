@@ -197,6 +197,23 @@ async def test_on_a_post_that_goes_on_to_mattermost_defuses_people_as_before(mon
     assert inner.posted[-1]["message"] == "hi @carol"
 
 
+async def test_on_a_reminder_of_an_ask_from_before_the_switch_keeps_its_mention(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.11 step 7: an ask posted on Mattermost before the switch went on is reminded in its
+    Mattermost thread; the reminder keeps the asked person's mention (the server cleaned it), so
+    the person is pinged again. Any other reply there is checked again as before."""
+    port, inner, fake = _world(monkeypatch)
+    inner.people = {"p" * 26: "carol"}  # a Mattermost person no account record binds
+    port.ask_source = lambda: [natsbus.OpenAsk(mm=MM_REPLY, kind="approval", human="carol",
+                                               title="t", asked=0)]
+    await port.post("@carol still waiting", root_id=MM_REPLY, props=a2a.props(kind=a2a.REMINDER))
+    assert inner.posted[-1]["message"] == "@carol still waiting"
+    await port.post("@carol thanks", root_id=MM_REPLY)  # not a reminder: checked again
+    assert inner.posted[-1]["message"] == "carol thanks"
+    port.ask_source = lambda: []  # not an open ask of this session: checked again
+    await port.post("@carol still waiting", root_id=MM_REPLY, props=a2a.props(kind=a2a.REMINDER))
+    assert inner.posted[-1]["message"] == "carol still waiting"
+
+
 async def test_on_a_failed_send_fails_the_ask_and_nothing_goes_to_mattermost(monkeypatch: pytest.MonkeyPatch) -> None:
     port, inner, fake = _world(monkeypatch)
 

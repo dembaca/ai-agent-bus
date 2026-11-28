@@ -262,3 +262,24 @@ func TestPerson(t *testing.T) {
 		t.Fatal("a failed read must be an error")
 	}
 }
+
+func TestMember(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/channels/c1/members/in":
+			_, _ = w.Write([]byte(`{"user_id":"in"}`))
+		case "/api/v4/channels/c1/members/out":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	})
+	for id, want := range map[string]bool{"in": true, "out": false} {
+		if got, err := c.Member(context.Background(), "c1", id); err != nil || got != want {
+			t.Errorf("%s: %v %v, want %v", id, got, err, want)
+		}
+	}
+	if _, err := c.Member(context.Background(), "c1", "down"); err == nil {
+		t.Fatal("a failed read must be an error")
+	}
+}

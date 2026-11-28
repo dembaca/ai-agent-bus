@@ -153,6 +153,7 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 		if keep, cards, err = m.ask(ctx, sender, msg); err != nil {
 			return err
 		}
+		m.logOutsider(ctx, cid, sender, keep)
 		in = m.withoutAsk(msg.Props)
 	}
 	props := m.senderProps(in)

@@ -1,8 +1,10 @@
 package mirror
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -292,5 +294,47 @@ func TestTheOwnBotKeepsTheAsksMentionToo(t *testing.T) {
 	}
 	if _, ok := own.posts[0].props["attachments"]; !ok {
 		t.Fatalf("own bot: no card: %+v", own.posts[0].props)
+	}
+}
+
+// memberPeople is fakePeople with the channel members (mirror.Members).
+type memberPeople struct {
+	*fakePeople
+	members map[string]bool
+	err     error
+}
+
+func (f memberPeople) Member(_ context.Context, _, id string) (bool, error) {
+	return f.members[id], f.err
+}
+
+// RT-6.11 step 7: a kept mention of a person outside the home is logged and
+// still posted (not needed for safety; the owner's decision on #281).
+func TestAMentionOfAPersonOutsideTheHomeIsLoggedNotChanged(t *testing.T) {
+	for name, tc := range map[string]struct {
+		members map[string]bool
+		err     error
+		log     string
+	}{
+		"a member":  {map[string]bool{"id-dembaca": true}, nil, ""},
+		"no member": {nil, nil, "no member of the home"},
+		"not read":  {nil, errors.New("down"), "membership was not read"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, sink, people := askMirror(t, true)
+			var buf bytes.Buffer
+			m.Log = slog.New(slog.NewTextHandler(&buf, nil))
+			m.People = memberPeople{fakePeople: people, members: tc.members, err: tc.err}
+			if err := m.Handle(context.Background(), channel, "agent-a", 7, askMsg("❓ @dembaca", nil)); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(sink.posts[0].text, "❓ @dembaca") || strings.Contains(sink.posts[0].text, "@​dembaca") {
+				t.Fatalf("the mention changed: %q", sink.posts[0].text)
+			}
+			got := buf.String()
+			if logged := strings.Contains(got, "membership") || strings.Contains(got, "no member"); logged != (tc.log != "") || !strings.Contains(got, tc.log) {
+				t.Fatalf("log %q, want %q", got, tc.log)
+			}
+		})
 	}
 }

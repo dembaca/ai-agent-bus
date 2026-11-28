@@ -223,6 +223,17 @@ func (c *Client) Person(ctx context.Context, username string) (string, error) {
 	return "", nil
 }
 
+// Member says whether userID is a member of channelID: a 404 is no member,
+// any other failure an error (plan B piece 6 logs it only, mirror.Members).
+func (c *Client) Member(ctx context.Context, channelID, userID string) (bool, error) {
+	err := c.do(ctx, "GET", "/api/v4/channels/"+url.PathEscape(channelID)+"/members/"+url.PathEscape(userID), nil, nil)
+	var st *StatusError
+	if errors.As(err, &st) && st.Status == http.StatusNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Post is one of a channel's posts, as the catch-up after a WebSocket
 // reconnect needs it (mmws.Reconnected): who wrote it and where, its
 // thread, Mattermost's clock fields, the text — and the fields the drop

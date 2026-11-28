@@ -1265,12 +1265,15 @@ class NatsPort:
                                     "not into another channel: nothing sent")
             return await self.inner.post(await self._for_mattermost(message), channel_id=channel_id,
                                          root_id=root_id, props=props, file_ids=file_ids)
+        kind = a2a.kind_of({"props": props or {}, "message": message})
         if root_id and parse_post_id(root_id) is None:
             # A reply to a person's post: people stay on Mattermost, so the reply goes
-            # where their thread is (RT-6.36).
-            return await self.inner.post(await self._for_mattermost(message), channel_id=channel_id,
+            # where their thread is (RT-6.36). A reminder of the session's own ask from before
+            # the switch keeps its mention: it re-pings the asked person (RT-6.11 step 7).
+            text = message if kind == a2a.REMINDER and self._own_ask(root_id) else \
+                await self._for_mattermost(message)
+            return await self.inner.post(text, channel_id=channel_id,
                                          root_id=root_id, props=props, file_ids=file_ids)
-        kind = a2a.kind_of({"props": props or {}, "message": message})
         asks_on = self._piece6(name)  # plan B piece 6: an ask goes over NATS, the bridge posts it
         if file_ids or (kind == a2a.ASK and not asks_on):
             # For people (an ask for a human, files): Mattermost, as before.
@@ -1278,7 +1281,9 @@ class NatsPort:
                 raise NatsPortError("an ask or a post with files is for people and goes to Mattermost, "
                                     "where it cannot be a reply to a NATS post: post it top-level "
                                     "(no root_id) in the home; nothing sent")
-            return await self.inner.post(await self._for_mattermost(message), channel_id=channel_id,
+            # An ask (a home with piece 6 off) keeps its mention, as the server cleaned it.
+            text = message if kind == a2a.ASK else await self._for_mattermost(message)
+            return await self.inner.post(text, channel_id=channel_id,
                                          root_id=root_id, props=props, file_ids=file_ids)
         root = self._id_in(root_id, name, "a reply's root") if root_id else None
         bus = self._require()
@@ -2173,6 +2178,14 @@ class NatsPort:
         except Exception as exc:  # noqa: BLE001 — as the server's check: never block a post
             log.info("nats: the mention check for Mattermost was skipped (%s)", type(exc).__name__)
             return message
+
+    def _own_ask(self, post_id: str) -> bool:
+        """Whether `post_id` is one of this session's open asks (ask_source); in doubt not."""
+        try:
+            return post_id in {a.mm for a in self._asks()}
+        except Exception as exc:  # noqa: BLE001 — unknown: the mention check applies
+            log.info("nats: the open asks were not read (%s)", type(exc).__name__)
+            return False
 
     def _piece6(self, home: str) -> bool:
         """Whether the NATS home `home` runs plan B's asks over NATS (piece 6, RT-6.11):

@@ -140,8 +140,14 @@ before 0.5.0 are described in the git history.
   @-mention plain reads the login service's account records instead of
   Mattermost. Not moved yet: the ✅ of an ask asked before the switch, the ask's
   link in a person's thread, the ask mode's and debug card's reads of the home,
-  and the console's list, which counts a NATS ask only in `more`. The bridge and
-  the MCP server ship together; with the switch off nothing changes.
+  and the console's list, which counts a NATS ask only in `more`. A reminder of
+  such an ask, and an ask in a home with the piece off, keep their mention. The
+  bridge logs a kept mention of a person who is no member of the home and posts
+  it as it is. The bridge and the MCP server ship together; with the switch off
+  nothing changes. Rollout: switch piece 6 on in a home only once every host
+  there runs this release: an older host refuses the bridge's signal that names
+  `"pieces"`, and then reads that home's people on Mattermost and shows no bot
+  prefix there.
 
 - **Plan B piece 4: every check of a trusted human and of an agent's owner
   from the login service** (#244, ADR-014 phase 5, RT-6.41 step 6). With the
