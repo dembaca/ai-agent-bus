@@ -194,21 +194,30 @@ async def test_the_bus_binds_an_account_only_by_a_record_that_decodes() -> None:
 
 # --- approvals ------------------------------------------------------------------------------------------
 
-async def test_on_an_approval_needs_the_trusted_anchor_and_a_fresh_approver_record(on: None) -> None:
-    """A Mattermost account approves as a person over NATS does (RT-6.42 step 9): bound to a
-    trusted anchor and that anchor's record fresh with `approver`; never by a name."""
+async def test_on_an_approval_needs_the_binding_to_a_trusted_anchor_and_no_approver_flag(on: None) -> None:
+    """RT-6.41 step 6, the owner's decision of 2026-11-27 (#266): a Mattermost account approves
+    when the login service's record binds it to one of the attested trusted anchors, and a
+    person over NATS when its anchor is one of them; no approver record, so no 15 minutes
+    after a login. An account bound to an untrusted anchor, an unbound one and `hu:-` never;
+    without a fresh own attestation nobody (fail closed)."""
     port, _inner, fake = _world()
-    assert await port.may_approve(HUMAN) is False
-    fake.approvers = {"u1", "u9"}
+    assert not fake.approvers
     assert await port.may_approve(HUMAN) is True
+    assert await port.may_approve(person_id("u1")) is True  # a person over NATS alike
+    fake.approvers = {"u1", "u9"}
     assert await port.may_approve(VISITOR) is False  # an approver, but no trusted human here
-    assert await port.may_approve(person_id("u1")) is True  # a person over NATS, as before
+    assert await port.may_approve(person_id("u9")) is False
+    assert await port.may_approve(LOOSE) is False and await port.may_approve(person_id("-")) is False
+    fake.attestations.pop(fake.name)
+    assert await port.may_approve(HUMAN) is False and await port.may_approve(person_id("u1")) is False
 
 
-async def test_on_a_trusted_humans_event_on_mattermost_without_approver_is_marked_for_the_reads(on: None) -> None:
-    """A trusted human's post or reaction that comes on Mattermost is judged as it comes: the
-    reads mark it not_approver when no fresh approver record stood; one with it is not."""
+async def test_on_an_untrusted_persons_event_on_mattermost_is_marked_for_the_reads(on: None) -> None:
+    """A bound account's post or reaction that comes on Mattermost is judged as it comes: the
+    reads mark it not_approver when its anchor is not a trusted one, or while the session had
+    no fresh own attestation; a trusted human's is approved, with no approver record (#266)."""
     port, _inner, fake = _world()
+    fake.attestations.pop(fake.name)  # no own attestation yet: judged without approval
     post = Post(id="q" * 26, channel_id="c" * 26, user_id=HUMAN, message="yes")
     other = Post(id="r" * 26, channel_id="c" * 26, user_id=VISITOR, message="yes")
     assert not await port.skip(PostEvent(post=post, channel_type=None, edited=False))
@@ -216,24 +225,26 @@ async def test_on_a_trusted_humans_event_on_mattermost_without_approver_is_marke
     react = Reaction(user_id=HUMAN, post_id="a" * 26, emoji_name="+1", create_at=1)
     assert not await port.skip(ReactionEvent(react, "c" * 26))
     asked = Post(id="a" * 26, channel_id="c" * 26, user_id=BOT, message="ask", reactions=(react,))
-    # the visitor is bound to a person this session does not trust: no approver either (the
-    # reads show not_approver only on a trusted human's, slim.py)
     assert await port.unapproved([post, other, asked]) == {
         ("post", post.id), ("post", other.id), ("reaction", asked.id, "+1", HUMAN)}
-    fake.approvers = {"u1"}
+    _attest(fake, fake.name, ("u1", "alice"), ALICE)
     later = Post(id="s" * 26, channel_id="c" * 26, user_id=HUMAN, message="yes")
+    stranger = Post(id="t" * 26, channel_id="c" * 26, user_id=VISITOR, message="yes")
     assert not await port.skip(PostEvent(post=later, channel_type=None, edited=False))
-    assert ("post", later.id) not in await port.unapproved([later])
+    assert not await port.skip(PostEvent(post=stranger, channel_type=None, edited=False))
+    # the visitor is bound to a person this session does not trust: no approval (the reads
+    # show not_approver only on a trusted human's, slim.py)
+    assert await port.unapproved([later, stranger]) == {("post", stranger.id)}
 
 
 @pytest.mark.parametrize("gap", ["down", "no-attestation"])
-async def test_on_a_non_approvers_answer_the_session_did_not_see_come_answers_no_ask(on: None, gap: str) -> None:
-    """RT-6.42 step 9 at the read (the unmarked reads of the #264 review): a reaction or reply of a bound
-    account that the session did not judge as it came, because it was down or reconnecting
-    or read the thread from history, is judged by that account's record at the read; without
-    a fresh approver record it answers no ask (tasks.ask_answered, as remind and the open
-    asks use it). One that came while the session had no own attestation was judged then,
-    without approval, and stays so. A live approval stays one after the record goes stale."""
+async def test_on_an_answer_the_session_did_not_see_come_is_judged_by_the_binding(on: None, gap: str) -> None:
+    """RT-6.42 step 9 at the read (the unmarked reads of the #264 review): a reaction or reply of a
+    bound account that the session did not judge as it came, because it was down or reconnecting
+    or read the thread from history, is judged by that account's record at the read: bound to a
+    trusted anchor, it answers the ask with no approver record (#266; tasks.ask_answered, as
+    remind and the open asks use it). One that came while the session had no own attestation
+    was judged then, without approval, and stays so."""
     from mattermost_ai_agent_bus import tasks
     port, _inner, fake = _world()
     ask = Post(id="a" * 26, channel_id="c" * 26, user_id=BOT, message="ask", create_at=1)
@@ -252,44 +263,44 @@ async def test_on_a_non_approvers_answer_the_session_did_not_see_come_answers_no
         return tasks.ask_answered(asked, [asked, reply], [react], names, "alice",
                                   await port.trusted_humans(), unapproved)
 
-    assert HUMAN in await port.trusted_humans()
-    assert await port.unapproved([asked, reply]) == {("post", reply.id), ("reaction", ask.id, "+1", HUMAN)}
-    assert not await answered()
-    fake.approvers = {"u1"}  # the account's own record is fresh with approver now
-    assert await answered() is (gap == "down")  # unseen: judged now; seen without approval: stays
-    # a live approval is not taken back by the read once the record goes stale
+    assert HUMAN in await port.trusted_humans() and not fake.approvers
+    # unseen: judged now by the binding; seen without an own attestation: stays unapproved
+    seen = {("post", reply.id), ("reaction", ask.id, "+1", HUMAN)}
+    assert await port.unapproved([asked, reply]) == (set() if gap == "down" else seen)
+    assert await answered() is (gap == "down")
+    # a reply that comes now approves, with no approver record
     later = Post(id="d" * 26, channel_id="c" * 26, user_id=HUMAN, message="yes", root_id=ask.id, create_at=4)
     assert not await port.skip(PostEvent(post=later, channel_type=None, edited=False))
-    fake.approvers = set()
     assert ("post", later.id) not in await port.unapproved([later])
     assert tasks.ask_answered(ask, [ask, later], [], names, "alice", await port.trusted_humans(),
                               await port.unapproved([ask, later]))
 
 
-async def test_on_an_account_approves_only_by_its_own_fresh_record(on: None) -> None:
-    """A stale binding (the #264 review): two Mattermost accounts bound to one person (u1). The one
-    whose own record is stale approves nothing, although the other's fresh approver record
-    makes the person an approver; it stays a trusted human (a stale record still names the
-    person), and its event is marked not_approver."""
+async def test_on_each_account_bound_to_a_trusted_person_approves_without_a_flag(on: None) -> None:
+    """The owner's decision of 2026-11-27 (#266) in place of the #264 review's fresh record of the
+    account itself: two Mattermost accounts bound to one trusted person (u1), neither with an
+    approver flag. Both are trusted humans and both approve: the record binds an account as
+    long as the login service keeps it (a stale one too, natsbus.bound_accounts; it unbinds
+    one that Mattermost no longer shows as proven), and the 15 minutes of the approver flag
+    count for nothing here."""
     port, _inner, fake = _world()
     second = "k" * 26
     fake.accounts[second] = "u1"
-    fake.approvers = {"u1"}  # by the second account's fresh record
-    fake.stale = {HUMAN}
-    assert fake.approver("u1")
-    assert await port.may_approve(HUMAN) is False
+    assert not fake.approver("u1")
+    assert await port.may_approve(HUMAN) is True
     assert await port.may_approve(second) is True
     assert HUMAN in await port.trusted_humans() and second in await port.trusted_humans()
     post = Post(id="q" * 26, channel_id="c" * 26, user_id=HUMAN, message="yes")
     other = Post(id="r" * 26, channel_id="c" * 26, user_id=second, message="yes")
     assert not await port.skip(PostEvent(post=post, channel_type=None, edited=False))
     assert not await port.skip(PostEvent(post=other, channel_type=None, edited=False))
-    assert await port.unapproved([post, other]) == {("post", post.id)}
+    assert await port.unapproved([post, other]) == set()
 
 
-async def test_the_bus_approves_an_account_by_its_own_fresh_record() -> None:
-    """natsbus.account_approver: an account approves by its own record alone, fresh (exp after
-    the server's now) with `approver`; natsbus.approver(anchor) stays true by any of them."""
+async def test_the_bus_binds_a_stale_record_and_approves_off_only_by_a_fresh_one() -> None:
+    """natsbus.bound_accounts binds by a stale record too (plan B piece 4 approves by it, #266);
+    natsbus.approver(anchor), the path with the piece off, stays true by any fresh record with
+    `approver` of the anchor, and false once none is."""
     from test_people_over_nats import ACCOUNT, _account
     bus, _ = _unit_bus()
     bus._connected, bus._nc = True, object()  # type: ignore[assignment]
@@ -301,19 +312,17 @@ async def test_the_bus_approves_an_account_by_its_own_fresh_record() -> None:
     await presence(f"presence.account.mattermost.{ACCOUNT}.v1", 1, T0, _account(exp=int(T0) + 900))
     await presence(f"presence.account.mattermost.{second}.v1", 2, T0 + 600,
                    _account(account=second, exp=int(T0) + 1500))
-    assert bus.account_approver(ACCOUNT) and bus.account_approver(second)
+    assert bus.approver("dembaca")
     await presence(f"presence.-.{bus.name}", 3, T0 + 901, b'{"v":1,"status":"online"}')  # the first stale
     assert bus.approver("dembaca") and bus.bound_accounts() == {ACCOUNT: "dembaca", second: "dembaca"}
-    assert not bus.account_approver(ACCOUNT) and bus.account_approver(second)
-    assert not bus.account_approver("z" * 26)
     await presence(f"presence.account.mattermost.{second}.v1", 4, T0 + 902, _account(account=second, approver=False,
                                                                                      exp=int(T0) + 1500))
-    assert not bus.account_approver(second) and not bus.approver("dembaca")
+    assert not bus.approver("dembaca") and bus.bound_accounts() == {ACCOUNT: "dembaca", second: "dembaca"}
 
 
 async def test_on_the_events_say_from_trusted_human_by_anchor(on: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """RT-6.8 step 3 by anchor: a post by the account bound to a trusted anchor is
-    from_trusted_human (not_approver without a fresh approver record); the visitor's and an
+    from_trusted_human and approves with no approver record (#266); the visitor's and an
     unbound account's are not; nothing reads the Mattermost trust."""
     from mattermost_ai_agent_bus import gate
     from mattermost_ai_agent_bus.websocket_inbox import ClassifiedEvent
@@ -325,10 +334,8 @@ async def test_on_the_events_say_from_trusted_human_by_anchor(on: None, monkeypa
              for c, u in (("1", HUMAN), ("2", VISITOR), ("3", LOOSE))]
     items = await server._event_items([ClassifiedEvent(kind="watched_channel", post=p) for p in posts])
     assert [i["from_trusted_human"] for i in items] == [True, False, False]
-    assert items[0]["trusted_human"] == "alice" and items[0].get("not_approver") is True
-    fake.approvers = {"u1"}
-    [item] = await server._event_items([ClassifiedEvent(kind="watched_channel", post=posts[0])])
-    assert item["from_trusted_human"] and "not_approver" not in item
+    assert not fake.approvers
+    assert items[0]["trusted_human"] == "alice" and "not_approver" not in items[0]
 
 
 # --- owners: peer or foreign ----------------------------------------------------------------------------
@@ -512,8 +519,9 @@ async def test_against_a_real_server_the_switch_and_the_records_decide(
         rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     """The switch from the home's plan B record, this session's attestation and a person's
     account record, all on the PRESENCE stream as the login service writes them: the trusted
-    humans are the attested anchor and the bound account, an approval needs the approver
-    record, and no Mattermost trust is read. Before the record names piece 4, the old path."""
+    humans are the attested anchor and the bound account, which approves without an approver
+    flag (#266) while an account bound to an untrusted anchor does not, and no Mattermost trust
+    is read. Before the record names piece 4, the old path."""
     monkeypatch.delenv(planb.TEST_ENV, raising=False)
     now = int(time.time())
     await _publish(rig, "presence.planb.home.v1", {"v": 1, "channel": "home", "pieces": []})
@@ -524,7 +532,7 @@ async def test_against_a_real_server_the_switch_and_the_records_decide(
         await _publish(rig, f"presence.attest.{name}.v1", {
             "v": 1, "agent": name, "owner": {"anchor": "alice", "name": "alice"},
             "trusted": [{"anchor": "alice", "name": "alice"}], "cut": False, "iat": now, "exp": now + 900})
-        for account, anchor, approver in ((HUMAN, "alice", True), (VISITOR, "carol", True)):
+        for account, anchor, approver in ((HUMAN, "alice", False), (VISITOR, "carol", True)):
             await _publish(rig, f"presence.account.mattermost.{account}.v1", {
                 "v": 1, "account": account, "anchor": anchor, "name": anchor, "approver": approver,
                 "token_iat": now, "iat": now, "exp": now + 900})

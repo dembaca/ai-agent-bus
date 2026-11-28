@@ -245,6 +245,11 @@ accounts {
 	_ = bridgeNC.Flush()
 	deniedOn(t, denied, "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_presence.")
 	uid := "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+	// the binding's proof (#266) comes through the same consumer
+	if err := admin.Publish("presence.account.mattermost."+uid+".auth.v1", []byte(`{"v":1,"account":"`+uid+
+		`","auth_service":"openid","auth_data":"sub-alice","iat":1}`)); err != nil {
+		t.Fatal(err)
+	}
 	if err := admin.Publish("presence.account.mattermost."+uid+".v1", []byte(`{"v":1,"account":"`+uid+
 		`","anchor":"alice","name":"alice","approver":true,"token_iat":1,"iat":1,"exp":2}`)); err != nil {
 		t.Fatal(err)
@@ -257,9 +262,10 @@ accounts {
 		go func() { _ = acc.Run(actx, bridgeNC) }()
 		<-acc.Ready
 		deadline = time.Now().Add(5 * time.Second)
-		for acc.Anchor(uid) != "alice" || !acc.CaughtUp() {
+		for acc.Bound(uid, "openid", "sub-alice") != "alice" || !acc.CaughtUp() {
 			if time.Now().After(deadline) {
-				t.Fatalf("start %d: the account record with the documented rights: %q", round, acc.Anchor(uid))
+				t.Fatalf("start %d: the account record and its proof with the documented rights: %q", round,
+					acc.Bound(uid, "openid", "sub-alice"))
 			}
 			time.Sleep(20 * time.Millisecond)
 		}

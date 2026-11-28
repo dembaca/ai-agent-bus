@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,6 +137,13 @@ type User struct {
 	Username string
 	Status   string // the custom status text, where the ⇄tag sits
 	IsBot    bool   // Mattermost's is_bot: whether an account is a bot's
+	// Set by GetUser only. Deactivated and Guest bind an account to nobody;
+	// AuthService and AuthData (how it logs in, "openid" or "ldap", and the
+	// identity provider's id) are what the binding's proof is compared with
+	// (RT-6.42 step 3). Mattermost shows the two only to a system admin's
+	// token; for another both are empty, and no account is bound.
+	Deactivated, Guest    bool
+	AuthService, AuthData string
 }
 
 // Members lists a channel's members: the bots' usernames and status texts.
@@ -169,12 +177,17 @@ func (c *Client) Members(ctx context.Context, channelID string) ([]User, error) 
 
 // GetUser reads one user by id: its username and whether it is a bot
 // account — the mark that decides whose post is a bot's, and only
-// Mattermost may say it.
+// Mattermost may say it — and what binds it to a person: whether it is
+// active and no guest, and how it logs in.
 func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 	var raw struct {
-		ID       string `json:"id"`
-		Username string `json:"username"`
-		IsBot    bool   `json:"is_bot"`
+		ID          string `json:"id"`
+		Username    string `json:"username"`
+		IsBot       bool   `json:"is_bot"`
+		DeleteAt    int64  `json:"delete_at"`
+		Roles       string `json:"roles"`
+		AuthService string `json:"auth_service"`
+		AuthData    string `json:"auth_data"`
 	}
 	path := "/api/v4/users/" + url.PathEscape(userID)
 	if err := c.do(ctx, "GET", path, nil, &raw); err != nil {
@@ -183,7 +196,9 @@ func (c *Client) GetUser(ctx context.Context, userID string) (User, error) {
 	if raw.ID == "" {
 		return User{}, fmt.Errorf("mattermost: no user %q", userID)
 	}
-	return User{ID: raw.ID, Username: raw.Username, IsBot: raw.IsBot}, nil
+	return User{ID: raw.ID, Username: raw.Username, IsBot: raw.IsBot, Deactivated: raw.DeleteAt != 0,
+		Guest: slices.Contains(strings.Fields(raw.Roles), "system_guest"), AuthService: raw.AuthService,
+		AuthData: raw.AuthData}, nil
 }
 
 // Person is the user id of username's account when it is a person's: it

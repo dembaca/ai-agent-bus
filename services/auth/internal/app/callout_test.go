@@ -239,7 +239,9 @@ func TestTheConsolesTokenCheckRefusesBothOfTheBus(t *testing.T) {
 		t.Fatalf("%+v, %v", s.Callout.Console, err)
 	}
 	pc := personTokenConfig(s, s.Token)
-	if pc.ClientID != "bus-console" || pc.Audience != "" || !slices.Equal(pc.OtherClients, []string{"agent-bus", "bus-api"}) {
+	// the approvers' group stays: a console login writes the account record with its flag (#266)
+	if pc.ClientID != "bus-console" || pc.Audience != "" || !slices.Equal(pc.OtherClients, []string{"agent-bus", "bus-api"}) ||
+		pc.ApproverGroup != s.Token.ApproverGroup {
 		t.Fatalf("%+v", pc)
 	}
 	for _, v := range []string{"0", "65", "x"} {

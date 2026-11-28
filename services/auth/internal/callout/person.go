@@ -253,6 +253,24 @@ func (s *Service) authorizePerson(ctx context.Context, req *jwt.AuthorizationReq
 		if err := at.Publish(ctx, consumers.PersonRecordSubject(s.cfg.Subjects.Presence, login), body); err != nil {
 			return "", who, fmt.Errorf("the login's record: %w", err)
 		}
+		// A console login proves the binding of the person's Mattermost
+		// account as an agent's login does (RT-6.42 step 3, issue 266): the
+		// account record, its proof and the binding, under the same guard. A
+		// console token that says nothing about the approvers' group (no
+		// group set, no group claim) keeps the stored record's flag.
+		guard, _ := s.anchorHook().(TokenGuard)
+		var approver *bool
+		if id.ApproverKnown {
+			approver = &id.Approver
+		}
+		skipped, err := s.accountRecord(ctx, at, guard, id.Subject, id.ChatID, id.Owner, approver, anchor,
+			id.IssuedAt, now.Unix(), uc.Expires, id.ChatAuthService, id.ChatAuthData)
+		if err != nil {
+			return "", who, fmt.Errorf("account record: %w", err)
+		}
+		if skipped != "" && id.ChatID != "" {
+			s.log.Info("auth callout", "event", "account record kept", "sub", id.Subject, "reason", skipped)
+		}
 	}
 	return userJWT, who, nil
 }

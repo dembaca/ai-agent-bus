@@ -70,6 +70,10 @@ class Records(FakeNats):
 
     carries: set[str] = {"home"}  # channels whose fresh bridge signal names piece 6
 
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self.stale: set[str] = set()  # accounts whose own record is stale: they name nobody
+
     def bridge_pieces(self, channel: str) -> frozenset[int]:
         return frozenset({6}) if channel in self.carries else frozenset()
 

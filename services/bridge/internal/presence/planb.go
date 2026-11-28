@@ -99,6 +99,8 @@ type Switches struct {
 	// the newest server time seen, and the local time it was seen at: the
 	// server's "now" runs on from there
 	srvNow, seenAt time.Time
+	// caught: a replay was read to its end once (Commit); it stays true
+	caught bool
 	// Clock is the local clock; nil is time.Now (tests set it).
 	Clock func() time.Time
 }
@@ -126,6 +128,17 @@ func (s *Switches) Commit() {
 	if s.staging != nil {
 		s.recs, s.staging = s.staging, nil
 	}
+	s.caught = true
+}
+
+// CaughtUp says a replay was read to its end once since the start: before it,
+// no switch is known, and a reader that must not guess (the inbound bridge,
+// #266) waits. It stays true through later replays, which keep the old
+// records until they commit.
+func (s *Switches) CaughtUp() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.caught
 }
 
 // Seed sets the server's time from an answer of the server itself (the
