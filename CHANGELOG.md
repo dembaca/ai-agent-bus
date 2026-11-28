@@ -642,6 +642,14 @@ before 0.5.0 are described in the git history.
 
 ### Changed
 
+- **CI: each check runs only for the areas a PR touches.** A `changes` job in
+  `.github/workflows/checks.yml` (it replaces `console-changed`) names the areas a
+  pull request touches, and each job carries an `if:` on them, so a skipped job
+  counts as passed for a required check. A changed file that no area claims, and
+  that is not documentation, makes every job run, and so do a deleted file and a
+  failed `changes` job; `docs` and `lint` always run.
+  `CLAUDE.md` gets a rule for small changes and one for resolving conflicts.
+
 - **Stats has a time range and an activity chart** (#284, ADR-015 addition of
   2026-11-28, RT-6.43 step 8). A switch at the top right, 24 h, 7 days, 30 days,
   90 days or 12 months, sets the range of every card, the per-version cards
