@@ -21,7 +21,18 @@ before 0.5.0 are described in the git history.
   the bot id's key and `bus_info` says why. While a bot id exists the server also keeps
   `coord-` and `channel-` under it, for a hook of the plugin before. A session without a
   bot id now keeps state under the name. Session end keeps the marker, so the sweep's day
-  rule removes the name's other files. Switch off: every file name is as before.
+  rule removes the name's other files. The latch also writes the key into the endpoint
+  file (`CB_STATE_KEY`), so every hook reads the same one. The locks for one sender per bot
+  (`asks-`, `remind-`, `stats-<bot id>.lock`) stay on the bot id; the server touches a
+  bot-id mirror only while it is its own. Once piece 2 is on, hooks and server must be the
+  same version: an older hook's `presence-<bot id>.env` is not read and its
+  `stats-<bot id>.jsonl` not published, and it may miss the channel confirmation for one
+  turn. The way back (switch off again) publishes `stats-<bot id>.jsonl` as it was at the
+  copy, so those counts are counted twice. Open: under `CB_LOGIN_NKEY=ephemeral` every
+  start has a new name and copies again from the bot id's files as they were at the first
+  latch (asks, reminders, read marks, gate, stall, notice, ask mode, crown and permission
+  logs go back, the counters are published again); with `CB_LOGIN_NKEY=host` they survive.
+  Switch off: every file name is as before.
 
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads

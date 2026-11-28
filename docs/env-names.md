@@ -387,7 +387,7 @@ either (see [Values the bus writes for itself](#values-the-bus-writes-for-itself
 | `MM_KEPT_WORKDIR` | `CB_KEPT_WORKDIR` | no | `bin/mm-agent-lib.sh` | |
 | `MM_SERVER_ENDED` | `CB_SERVER_ENDED` | no | `session_file.py`; `adapters/corral/10-mm-session-start.sh`, `adapters/corral/90-mm-session-stop.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-sweep.sh` | |
 | `CB_SESSION_NONCE` | `CB_SESSION_NONCE` | no | `session_file.py` | new in 0.103.0: no old spelling, in `nonce-<uid>.env` (#163) |
-| `CB_STATE_KEY` | `CB_STATE_KEY` | no | `bin/mm-agent-lib.sh` | new with plan B piece 14c-1: no old spelling, in the endpoint file, the NATS name the MCP server keys its kept state by (RT-6.2 step 9); `mm_state_key` keys the scripts' per-bot files by it, else by the `state_key` of `/v1/me`, else by the bot id |
+| `CB_STATE_KEY` | `CB_STATE_KEY` | no | `hookapi.py`; `bin/mm-agent-lib.sh` | new with plan B piece 14c-1: no old spelling, in the endpoint file, the NATS name the MCP server keys its kept state by (RT-6.2 step 9); `mm_state_key` keys the scripts' per-bot files by it, else by the `state_key` of `/v1/me`, else by the bot id |
 | `MM_SESSION_PID` | `CB_SESSION_PID` | no | `client.py`, `session_file.py`; `adapters/corral/10-mm-session-start.sh`, `adapters/corral/90-mm-session-stop.sh`, `bin/mm-agent-host-install.sh`, `bin/mm-agent-sweep.sh` | |
 
 The session files also carry variables from the first table
