@@ -29,7 +29,7 @@ async function sharedFleet(): Promise<{ card: AgentCard; cards: AgentCard[]; ask
   const ask: Ask = {
     id: "p-ask", by: NATS, displayName: NATS, home: card.home, kind: "approval", human: "dembaca",
     need: "Merge PR #1?", at: Date.now() - 60_000, end: "open", forMe: true, mayAnswer: false,
-    agentGone: false, threadId: "p-ask",
+    agentGone: false, threadId: "p-ask", answers: [], chosen: null,
   }
   return { card, cards: [card], ask }
 }
@@ -47,9 +47,9 @@ describe("a shared name keeps its mark", () => {
     expect(needs).toContain(MARK)
   })
 
-  it("in the asks table", async () => {
+  it("in the asks list", async () => {
     const { cards, ask } = await sharedFleet()
-    const html = renderToStaticMarkup(<Asks asks={[ask]} cards={cards} onOpen={noop} />)
+    const html = renderToStaticMarkup(<Asks api={mockApi()} asks={[ask]} cards={cards} onThread={noop} />)
     expect(html).toContain(">agent-same</span>")
     expect(html).toContain(MARK)
   })
