@@ -306,6 +306,11 @@ class NatsSource(Protocol):
 
     def ambiguous(self) -> list[str]: ...
 
+    def people_unheard(self) -> list[str]:
+        """Plan B piece 11 (RT-6.42 step 12): the channels whose people this session does not
+        hear now, the switch on and no fresh signal of the bridge; sorted."""
+        ...
+
     def presence_soon(self) -> None:
         """Plan B piece 9: the next presence goes out now, not at the next heartbeat."""
         ...
@@ -447,7 +452,8 @@ async def shown_as(client: ChatPort, user_ids: AbstractSet[str]) -> dict[str, st
 
 def nats_notes() -> list[str]:
     """What bus_info says about the crown over NATS (RT-6.38 steps 7 and 8): the home that
-    has no NATS side, a link tag that fits more than one fresh name."""
+    has no NATS side, a link tag that fits more than one fresh name; and the channels whose
+    people are not heard (plan B piece 11, RT-6.42 step 12)."""
     out: list[str] = [_left_out] if _left_out else []
     state = nats_state()
     if state.kind == "down":
@@ -456,6 +462,12 @@ def nats_notes() -> list[str]:
     if _nats_source is not None and state.kind != "none":
         out.extend(f"the link tag {tag} fits more than one fresh NATS name: no bot is linked by it (RT-6.37)"
                    for tag in _nats_source.ambiguous())
+        out.extend(f"people in ~{ch} are not heard now: no fresh signal of the bridge reaches this session "
+                   "for it (the bridge or NATS is down), and plan B piece 11 reads nothing of them on "
+                   "Mattermost; their posts and reactions, an answer to an ask too, reach you over NATS once "
+                   f"NATS is up and the bridge carries ~{ch} again (what it missed, up to 10 minutes back) "
+                   "(RT-6.42)"
+                   for ch in _nats_source.people_unheard())
     return out
 
 

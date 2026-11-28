@@ -22,6 +22,9 @@ class _Side:
     def ambiguous(self) -> list[str]:
         return []
 
+    def people_unheard(self) -> list[str]:
+        return []
+
     async def prime(self) -> None:
         return None
 
