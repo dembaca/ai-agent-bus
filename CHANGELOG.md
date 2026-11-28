@@ -5,6 +5,18 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Fixed
+
+- **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
+  RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
+  the reaction's stream sequence over the copy's entry in the map from Mattermost posts
+  to stream sequences. A person's later reply or reaction on that copy was then carried
+  onto NATS naming the reaction, not the post, so an answer to an ask over NATS could
+  be attributed to the wrong post. Now only a mirrored post writes that entry; a
+  reaction's own entry is marked and writes none. This changes behaviour with every plan B
+  switch off, because the mirror runs regardless of them. An entry already overwritten
+  stays as it is until the post is mirrored again.
+
 ### Breaking
 
 - **NATS names lose the `agent-` prefix** (#274, RT-6.36 step 8). An agent's NATS
