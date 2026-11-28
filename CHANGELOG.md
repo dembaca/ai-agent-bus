@@ -30,7 +30,12 @@ before 0.5.0 are described in the git history.
   registers no Mattermost bot and holds no Mattermost token, once piece 14c is in:
   until then the decision always names a reason, "the crown needs the bot's identity
   until piece 14c" (RT-6.6 step 13), since the crown's lease and its claim on NATS still
-  need the bot, so every session still registers; piece 14c removes that line. Under corral the start
+  need the bot, so every session still registers; piece 14c removes that line. Until piece 14c
+  no session defers either: the corral start hook registers every session itself, exactly as
+  before (bot kept for `--continue`, channels resolved, status set), by a constant of
+  `bin/mm-agent-lib.sh` that no setting changes and that a test keeps in step with the
+  server's; the host process path below is built and tested, but no session reaches it
+  until piece 14c flips both. Once it does, under corral the start
   hook registers nothing when `CB_NATS_HOMES` lists every channel of the session; the
   session's host process decides after its own NATS read and registers the bot only
   when a channel or piece is off, with the registration secret the start hook handed

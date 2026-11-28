@@ -4,6 +4,12 @@ hands no token on, the host process decides after its NATS read and registers on
 or piece is off or it cannot decide (here: no NATS side at all, so it registers as before); the
 stop hook ends it and leaves nothing behind. Any other session registers in preStart as before.
 The decision on the records themselves: mcp/tests/test_planb_piece14.py.
+
+Until piece 14c no session defers: the crown still needs the bot (nobot.CROWN_NEEDS_BOT), and the
+start hook's constant CB_CROWN_NEEDS_BOT in bin/mm-agent-lib.sh says the same, so every session
+registers in preStart as before. The tests of the deferred path run the hooks from a copy of the
+tree whose lib has the constant off (`crown_off`), the way the Python tests patch CROWN_NEEDS_BOT:
+no environment setting can turn it off in production.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import time
@@ -24,6 +31,23 @@ pytestmark = pytest.mark.skipif(not PY.exists(), reason="needs mcp/.venv: uv run
 
 SWEEP = "bin/mm-agent-sweep.sh"
 LISTED = {"MM_NATS_HOMES": "~Proj-X, agents"}  # the home (proj-x) and the lobby (agents)
+LIB = ROOT / "bin" / "mm-agent-lib.sh"
+CONSTANT = re.compile(r"^CB_CROWN_NEEDS_BOT=([01])$", re.M)
+
+
+@pytest.fixture
+def crown_off(tmp_path):
+    """The start hook of a tree as after piece 14c: a copy whose lib has CB_CROWN_NEEDS_BOT=0,
+    beside the checkout's MCP environment. Returns the path to run as START."""
+    tree = tmp_path / "crown-off"
+    for d in ("adapters/corral", "bin", ".claude-plugin"):
+        shutil.copytree(ROOT / d, tree / d)
+    (tree / "mcp").symlink_to(ROOT / "mcp")
+    lib = tree / "bin" / "mm-agent-lib.sh"
+    text, n = CONSTANT.subn("CB_CROWN_NEEDS_BOT=0", lib.read_text())
+    assert n == 1, "CB_CROWN_NEEDS_BOT=1 is gone from bin/mm-agent-lib.sh"
+    lib.write_text(text)
+    return str(tree / START)
 
 
 def _registrations(mm) -> list[dict]:
@@ -46,8 +70,48 @@ def _until(cond, timeout: float = 20.0) -> None:
         time.sleep(0.1)
 
 
-def test_every_channel_listed_starts_the_host_without_a_bot(mm, run):
-    r = run(START, CORRAL_SESSION_ID="sess-defer", **{**HOST, **LISTED})
+def test_the_hooks_constant_agrees_with_the_server():
+    """CB_CROWN_NEEDS_BOT in the start hook's lib and nobot.CROWN_NEEDS_BOT say the same: piece 14c
+    flips both in one commit."""
+    from mattermost_ai_agent_bus import nobot
+
+    found = CONSTANT.findall(LIB.read_text())
+    assert len(found) == 1, "bin/mm-agent-lib.sh must assign CB_CROWN_NEEDS_BOT=0|1 once (piece 14c flips it)"
+    assert (found[0] == "1") == getattr(nobot, "CROWN_NEEDS_BOT", False), (
+        "CB_CROWN_NEEDS_BOT in bin/mm-agent-lib.sh and nobot.CROWN_NEEDS_BOT disagree: "
+        "piece 14c flips both in one commit")
+
+
+def test_the_constant_is_no_environment_setting(tmp_path):
+    script = f'source "{ROOT}/bin/mm-agent-lib.sh"; printf %s "$CB_CROWN_NEEDS_BOT"; mm_bot_deferrable'
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "CB_NATS_HOMES": "proj-x agents",
+           "CB_MM_PROJECT_CHANNEL": "proj-x", "CB_MM_CHANNEL": "agents",
+           "CB_CROWN_NEEDS_BOT": "0"}
+    r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, cwd=tmp_path)
+    assert r.stdout == "1" and r.returncode == 1, r.stderr
+
+
+def test_until_14c_every_channel_listed_registers_in_prestart_as_before(mm, run):
+    """The crown needs the bot until piece 14c: a fully switched session registers in preStart,
+    exactly as one with a channel not listed."""
+    r = run(START, CORRAL_SESSION_ID="sess-crown", **{**HOST, **LISTED})
+    assert r.code == 0, r.stderr
+    out = json.loads(r.stdout)
+    user = out["env"]["MM_BOT_USERNAME"]
+    assert user.startswith("agent-") and out["env"]["CB_MM_BOT_USERNAME"] == user
+    assert out["status"][0] == (f"registered {user}, home #proj-x, lobby #agents, "
+                                "trusted none (set CB_TRUSTED_HUMANS); token stays on the host")
+    assert len(_registrations(mm)) == 1
+    session = run.state_dir / "sess-crown.env"
+    assert _field(session, "MM_BOT_TOKEN") == "bot-token-for-tests"
+    assert "DEFERRED=1" not in session.read_text().splitlines()
+    assert "RT-6.18 step 13" not in r.stderr and "no bot yet" not in r.stdout
+    r = run(STOP, CORRAL_SESSION_ID="sess-crown", **END)
+    assert r.code == 0, r.stderr
+
+
+def test_every_channel_listed_starts_the_host_without_a_bot(mm, run, crown_off):
+    r = run(crown_off, CORRAL_SESSION_ID="sess-defer", **{**HOST, **LISTED})
     assert r.code == 0, r.stderr
     out = json.loads(r.stdout)
     env = out["env"]
@@ -101,8 +165,8 @@ def test_a_channel_not_listed_registers_in_prestart_as_before(mm, run):
     assert r.code == 0, r.stderr
 
 
-def test_a_deferred_session_takes_its_trusted_humans_as_configured(mm, run):
-    r = run(START, CORRAL_SESSION_ID="sess-trust", MM_TRUSTED_HUMANS="dembaca,kollegin", **{**HOST, **LISTED})
+def test_a_deferred_session_takes_its_trusted_humans_as_configured(mm, run, crown_off):
+    r = run(crown_off, CORRAL_SESSION_ID="sess-trust", MM_TRUSTED_HUMANS="dembaca,kollegin", **{**HOST, **LISTED})
     assert r.code == 0, r.stderr
     out = json.loads(r.stdout)
     assert "trusted @dembaca, @kollegin" in out["status"][0]
@@ -111,10 +175,10 @@ def test_a_deferred_session_takes_its_trusted_humans_as_configured(mm, run):
     assert r.code == 0, r.stderr
 
 
-def test_a_failed_unregister_leaves_the_token_for_the_sweep(mm, run):
+def test_a_failed_unregister_leaves_the_token_for_the_sweep(mm, run, crown_off):
     """The exit's unregister of the bot the host process registered fails (the registrar down):
     postEnd keeps the session file with the token the host wrote, and the sweep cleans up."""
-    r = run(START, CORRAL_SESSION_ID="sess-orphan", **{**HOST, **LISTED})
+    r = run(crown_off, CORRAL_SESSION_ID="sess-orphan", **{**HOST, **LISTED})
     assert r.code == 0, r.stderr
     session = run.state_dir / "sess-orphan.env"
     name = _field(session, "MM_REG_BOT_NAME")
@@ -192,7 +256,7 @@ def test_the_start_line_with_a_token_is_byte_identical_to_before(tmp_path, kept)
     ("*", "proj-x", "agents", 1),
 ])
 def test_the_pre_filter_reads_cb_nats_homes_as_the_server_does(tmp_path, homes, project, lobby, want):
-    script = f'source "{ROOT}/bin/mm-agent-lib.sh"; mm_bot_deferrable'
+    script = f'source "{ROOT}/bin/mm-agent-lib.sh"; CB_CROWN_NEEDS_BOT=0; mm_bot_deferrable'
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "CB_NATS_HOMES": homes,
            "CB_MM_PROJECT_CHANNEL": project, "CB_MM_CHANNEL": lobby}
     r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, cwd=tmp_path)

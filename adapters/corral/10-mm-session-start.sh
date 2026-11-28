@@ -446,7 +446,9 @@ take_over() {
 # with no bot at all. This hook cannot see the plan B switches, so it registers nothing: the
 # host process decides on the login service's records after its NATS read and registers the
 # bot only when a channel or piece is off, or when it cannot decide (mm_bot_deferrable). It
-# gets the registration secret on stdin for that, and drops it once it decided.
+# gets the registration secret on stdin for that, and drops it once it decided. Until piece 14c
+# mm_bot_deferrable says no to every session (CB_CROWN_NEEDS_BOT, the crown still needs the bot):
+# each registers here, as before.
 DEFER=0
 if take_over; then
   REGISTERED=1

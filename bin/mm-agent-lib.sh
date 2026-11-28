@@ -353,13 +353,22 @@ mm_home_channel() {
   printf '%s' "${first:-$(mm_channel)}"
 }
 
+# Until piece 14c: nobot.CROWN_NEEDS_BOT. The crown still needs the bot's identity, so the host
+# process would register for every session anyway: no start hook defers, every session
+# registers in it as before. Piece 14c flips both in one commit (tests/hooks/
+# test_planb_piece14_hooks.py pins that they agree). A constant of this file, assigned on every
+# source and never exported: no environment setting can turn the deferral on.
+CB_CROWN_NEEDS_BOT=1
+
 # Plan B piece 14a (RT-6.18 step 13): may this session run with no Mattermost bot at all?
 # Only when CB_NATS_HOMES lists every channel of it, the home, each guest and the lobby, as
 # compose.nats_homes_from_env reads it (comma or space separated, a leading ~ dropped, any
 # case). A pre-filter of the host's own settings, never the decision: the host process then
 # reads the login service's records and registers the bot when a channel or piece is off.
+# Until piece 14c it says no to every session (CB_CROWN_NEEDS_BOT above): each registers here.
 mm_bot_deferrable() {
   local listed=" " n ch
+  [[ "$CB_CROWN_NEEDS_BOT" == 0 ]] || return 1
   local -a parts=()
   IFS=$', \t\n' read -r -a parts <<<"${CB_NATS_HOMES:-}"
   for n in "${parts[@]+"${parts[@]}"}"; do
