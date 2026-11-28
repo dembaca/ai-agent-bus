@@ -91,41 +91,83 @@ func (s *Stats) Update(ctx context.Context) error {
 	}
 	want := s.limits()
 	var old []any
-	lowered := false
+	lowered, raise := false, false
+	haveBytes := info.Config["max_bytes"]
 	for k, v := range want {
 		if have, _ := info.Config[k].(float64); have != float64(v) && !(k == "max_bytes" && have > float64(v)) {
+			if k == "max_bytes" { // only ever a raise: a larger one is kept
+				raise = true
+				continue
+			}
 			lowered = lowered || have > float64(v)
 			old = append(old, k, info.Config[k])
 			info.Config[k] = v
 		}
 	}
-	if len(old) == 0 {
+	if len(old) > 0 { // age and cap first, with the old size: these stay fatal
+		out, err := s.put(ctx, subject, info.Config)
+		if err != nil {
+			return err
+		}
+		for k, v := range want {
+			if have, _ := out[k].(float64); k != "max_bytes" && have != float64(v) {
+				return fmt.Errorf("stream %s: %s is %v after the update, want %d", StatsStream, k, out[k], v)
+			}
+		}
+		info.Config = out
+		if lowered { // RT-6.45: a shorter age or a smaller cap drops lines for good
+			s.m.log.Warn("consumers: stream limits lowered, older lines dropped", "stream", StatsStream, "was", fmt.Sprint(old...))
+		} else {
+			s.m.log.Info("consumers: stream limits updated", "stream", StatsStream, "was", fmt.Sprint(old...))
+		}
+	}
+	if !raise {
 		return nil
 	}
+	// The size alone (RT-6.45): a server without room (max_file_store) refuses
+	// it; the stream then keeps its size and the service starts all the same.
+	info.Config["max_bytes"] = want["max_bytes"]
+	out, err := s.put(ctx, subject, info.Config)
+	if err != nil {
+		if errors.Is(err, errNoAnswer) || errors.Is(err, errStreamUnsafe) {
+			return err
+		}
+		s.m.log.Warn("consumers: stats stream size not raised", "stream", StatsStream, "have", fmt.Sprint(haveBytes),
+			"want", want["max_bytes"], "reason", err.Error())
+		return nil
+	}
+	if have, _ := out["max_bytes"].(float64); have < float64(want["max_bytes"]) {
+		return fmt.Errorf("stream %s: max_bytes is %v after the update, want %d", StatsStream, out["max_bytes"], want["max_bytes"])
+	}
+	if len(old) == 0 {
+		s.m.log.Info("consumers: stream limits updated", "stream", StatsStream, "was", fmt.Sprint("max_bytes", haveBytes))
+	}
+	return nil
+}
+
+var (
+	errNoAnswer     = errors.New("no answer from JetStream")
+	errStreamUnsafe = errors.New("stream unsafe after update")
+)
+
+// put sends one STREAM.UPDATE and returns the config the server kept, after
+// checkStream. A missing answer or a failed check wraps errNoAnswer or
+// errStreamUnsafe; any other error is the server's refusal.
+func (s *Stats) put(ctx context.Context, subject string, cfg map[string]any) (map[string]any, error) {
 	var out struct {
 		Config map[string]any `json:"config"`
 	}
-	if err := s.m.api(ctx, "$JS.API.STREAM.UPDATE."+StatsStream, info.Config, &out); err != nil {
+	if err := s.m.api(ctx, "$JS.API.STREAM.UPDATE."+StatsStream, cfg, &out); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders) {
-			return fmt.Errorf("stream %s: no answer from JetStream (%w): the login service's JetStream user needs publish on $JS.API.STREAM.UPDATE.%s",
-				StatsStream, err, StatsStream)
+			return nil, fmt.Errorf("stream %s: %w (%w): the login service's JetStream user needs publish on $JS.API.STREAM.UPDATE.%s",
+				StatsStream, errNoAnswer, err, StatsStream)
 		}
-		return fmt.Errorf("stream %s: update: %w", StatsStream, err)
+		return nil, fmt.Errorf("stream %s: update: %w", StatsStream, err)
 	}
 	if err := checkStream(StatsStream, subject, out.Config); err != nil {
-		return err
+		return nil, fmt.Errorf("%w: %w", errStreamUnsafe, err)
 	}
-	for k, v := range want {
-		if have, _ := out.Config[k].(float64); have != float64(v) && !(k == "max_bytes" && have > float64(v)) {
-			return fmt.Errorf("stream %s: %s is %v after the update, want %d", StatsStream, k, out.Config[k], v)
-		}
-	}
-	if lowered { // RT-6.45: a shorter age or a smaller cap drops lines for good
-		s.m.log.Warn("consumers: stream limits lowered, older lines dropped", "stream", StatsStream, "was", fmt.Sprint(old...))
-		return nil
-	}
-	s.m.log.Info("consumers: stream limits updated", "stream", StatsStream, "was", fmt.Sprint(old...))
-	return nil
+	return out.Config, nil
 }
 
 // statsInfo is the part of STREAM.INFO the fill reads.
