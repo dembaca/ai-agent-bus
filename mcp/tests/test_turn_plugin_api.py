@@ -430,8 +430,6 @@ async def test_hooks_of_another_opencode_session_are_refused(api, monkeypatch, c
     another one gets 403, marked for the plugin, and changes nothing. The
     same session and a call without the header (an older plugin, logged once)
     are served; without OPENCODE_SESSION_ID nothing is compared."""
-    from mattermost_ai_agent_bus import hosted
-
     client = FakeClient()
     h = await api(client)
     monkeypatch.setenv("OPENCODE_SESSION_ID", "ses_a")
@@ -448,8 +446,8 @@ async def test_hooks_of_another_opencode_session_are_refused(api, monkeypatch, c
     assert sum("without x-bus-client-session" in r.getMessage() for r in caplog.records) == 1
     monkeypatch.delenv("OPENCODE_SESSION_ID")
     assert (await h.get("/v1/me", headers={"X-Bus-Client-Session": "ses_b"})).status_code == 200
-    assert hosted.client_session_refusal("ses_b", {"OPENCODE_SESSION_ID": "ses_a"})
-    assert hosted.client_session_refusal("", {"OPENCODE_SESSION_ID": "ses_a"}) == ""
+    assert hookapi.client_session_refusal("ses_b", {"OPENCODE_SESSION_ID": "ses_a"})
+    assert hookapi.client_session_refusal("", {"OPENCODE_SESSION_ID": "ses_a"}) == ""
 
 
 async def test_a_waiting_plugin_is_noted(api, monkeypatch):

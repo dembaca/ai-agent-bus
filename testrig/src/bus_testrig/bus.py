@@ -3,7 +3,7 @@
 This harness used to measure only its own echo loop and said so: no code path
 here started the bus (review point 1). That is what this module adds. The real
 MCP server — `python -m mattermost_ai_agent_bus`, the entry point
-`hosted.main` picks — runs as a subprocess, speaks JSON-RPC over its stdin and
+`entry.main` picks — runs as a subprocess, speaks JSON-RPC over its stdin and
 stdout and is pointed at the stub through the proxy, so the faults the echo run
 injects are injected into the bus's own sockets.
 

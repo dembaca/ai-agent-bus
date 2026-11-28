@@ -218,7 +218,7 @@ def test_planted_modules_in_the_workdir_never_run_on_the_host(mm, run, tmp_path)
         (work / mod).write_text(f"open({str(marker)!r}, 'a').write({mod!r})\n")
     pkg = work / "mattermost_ai_agent_bus"
     pkg.mkdir()
-    for mod in ("__init__.py", "__main__.py", "hosted.py"):
+    for mod in ("__init__.py", "__main__.py", "entry.py", "hosted.py"):
         (pkg / mod).write_text(f"open({str(marker)!r}, 'a').write({mod!r})\n")
     out, pid = _start(run, "sess-plant", cwd=str(work), CORRAL_WORKDIR=str(work),
                       PYTHONPATH=str(work), PYTHONSTARTUP=str(work / "json.py"),

@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from mattermost_ai_agent_bus import config, hookapi, hosted, owners, release, sandbox, session_file, stats
+from mattermost_ai_agent_bus import config, entry, hookapi, hosted, owners, release, sandbox, session_file, stats
 
 SECRET = "s3cret-value-never-shown"
 
@@ -99,11 +99,12 @@ def test_three_names_of_one_setting(monkeypatch, caplog, new, old, alias):
     assert config.env(new) == "other"
 
 
-def test_the_start_is_refused_on_a_disagreement(monkeypatch, capsys):
+@pytest.mark.parametrize("main", [entry.main, hosted.main])
+def test_the_start_is_refused_on_a_disagreement(monkeypatch, capsys, main):
     monkeypatch.setenv("CB_TRUSTED_HUMANS", "alice")
     monkeypatch.setenv("MM_TRUSTED_HUMANS", "mallory")
     with pytest.raises(SystemExit) as exc:
-        hosted.main([])
+        main([])
     assert exc.value.code == 1
     err = capsys.readouterr().err
     assert "CB_TRUSTED_HUMANS, MM_TRUSTED_HUMANS are set to different values" in err
