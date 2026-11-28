@@ -265,9 +265,9 @@ def test_a_repeated_latch_moves_nothing(state: Path, monkeypatch: pytest.MonkeyP
     assert (state / f"channel-{NAME}.env").exists() and not (state / f"last-{NAME}.env").exists()
 
 
-def test_the_copy_source_is_the_bot_id_today() -> None:
-    assert session_file._copy_source(UID, NAME) == UID
-    assert session_file._copy_source("", NAME) is None
+def test_without_a_predecessor_the_copy_source_is_the_bot_id(state: Path) -> None:
+    assert session_file._copy_source(UID, NAME) == (UID, None)
+    assert session_file._copy_source("", NAME) == (None, None)
 
 
 # --- the takeover across a restart (owner's decision on #328: CB_LOGIN_NKEY stays ephemeral) ---
@@ -386,3 +386,122 @@ def test_switch_off_nothing_moves_for_any_harness(state: Path, tmp_path: Path, m
         (state / f"asks-{UID}.env").write_text("x\n")
         assert session_file.latch(NAME, HOME, UID) == []
         assert sorted(p.name for p in state.iterdir()) == [f"asks-{UID}.env"]
+
+
+# --- review round 2: the takeover's lineage, its claim, the crash-safe move -----------------
+
+UID2 = "c" * 26
+NAME_C = "c4e6g2j3" * 3 + "m"
+NAME_D = "d5f7h3k4" * 3 + "n"
+
+
+def _hold(state: Path, name: str) -> int:
+    fd = os.open(state / f"key-{name}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return fd
+
+
+def _name_run(state: Path, name: str, uid: str, what: str) -> None:
+    """A name some session ran under on this workspace tie, gone now (its lock free)."""
+    (state / f"asks-{name}.env").write_text(f"{what}\n")
+    (state / f"stats-{name}.jsonl").write_text(f'{{"k":"{what}"}}\n')
+    ids = f"CB_COPIED_FROM={uid}\n" if uid else ""
+    (state / f"copied-{name}.env").write_text(f"{ids}CB_TIE={session_file.tie()}\n")
+    (state / f"key-{name}.lock").write_text("")
+
+
+def _age(path: Path, sec: float) -> None:
+    import time
+
+    at = time.time() - sec
+    os.utime(path, (at, at))
+
+
+def test_with_a_bot_only_its_own_names_are_predecessors(state: Path, tmp_path: Path,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two sessions share the workspace tie (two bots): the restarting one takes its own bot's
+    name, never the other bot's, however new; the other's state stays."""
+    _harness(monkeypatch, tmp_path, "workspace")
+    _name_run(state, NAME, UID, "mine")
+    _name_run(state, NAME_C, UID2, "theirs")
+    _age(state / f"copied-{NAME}.env", 60)  # the other session's name is newer
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    session_file.latch(NAME_B, HOME, UID)
+    assert (state / f"asks-{NAME_B}.env").read_text() == "mine\n"
+    assert (state / f"asks-{NAME_C}.env").exists() and (state / f"stats-{NAME_C}.jsonl").exists()
+    assert "CB_TAKEN_BY" not in (state / f"copied-{NAME_C}.env").read_text()
+
+
+def test_without_a_bot_the_newest_gone_name_of_the_tie_is_taken(state: Path, tmp_path: Path,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    """No bot, the workspace tie (one MCP server per workspace): a live sibling's newer name
+    is passed over, the newest name whose process is gone is taken."""
+    _harness(monkeypatch, tmp_path, "workspace")
+    _name_run(state, NAME, "", "mine")
+    _name_run(state, NAME_C, "", "live sibling")
+    _age(state / f"copied-{NAME}.env", 60)
+    fd = _hold(state, NAME_C)
+    try:
+        monkeypatch.setenv("CB_PLANB_TEST", "2")
+        session_file.latch(NAME_B, HOME, "")
+        assert (state / f"asks-{NAME_B}.env").read_text() == "mine\n"
+        assert (state / f"stats-{NAME_B}.jsonl").read_text() == '{"k":"mine"}\n'
+        assert (state / f"asks-{NAME_C}.env").exists() and (state / f"stats-{NAME_C}.jsonl").exists()
+    finally:
+        os.close(fd)
+
+
+def test_two_latches_racing_for_one_predecessor(state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    first, fd = session_file._copy_source(UID, NAME_B)
+    assert first == NAME and fd is not None
+    # The second start meanwhile: the predecessor's lock is held, so it falls back.
+    assert session_file._copy_source(UID, NAME_C) == (UID, None)
+    session_file._mark(state / f"copied-{NAME}.env", add=[f"CB_TAKEN_BY={NAME_B}"])
+    os.close(fd)
+    # A start that listed the predecessor before the mark re-reads it under the lock.
+    monkeypatch.setattr(session_file, "_candidates", lambda bot, name: [NAME])
+    assert session_file._copy_source(UID, NAME_D) == (UID, None)
+
+
+def test_a_missing_lock_is_gone_only_for_an_old_marker(state: Path, tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    (state / f"key-{NAME}.lock").unlink()
+    assert session_file._claim(NAME) is None  # a process may still be starting
+    _age(state / f"copied-{NAME}.env", session_file.GONE_SEC + 60)
+    fd = session_file._claim(NAME)
+    assert fd is not None
+    os.close(fd)
+
+
+def test_a_crash_in_the_counter_move_loses_and_doubles_nothing(state: Path, tmp_path: Path,
+                                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    _harness(monkeypatch, tmp_path, "claude")
+    _name_run(state, NAME, UID, "run 1")
+    (state / f"stats-{NAME_B}.jsonl").write_text('{"k":"early"}\n')  # dst exists: the claim path
+    real = session_file.append_private
+
+    def crash(path: Path, text: str) -> None:
+        raise OSError("crash")
+
+    monkeypatch.setattr(session_file, "append_private", crash)
+    monkeypatch.setenv("CB_PLANB_TEST", "2")
+    session_file.latch(NAME_B, HOME, UID)
+    left = list(state.glob(f"stats-{NAME_B}.jsonl.moving-*"))
+    assert len(left) == 1 and not (state / f"stats-{NAME}.jsonl").exists()
+    monkeypatch.setattr(session_file, "append_private", real)
+    _restart(monkeypatch)
+    session_file.latch(NAME_C, HOME, UID)
+    lines = (state / f"stats-{NAME_C}.jsonl").read_text().splitlines()
+    assert sorted(lines) == ['{"k":"early"}', '{"k":"run 1"}']
+    assert not list(state.glob("*.moving-*"))
+
+
+def test_a_move_without_a_target_is_one_rename(state: Path) -> None:
+    src, dst = state / f"stats-{NAME}.jsonl", state / f"stats-{NAME_B}.jsonl"
+    src.write_text("a\n")
+    ino = src.stat().st_ino
+    assert session_file._move(src, dst) and dst.stat().st_ino == ino and not src.exists()
