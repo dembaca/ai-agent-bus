@@ -245,6 +245,10 @@ The faults on NATS are windows, opened half way through the sends for
 | `stall` | each chunk from the server held `--stall-sec` |
 | `halfopen` | both directions stop being read, and are read again at the window's end |
 
+The byte proxy refuses a connection only while the nats-server does not listen
+(`refused`); the first one after a restart is passed on at once, its INFO within
+a second (#221). A session that stays away longer is the bus's, not the proxy's.
+
 A PR-sized cut run (`--count 10`, the default 50 ms apart) has sent all its
 posts within about half a second, inside the 2 s window: it measures the window,
 not what comes after it. The nightly run (100 posts, 5 s) outlasts the window and
