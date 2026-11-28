@@ -24,7 +24,7 @@ code does today and point here where a decision will change them.
 | ADR-013 | The channel banner shows what waits: the home's 👑 server writes it on a change only, at most once a minute; a stall in red, asks waiting on a human in amber, else the crown and the agents by status; display only, never input; a human's banner is left alone and told to its human; without the licence or the permission everything stays as today; later the 👑 prefix only on asks and routings | Withdrawn (2026-11-16): depends on the Mattermost edition and a permission setting; the header carries the rare facts instead | — |
 
 | ADR-014 | Agent-to-agent traffic over NATS JetStream; Mattermost stays the humans' chat behind one central adapter per tenant; agents log in through Keycloak (device flow) and a login service issues 15-minute NATS credentials bound to the host's own key; a clean-room build from Cotal's protocol description with a message format of the bus's own (no wire compatibility with Cotal); tools, hook API and bus logic unchanged behind the ports; parallel operation switched per home channel, the registrar shut down last; the sender NATS-native (last subject token, agents read only through push consumers the login service makes, no signed envelope) | Accepted (2026-11-22) by the owner, with the review's recommendations; three later points open (below), none of them blocks the first NATS code. Phase 2 built; phase 3 built in part in 0.97.0: the login service with the host's Keycloak login, consumers, a home over NATS, owner, presence and crown over NATS (RT-6.34 to RT-6.38), the attestation after 0.97.0 (RT-6.41); phase 1 built in part: the fault-run rig `testrig/` runs against the bus over NATS (first finding: a hard-stopped coordinator's crown passes after 89 to 120 s, target 30 s); not built: the central adapter, the pod path, role addressing, files over NATS, signed human-origin events, shutting the registrar down; agent DMs over NATS built 2026-11-27 behind plan B's switch (#244 piece 3), and every check of a trusted human and of an agent's owner from the login service's records (#244 piece 4), and asks to humans and their answers over NATS (#244 piece 6). Amendment 2026-11-26: phase 5 as plan B (no Mattermost token in any agent), pieces in order, proposed; its switch per channel, a flag in the channel directory, decided by the owner | — |
-| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports. #158 adds the metrics page: `GET /metrics` in the Prometheus text format behind the operator's login — the console's own observations aggregated, counted process-wide at the event (requests by bounded route buckets, streams, the readers' connection states, connects, renewals, decoder refusals) and the agent numbers of that session's own reading, served only while it is live, in bounded labels (no agent, owner or home; only the newest versions keep their own label), so a scrape starts nothing and needs no new right; the session cookie is never a scrape credential; the unattended variant the owner approved: a Bearer scrape token gates a listener of the page's own (CB_CONSOLE_METRICS_LISTEN_ADDR, loopback by default), served from a service reading of one fleet and stats book — consumers the login service makes, an account subscribe-only on the two deliver subjects, aggregates only. #201's first piece adds the per-agent numbers the design canvas shows: `GET /v1/agent-stats`, one row per own or trusted agent (its attestation names the logged-in operator as owner or trusted; the owner's decision of 2026-11-27 amending point 15) whose parts the 7-day window holds — the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination over the same parts; n/a without `tok` or for an empty object, never 0, the reports' rule) and the posts, wakes and tool calls of 24 hours, from the same session's own reading as the reports; the aggregate reports (`/v1/stats`, the metrics page) stay visible to every operator for all agents. Permission prompts in the console (the addition of 2026-11-28): decided, not built, read only and for the session's responsible human alone, on a record of their own; built after plan B (#244) | — |
+| ADR-015 | Operator web console: a web application for the people who look after the agents, with the agents by state, who trusts and who coordinates whom, the bus's statistics as charts, and the open asks answered beside their thread; no chat. It stands alone on the bus on NATS, with Keycloak as its only login and no dependency on Mattermost (decided by the owner on 2026-11-23). Recommended: on NATS as the logged-in operator, with a credential of that person's own from the login service, so NATS says who answered and the asking agent's server still decides whether it approves | Proposed (2026-11-23), not accepted; eight points open for the owner, three decided on 2026-11-23 (ADR-016). Stage 1's read-only pilot is built (2026-11-24): the browser app (#89) and its server (#94) — the login of point 4 and the API of point 10 with its SSE — one read-only NATS account, the pilot's documented deviation, since replaced: the console reads as each logged-in operator with a credential of that person's own from the login service (the addition of 2026-11-25, points 1 to 7, RT-6.43), and the static account is gone. The fleet's "now" carries a monotonic floor: a delivery-silent console ages presence out and drops the crown, a jump of the host's wall clock changes nothing, and only a genuinely newer server stamp re-anchors it (#108). Of the addition of 2026-11-25, the asks and `STATS` on NATS are built too (points 8 to 15, the MCP server's and the console's part, and the login service's stream and rights for them): each MCP server publishes its ask record and its `STATS` parts, the console receives them through each login's own consumers, decodes them strictly and shows the asks read-only and the two reports. #158 adds the metrics page: `GET /metrics` in the Prometheus text format behind the operator's login — the console's own observations aggregated, counted process-wide at the event (requests by bounded route buckets, streams, the readers' connection states, connects, renewals, decoder refusals) and the agent numbers of that session's own reading, served only while it is live, in bounded labels (no agent, owner or home; only the newest versions keep their own label), so a scrape starts nothing and needs no new right; the session cookie is never a scrape credential; the unattended variant the owner approved: a Bearer scrape token gates a listener of the page's own (CB_CONSOLE_METRICS_LISTEN_ADDR, loopback by default), served from a service reading of one fleet and stats book — consumers the login service makes, an account subscribe-only on the two deliver subjects, aggregates only. #201's first piece adds the per-agent numbers the design canvas shows: `GET /v1/agent-stats`, one row per own or trusted agent (its attestation names the logged-in operator as owner or trusted; the owner's decision of 2026-11-27 amending point 15) whose parts the 7-day window holds — the token sums of the last 24 hours and of the window (`all`, the split by token type, the input's bus overhead and coordination over the same parts; n/a without `tok` or for an empty object, never 0, the reports' rule) and the posts, wakes and tool calls of 24 hours, from the same session's own reading as the reports; the aggregate reports (`/v1/stats`, the metrics page) stay visible to every operator for all agents. Permission prompts in the console (the addition of 2026-11-28): decided, not built, read only and for the session's responsible human alone (the agent's owner), on a record of their own in a stream of its own in memory; built after plan B (#244) | — |
 | ADR-016 | The bus without a chat as its source: Keycloak is the root of identity, keyed by `sub`, with chat accounts bound to it per product; a channel directory on NATS that only the login service writes (name, public or not, members, a binding per chat) replaces Mattermost membership behind `callout.Channels`; one bridge per chat product vouches for its humans, and later a Keycloak login on NATS itself; the login service attests trust lists; agents need no chat. Decided by the owner on 2026-11-23: the directory, Mattermost membership behind a replaceable interface until then, and for the console reading only, a Python server and what an operator sees | Accepted (2026-11-23) by the owner, its nine open points decided by the owner the same day; it changes ADR-014 points 6, 10, 11 and 16. Built in part: the channel directory (RT-6.39) and "in doubt, foreign" (RT-6.16) in 0.97.0; after 0.97.0 the admin API with the import from Mattermost (RT-6.40) and the attested trust lists (RT-6.41). Not built: the bridges, `checkChat` as a binding, agents without a chat, the host's agent name from an anchor that is not the username. Addition 2026-11-24: all Mattermost functions in one service, the bridge in `services/bridge`, the registrar's move as an open step; built step by step, the pilot with one bridge bot | — |
 | ADR-017 | The token split attributes tokens by content, not by cause: a request's tokens go to task work, bus overhead or multi-agent coordination by what its context and output hold, never all to the bus because the bus started the turn | Decided 2026-11-26 with the issue on the token split (#139, its proposed defaults); built for Claude Code (the overhead measurement, RT-6.9 step 2, method 1) | #139 |
 
@@ -6309,42 +6309,62 @@ permission relay, RT-6.13); the ask record leaves prompts out, so the console
 shows none. The console is to show the open prompts as a kind of ask, to the
 person they went to and to no one else.
 
-*A record of its own beside the ask record.* Recommended: the session's MCP
-server publishes its open prompts as one record on
-`<presence>.prompt.<anchor>.<name>` in `PRESENCE`, `<anchor>` the responsible
-human's anchor in its subject form (`.` written as `~`, as in the ask record's
-`human`), `<name>` the agent's NATS name. The login service grants each agent
-that subject for its own name and only for the anchors it attests as the
-agent's owner or trusted humans (RT-6.41), the people the bridge may DM a
-prompt to. Why: the subject names the person, so NATS keeps the record from
-everyone else. A login's presence consumer gets one more filter,
-`<presence>.prompt.<its own anchor>.*`; no other consumer's filter matches such
-a subject (an agent's and a login's take `<presence>.*.*`, the unattended
-page's reading that and `.ask.*.*`), and an operator's credential subscribes
-only to its own deliver subjects. An agent's subjects stay bounded by its trust
-list, as its ask record by its home. Alternative: a kind `permission` in the
-ask record. Rejected: unlike the ask card (the previous addition), which every
+*A record of its own, in a stream of its own.* Recommended: the session's MCP
+server publishes its open prompts as one record on `<prompt>.<anchor>.<name>`,
+`<prompt>` a prefix of its own (default `prompt`, different from the others,
+as the `STATS` prefix is), `<anchor>` the anchor of the agent's owner in its
+subject form (`.` written as `~`, as in the ask record's `human`), `<name>` the
+agent's NATS name. The owner alone: on NATS the host's login requires the
+token's person to be the responsible human (RT-6.34 step 5), so the attested
+owner is the responsible human, and a prompt whose responsible human is
+another person is not on the record (over the bridge the DM may also go to a
+trusted human; the record does not follow it there). The login service grants
+each agent exactly that one subject, for its own name and its attested owner
+(RT-6.41), and none when the owner's subject token is `-` (an anchor outside
+the token's characters, `ownerToken` in the login service), so no two people
+share a subject; such a person's prompts stay in the DM and the terminal. The
+stream, `PROMPTS`, is the login service's, made at its start as `STATS` is:
+memory storage, subjects `<prompt>.>`, one message per subject, `max_age` 35
+minutes (the record's 30 minutes of validity and a margin), messages of at
+most 4 KiB, and `max_bytes` for one full record per agent (4 MiB: a thousand
+agents). Why: the subject names the one person, so NATS keeps the record from
+everyone else. Each login gets one consumer of its own on `PROMPTS`, filtered
+on `<prompt>.<its own anchor>.*` and delivering to the login's own deliver
+subject, the only one an operator's credential subscribes to; no agent, bridge
+or unattended reading has a consumer there, and none is made for an anchor
+whose token is `-`; the prefix lies outside `<presence>.>`, so no `PRESENCE`
+consumer reaches it, not even one widened by hand. A test pins these filters
+and rights at the build. In memory, the prompts leave no copy on disk or in a
+backup, outlive a crashed session by at most 35 minutes and cannot push
+presence out of its stream. Alternatives: `PRESENCE` itself, rejected for its
+disk, its 24 h and its 16 MiB shared with presence; a kind `permission` in the
+ask record, rejected: unlike the ask card (the previous addition), which every
 login that may see the agent's home receives and only the console server keeps
 from the others, a tool input that may be confidential must not reach another
-operator's consumer at all; prompts would also crowd the asks and their cards
-out of its 4 KiB, and an older console server refuses a whole record with a
-kind it does not know. Alternative: a record per prompt. Rejected, as for asks:
-subjects without bound in the stream presence lives in.
+person's consumer at all, and prompts would crowd the asks and their cards out
+of its 4 KiB; a record per prompt, rejected as for asks: subjects without
+bound.
 
 *What it holds.* Format v1: `prompts`, the open prompts newest first, at most
 8, each with `id` (Claude Code's request id), `tool`, `desc`, `input` and
 `asked` (the server's time of the prompt); `more`, the open prompts left out;
-`iat` and `exp`; at most 4 KiB, `PRESENCE`'s limit (the encoder stops at 3840
-bytes, as for the ask record). Newest first, since Claude Code shows one dialog
-at a time and the relay learns of an answer in the terminal only at the turn's
-end. The tool's name and the description go in full (the description up to
-1,000 characters, cut with "⋯ cut" past that); `input` is the DM's own preview
-(`permission.preview`: Bash's command in full, file content and long values as
-their size, Claude Code's masking kept) when the prompt then fits, otherwise
-`‹input not shown: N chars›`, N the preview's length; a prompt that does not
-fit even so is counted in `more`. So the record never holds what the DM would
-not show, at most less. The console shows each field as plain text, control
-and direction characters stripped.
+`iat` and `exp`; within 4 KiB (the encoder stops at 3840 bytes, as for the ask
+record). Newest first, since Claude Code shows one dialog at a time and the
+relay learns of an answer in the terminal only at the turn's end; the newest
+prompt gets its input before an older prompt gets a place. The tool's name goes
+in full, the description up to 1,000 characters (the DM shows it whole);
+`input` is the DM's own preview (`permission.preview`: Bash's command in full,
+file content and long values as their size, Claude Code's masking kept) when
+it fits, otherwise `‹input not shown: N chars›`, N the preview's length; a
+prompt that does not fit even so is counted in `more`. So the record never
+holds what the DM would not show, at most less, and the console marks a cut
+description and an input not shown with "in full in the DM". The record names
+neither agent nor home: the console takes the agent from the subject's last
+token, which NATS ties to the publisher, and the home from the agent's
+attestation and membership (RT-6.41, RT-6.37), never from the body. It shows
+each field as plain text: line breaks kept, so a multi-line command is not
+joined into one line, and every other control or direction character replaced
+by a visible mark, never removed silently.
 
 *Fresh or gone, as the ask record.* The server publishes it at each change (a
 prompt the relay sent, by DM or over the bridge; its verdict; its close at the
@@ -6357,11 +6377,11 @@ it was stored.
 *For the responsible human alone.* The console server shows a prompt record
 only in the session of the login whose own record (the login service's word)
 gives the anchor of its subject, and only while the asking agent's fresh
-attestation names that anchor as its owner or a trusted human, the rule of the
-per-agent rows (`/v1/agent-stats`); any other record is dropped and counted as
-a refusal. Nothing of it reaches another session, the reports or the metrics
-page, the unattended page or a log line; in the person's own view it counts
-only as "for you".
+attestation names that anchor as its owner: narrower than the per-agent rows
+(`/v1/agent-stats`), which the people an agent trusts see too. Any other record
+is dropped and counted as a refusal. Nothing of it reaches another session, the
+reports or the metrics page, the unattended page or a log line; in the person's
+own view it counts only as "for you".
 
 *Read only.* The Asks view shows a prompt as a row of the kind "permission"
 with the chip "for you": tool, description and input, agent, home and age, the
@@ -6370,24 +6390,24 @@ line "may already be answered in the terminal", and in place of the answer box
 writing console, on hold until plan B is done (the owner's order of
 2026-11-28; the setup through the console, #193, its third point); no verdict
 path, publish right or binding is built for it now. What this gives up: a
-prompt answered in the terminal stays in the console until the turn ends; the
-record is the agent's word, as the console's other records (RISK-22), so a
-steered agent can show its human a misleading description, never a verdict;
-and what the DM shows of a tool call lies in one more place, `PRESENCE` on
-the NATS server (RISK-38).
+prompt answered in the terminal stays in the console until the turn ends; a
+responsible human who is not the agent's owner, and an owner whose anchor has
+no subject token, see no prompts in the console; the record is the agent's
+word, as the console's other records (RISK-22), so a steered agent can show its
+owner a misleading description, never a verdict; and what the DM shows of a
+tool call lies in one more place, the NATS server's memory, for up to 35
+minutes (RISK-38).
 
 *Open for later decisions:* whether the permission prompts of OpenCode and pi,
 which the bus does not relay today, come in the same record (with a field for
-the harness) or not at all; retention: `PRESENCE` keeps a record up to 24 h
-until a newer one replaces it, and the NATS server's files and backups may keep
-the bytes longer, so whether prompts get a stream of their own in memory with
-a short age; what the console shows after a restart: a new MCP server
-publishes an empty list while Claude Code's dialog may still wait (the relay
-keeps its open prompts in memory only), and a console server's new login gets
-each record's last message again; whether a prompt the relay did not send (no
-bridge for piece 10, the plan B switch not read) is shown with "answer in the
-terminal"; and the bounds of 8 prompts and 1,000 characters, to be measured at
-the build.
+the harness) or not at all; what the console shows after a restart: a new MCP
+server publishes an empty list while Claude Code's dialog may still wait (the
+relay keeps its open prompts in memory only), a restarted NATS server has lost
+the records until their next renewal (up to 10 minutes), and a console
+server's new login gets each record's last message again; whether a prompt the
+relay did not send (no bridge for piece 10, the plan B switch not read) is
+shown with "answer in the terminal"; and the bounds of 8 prompts, 1,000
+characters and 4 MiB, to be measured at the build.
 
 ## ADR-016: The bus without a chat as its source
 

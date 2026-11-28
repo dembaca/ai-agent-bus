@@ -564,9 +564,10 @@ before 0.5.0 are described in the git history.
   2026-11-28; the owner's decision, ask `s184ounnnpghpgsfas1dpxnxia`). A session's open
   tool permission prompts are to show in the console's Asks view as a kind of ask, read
   only ("answer in the DM or the terminal") and only for the session's responsible
-  human: a record of their own on `<presence>.prompt.<anchor>.<name>`, which only that
-  person's consumer reads, holding no more of the input than the DM shows. Built after
-  plan B (#244); the record's exposure is a new risk (RISK-38).
+  human, the agent's owner: a record of their own on `<prompt>.<anchor>.<name>` in a
+  stream of its own in memory (35 minutes), which only that person's consumer reads,
+  holding no more of the input than the DM shows. Built after plan B (#244); the
+  record's exposure is a new risk (RISK-38).
 
 ### Fixed
 
