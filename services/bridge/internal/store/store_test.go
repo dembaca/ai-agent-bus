@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -9,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/message"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/mirror"
 )
 
@@ -252,5 +256,52 @@ func TestASeenBucketShorterThanAnHourIsRefused(t *testing.T) {
 	}
 	if _, err := OpenSeen(ctx, nc, "SHORT"); err == nil {
 		t.Fatal("bound to a bucket that keeps its keys a minute")
+	}
+}
+
+type idSink struct{ n int }
+
+func (s *idSink) Create(context.Context, string, string, string, map[string]any) (string, error) {
+	s.n++
+	return fmt.Sprintf("mm%d", s.n), nil
+}
+func (*idSink) React(context.Context, string, string) error   { return nil }
+func (*idSink) Unreact(context.Context, string, string) error { return nil }
+
+// RT-6.36 step 6, #297: an agent's reaction mirrored onto the
+// copy never replaces the copy's way back, so a person's reply or reaction on
+// the copy names the post's sequence, also after the entry is read again.
+func TestAMirroredReactionLeavesThePostsWayBack(t *testing.T) {
+	kv, _ := open(t)
+	ctx := context.Background()
+	m := &mirror.Mirror{Home: "home", Prefix: "a2a.", Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sink: &idSink{}, Store: kv, Links: mirror.LinksNone{}}
+	ch := func(context.Context) (string, error) { return "chan", nil }
+	if err := m.Handle(ctx, ch, "agent-b", 5, message.Msg{Kind: message.Post, Text: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	ref := uint64(5)
+	for _, r := range []struct {
+		seq  uint64
+		kind message.Kind
+	}{{6, message.Reaction}, {7, message.Unreaction}, {8, message.Reaction}} {
+		seq, kind := r.seq, r.kind
+		if err := m.Handle(ctx, ch, "agent-c", seq, message.Msg{Kind: kind, Ref: &ref, Emoji: "thumbsup"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a replay of the reaction after a crash changes nothing either
+	if err := m.Handle(ctx, ch, "agent-c", 6, message.Msg{Kind: message.Reaction, Ref: &ref, Emoji: "thumbsup"}); err != nil {
+		t.Fatal(err)
+	}
+	// the root of a person's reply and the ref of a person's reaction both come from Seq
+	if seq, ok, err := kv.Seq(ctx, "home", "mm1"); err != nil || !ok || seq != 5 {
+		t.Fatalf("the post's way back: %d %v %v", seq, ok, err)
+	}
+	if p, ok, err := kv.Post(ctx, "home", 6); err != nil || !ok || p.ID != "mm1" || !p.Reaction {
+		t.Fatalf("the reaction's entry: %+v %v %v", p, ok, err)
+	}
+	if p, ok, err := kv.Post(ctx, "home", 5); err != nil || !ok || p.ID != "mm1" || p.Reaction {
+		t.Fatalf("the post's entry: %+v %v %v", p, ok, err)
 	}
 }
