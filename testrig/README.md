@@ -225,6 +225,7 @@ does. What stands in for what (`natsrig.py`):
 | the login service's streams and consumers | an admin user makes them, and remakes an agent's consumers from the `since` of its CONNECT, which the byte proxy hands it before the server sees it (the callout's part) |
 | the Keycloak login | `natsserver.py`, a shim that installs a stand-in login with the agent's nkey and then runs the server's normal entry point; product code unchanged |
 | Mattermost | the stub, for the half of a NATS-home session that still uses it (bot, roster, status) |
+| the bridge's records (only with `CB_PLANB_TEST=2`) | the admin writes the bridge's signal with the bot prefix `agent-`, a bot record per agent and the owner's account record, again every 60 s (`Admin.play_bridge`) |
 
 The config, the streams and the consumers copy the `rig` fixture and
 `_consumer_specs`/`_login_service` of `mcp/tests/test_natsbus.py`; the rights copy
@@ -279,6 +280,37 @@ report's `recovery_s` says how long that took after the window closed (with the
 0.5 s recovery pace it is the bus's reconnect delay, #222). `--summary` prints a
 table after the JSON: per fault the p50, p95 and maximum wait, loss and duplicates.
 
+### Nobody told as gone during a cut (plan B piece 2)
+
+```
+CB_PLANB_TEST=2 uv run --directory testrig bus-testrig bus-run --transport nats --fault cut --count 20 --summary
+```
+
+With the roster from NATS (plan B piece 2, ADR-014 phase 5) a cut makes the roster
+empty, and nobody may be told as gone then (RT-6.21). `CB_PLANB_TEST` is plan B's
+test switch (`mcp/.../planb.py`): the rig reads it from its own environment, hands it
+to the sessions (it strips every other `CB_*`) and sets `PYTEST_CURRENT_TEST` for
+them, since the switch counts only under a test. With piece 2 in it:
+
+- the admin plays the bridge's part of the roster (the table above), so the roster
+  shows each agent as `agent-<NATS name>`, a name `departed.mentioned` reads;
+- the sender waits until its roster (`coordinator("roster")`) shows the receiver, then
+  every send is `TASK @agent-<receiver> @<canary> bus-run <n>`; after the window and
+  the recovery, 20 more sends at the run's pace, since a cut's own sends fail;
+- the run records, per window (`before`, `window`, `after`), every **told gone**: a
+  `post_message` answer whose `not_reachable` names a live agent `gone …`
+  (`departed.gone`, RT-6.14 step 10), or a `wait_for_events` event marked `departed`
+  or answering in a thread that a live agent `is gone` (RT-6.21); and every **roster
+  miss**: a live agent in `not_reachable` for another reason, or in `not_here`;
+- the canary, `agent-qqq…` (no agent's name), is in every `not_reachable` whose check
+  ran, so the report's `roster.checks` counts the checks per phase.
+
+The measurand is `told_gone`; `--summary` adds the columns `told gone` and `roster
+miss` (`-` without piece 2). The run exits 1 when a live agent was told as gone
+(under every fault but `kill-client`, which really stops the receiver for its window,
+so there the number is reported), and when no answer named the canary: a run that
+never checked the roster measured nothing. Roster misses are reported, not failed.
+
 `coord-run` starts `--sessions` servers in one home (default 3), waits for the
 crown, SIGKILLs the holder's process group and waits for a survivor's crown log
 (`crown-<uid>.log`) to say `gained`; then a fresh session joins and the next stop
@@ -292,8 +324,10 @@ target of 30 s.
 Mattermost election to a crown, so that take-over is not yet measured.
 
 CI (`.github/workflows/testrig.yml`): the `harness` job runs `--fault all --count
-10` and one hard stop on every PR; the `full-nats` job runs 100 messages per
-fault and 50 hard stops, nightly and by hand (`workflow_dispatch`).
+10`, one hard stop and, with `CB_PLANB_TEST=2`, a cut of 20 posts on every PR; the
+`full-nats` job runs 100 messages per fault, 50 hard stops and, with
+`CB_PLANB_TEST=2`, every fault with 100 messages again and one cut of 120 s (longer
+than a presence stays fresh, 90 s), nightly and by hand (`workflow_dispatch`).
 
 ## Layout
 

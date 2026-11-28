@@ -16,6 +16,11 @@ RT-6.36). What stands in for what:
   run (`python -m bus_testrig.natsserver`).
 * **Mattermost** is still the stub: a NATS home's session uses Mattermost for
   its bot, roster and status (the half that is not the home's traffic).
+* **The bridge** only with the roster from NATS (plan B piece 2, `CB_PLANB_TEST=2`):
+  the admin writes what the bridge writes for the roster (`Admin.play_bridge`), its
+  signal with the bot prefix, a bot record per agent and the owner's account record,
+  so that a mention of `agent-<NATS name>` names a live agent of the run (`roster`
+  in the report, the measurand `told_gone`).
 
 The config and the consumers are a COPY of the `rig` fixture and of
 `_consumer_specs`/`_login_service` in `mcp/tests/test_natsbus.py` (around lines
@@ -71,6 +76,21 @@ RECOVERY_SEND_SEC = 0.5  # the pace of the recovery sends
 # Faults the sender must recover from: a send after the window proves it.
 SENDER_FAULTS = {"restart", "hang", "cut", "blackhole"}
 SERVER_START_SEC = 10.0
+#: plan B's test switch (mcp planb.py): the pieces on in every channel. The rig reads it
+#: from its own environment and hands it to the sessions; piece 2 is the roster from NATS.
+PLANB_ENV = "CB_PLANB_TEST"
+#: the bridge's bot prefix in the rig, the sessions' registrar prefix (`agent-`) too, so
+#: that `departed.mentioned` reads a mention of an agent's bridge name as a bus agent's
+BOT_PREFIX = "agent-"
+#: a name in the NATS form that no agent of the run has: mentioned in every send with
+#: the roster on, so that each `not_reachable` proves the check ran (its canary)
+NOBODY = "agent-" + "q" * 25
+#: how often the stand-in bridge writes its records again: a bot record counts at most
+#: 180 s after its write (natsbus.BOT_RECORD_MAX_SEC), an account record 900 s
+BRIDGE_REFRESH_SEC = 60.0
+#: with the roster on, the sends after a fault's window and its recovery: where a roster
+#: check meets the session just back (#252)
+ROSTER_TAIL = 20
 
 # --- the login service's part, copied from mcp/tests/test_natsbus.py ---------------------
 
@@ -101,7 +121,9 @@ def consumer_specs(agent: str, channels: list[str],
     A copy of test_natsbus.py `_consumer_specs`."""
     since = since or {}
     out: list[tuple[str, str, dict[str, Any]]] = []
-    filters = ["presence.*.*"]  # every agent's presence: <owner>.<name> (RT-6.37)
+    # every agent's presence: <owner>.<name> (RT-6.37); the people's account records and
+    # the bridge's bot records (RT-6.42, RT-6.44 step 3), as manager.go desired() has them
+    filters = ["presence.*.*", "presence.account.mattermost.*.v1", "presence.bot.*.v1"]
 
     def cfg(name: str, deliver: str, flt: list[str], policy: str = "new") -> dict[str, Any]:
         c: dict[str, Any] = {"durable_name": name, "deliver_subject": deliver, "ack_policy": "none",
@@ -118,7 +140,8 @@ def consumer_specs(agent: str, channels: list[str],
         if since.get(ch):  # what the login service does with `since`
             c["deliver_policy"], c["opt_start_seq"] = "by_start_sequence", since[ch] + 1
         out.append(("BUS", c["durable_name"], c))
-        filters += [f"presence.crown.{ch}.*", f"presence.member.{ch}.*"]
+        filters += [f"presence.crown.{ch}.*", f"presence.member.{ch}.*",
+                    f"presence.bridge.{ch}.v1", f"presence.planb.{ch}.v1"]
     dm = cfg(f"{agent}_dm", f"deliver.{agent}.dm", [f"bus.dm.{agent}.*"])
     if since.get(SINCE_DM):  # the same as the channels: restart after the last DM seen
         dm["deliver_policy"], dm["opt_start_seq"] = "by_start_sequence", since[SINCE_DM] + 1
@@ -472,6 +495,30 @@ class Admin:
             await asyncio.sleep(0.1)
         return [n for n in names if n not in self.last_presence]
 
+    async def play_bridge(self, agents: list[Identity], home: str = HOME) -> None:
+        """What the bridge writes for the roster from NATS (plan B piece 2, RT-6.44 steps 2
+        and 3), until cancelled: its signal for `home` with the bot prefix, a bot record per
+        agent (`<prefix><NATS name>`, the agent's stub bot) and the account record that binds
+        the owner's anchor to the bots' owner account, so that `owned_link` links each bot
+        to its NATS name and the roster shows `agent-<name>`. Written again every
+        BRIDGE_REFRESH_SEC; a write that fails under a fault is the next one's to make."""
+        account = "".join(secrets.choice(_ID_ALPHABET) for _ in range(26))
+        while True:
+            now = int(time.time())
+            records = [(f"presence.bridge.{home}.v1",
+                        {"v": 1, "home": home, "people": True, "iat": now, "exp": now + 180,
+                         "bot_prefix": BOT_PREFIX}),
+                       (f"presence.account.mattermost.{account}.v1",
+                        {"v": 1, "account": account, "anchor": OWNER, "name": OWNER, "approver": False,
+                         "token_iat": now, "iat": now, "exp": now + 900})]
+            records += [(f"presence.bot.{a.name}.v1",
+                         {"v": 1, "agent": a.name, "bot": a.uid, "username": BOT_PREFIX + a.name,
+                          "owner_account": account, "iat": now, "exp": now + 180}) for a in agents]
+            for subject, body in records:
+                with contextlib.suppress(Exception):
+                    await self.nc.request(subject, json.dumps(body).encode(), timeout=2)  # the stream's ack
+            await asyncio.sleep(BRIDGE_REFRESH_SEC)
+
     async def close(self) -> None:
         if self.nc is not None:
             with contextlib.suppress(Exception):
@@ -489,9 +536,81 @@ class _Receiver:
     ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
+_GONE_REPLY = re.compile(r"(?<![\w.-])([a-z0-9][a-z0-9._-]*) is gone\b")
+
+
+def _note(run: Run, kind: str, name: str, why: str, via: str, at: float) -> None:
+    entry = {"name": name, "why": why, "via": via, "phase": run.phase(at),
+             "at_s": round(at - run.started, 3)}
+    (run.told_gone if kind == "gone" else run.roster_misses).append(entry)
+
+
+def read_result(run: Run, post: Any, live: set[str], at: float) -> None:
+    """What a `post_message` answer told the sender about the agents its TASK names
+    (`not_reachable`, RT-6.14 step 10): a live agent `gone …` (departed.gone) is told
+    gone, a live agent under any other reason a roster miss. The canary NOBODY, which no
+    agent has, is named in every answer whose check ran: that answer counts as a check."""
+    if not isinstance(post, dict):
+        return
+    entries = post.get("not_reachable") or []
+    named = [(name, why.removesuffix(")")) for name, _, why in
+             (str(e).partition(" (") for e in (entries if isinstance(entries, list) else []))]
+    if any(name == NOBODY for name, _ in named):
+        phase = run.phase(at)
+        run.roster_checks[phase] = run.roster_checks.get(phase, 0) + 1
+    for name, why in named:
+        if name in live:
+            _note(run, "gone" if why.startswith("gone") else "miss", name, why, "post_message", at)
+
+
+def read_events(run: Run, events: Any, live: set[str], at: float) -> None:
+    """What a `wait_for_events` answer told the receiver (RT-6.21): an event marked
+    `departed` naming a live agent, or a server's answer in a thread saying a live agent
+    `is gone`, is told gone; `not_here` naming one is a roster miss."""
+    for item in events if isinstance(events, list) else []:
+        if not isinstance(item, dict):
+            continue
+        for name in str(item.get("departed") or "").split(","):
+            if name.strip() in live:
+                _note(run, "gone", name.strip(), "departed", "event", at)
+        for part in str(item.get("not_here") or "").split(","):
+            name = part.strip().split(" ", 1)[0]
+            if name in live:
+                _note(run, "miss", name, "not_here", "event", at)
+        post = item.get("post")
+        message = str(post.get("message") or "") if isinstance(post, dict) else ""
+        for name in _GONE_REPLY.findall(message):
+            if name in live:
+                _note(run, "gone", name, "a reply: is gone", "event", at)
+
+
+async def _roster_shows(sender: BusProcess, live: set[str], run: Run) -> bool:
+    """Wait until the sender's roster (`coordinator("roster")`) lists every live agent: the
+    receiver announces its membership when its inbox opens, so a send at once would count
+    its start as a roster miss. False, with the run unmeasured, when it never does."""
+    deadline = time.monotonic() + START_SEC
+    began = time.monotonic()
+    shown: set[str] = set()
+    while time.monotonic() < deadline:
+        try:
+            answer = await sender.call("coordinator", action="roster")
+        except (McpError, RuntimeError, TimeoutError) as exc:
+            run.closed = run.closed or f"coordinator roster failed: {type(exc).__name__}: {exc}"[:300]
+            answer = {}
+        rows = answer.get("roster") if isinstance(answer, dict) else None
+        shown = {str(r.get("agent")) for r in rows or [] if isinstance(r, dict)}
+        if live <= shown:
+            run.notes.append(f"the roster from NATS showed the receiver after "
+                             f"{time.monotonic() - began:.1f} s")
+            return True
+        await asyncio.sleep(0.25)
+    run.unmeasured = f"the sender's roster never showed {sorted(live - shown)} within {START_SEC:.0f} s"
+    return False
+
+
 async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: float = 2.0,
                        stall_sec: float = 0.5, send_interval: float = 0.05,
-                       settle_sec: float | None = None) -> Run:
+                       settle_sec: float | None = None, planb: str = "") -> Run:
     """`bus.bus_run` for a home over NATS: `count` posts from one session to another,
     with `fault` (one of NATS_FAULTS, or None for the baseline) opened half way
     through the sends for `fault_sec`.
@@ -502,6 +621,12 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
     `notes`. The reader ends once sending is done and nothing arrived for
     `settle_sec` (default: 1 s, or `fault_sec` + 10 s under a fault, so a session
     that reconnects with back-off still delivers inside the window).
+
+    `planb` is plan B's test switch for the sessions (`CB_PLANB_TEST`, mcp planb.py).
+    With piece 2 in it (the roster from NATS) the admin plays the bridge's records too,
+    each send is a TASK that mentions the receiver by its bridge name and the canary
+    NOBODY, and the run records per window who was told as gone and every roster miss
+    (`read_result`, `read_events`): the measurand `told_gone`, which must be 0 (#252).
     """
     if fault is not None and fault not in NATS_FAULTS:
         raise ValueError(f"unknown NATS fault {fault!r}; one of {NATS_FAULTS}")
@@ -512,7 +637,14 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
               fault_params=({"window_sec": fault_sec, "at_send": count // 2}
                             | ({"stall_sec": stall_sec} if fault == "stall" else {}))
               if fault else {}, send_interval=send_interval)
+    pieces = {p.strip() for p in planb.split(",") if p.strip()}
+    run.planb = ",".join(sorted(pieces, key=lambda p: (len(p), p)))
+    run.roster_on = "2" in pieces
     sender_id, receiver_id = identity("sender"), identity("receiver")
+    live = {BOT_PREFIX + receiver_id.name}
+    # The test switch counts only while pytest runs a test (planb._test_pieces): the
+    # sessions are this rig's test subjects, so they are told they run under one.
+    extra = {PLANB_ENV: run.planb, "PYTEST_CURRENT_TEST": "bus-testrig (CB_PLANB_TEST)"} if pieces else {}
     run.started = time.monotonic()
     failed_sends = 0
     async with contextlib.AsyncExitStack() as stack:
@@ -523,6 +655,14 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
         stack.push_async_callback(admin.close)
         await admin.connect()
         await admin.streams()
+        if run.roster_on:
+            bridge = asyncio.create_task(admin.play_bridge([sender_id, receiver_id]))
+
+            async def stop_bridge() -> None:
+                bridge.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await bridge
+            stack.push_async_callback(stop_bridge)
         stub = await stack.enter_async_context(MattermostStub())
         for who in (sender_id, receiver_id):
             stub.identify(who.token, who.uid, who.username)
@@ -530,9 +670,10 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
             ByteProxy("127.0.0.1", server.port, stall_sec=stall_sec, on_connect=admin.on_connect))
         receiver_state = tempfile.mkdtemp(prefix="bus-testrig-resume-")
         stack.callback(shutil.rmtree, receiver_state, True)
-        sender = nats_session(stub.url, sender_id, relay.url)
+        sender = nats_session(stub.url, sender_id, relay.url, extra=extra)
         await stack.enter_async_context(sender)
-        rx = _Receiver(nats_session(stub.url, receiver_id, relay.url, state_dir=receiver_state))
+        rx = _Receiver(nats_session(stub.url, receiver_id, relay.url, state_dir=receiver_state,
+                                    extra=extra))
         await rx.proc.start()
         # The receiver's BUS consumer: its delivered position and pending count
         # are what a lost sequence is read beside (issue #213).
@@ -544,6 +685,15 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
 
         seq_of: dict[str, int] = {}
         seq_of_text: dict[str, int] = {}
+
+        def message(seq: int) -> str:
+            # With the roster on, a TASK that names the receiver by its bridge name and the
+            # canary: what makes the sender's server check the roster (RT-6.14 step 10) and
+            # the answering server look for departed agents (RT-6.21).
+            if run.roster_on:
+                return f"TASK @{BOT_PREFIX}{receiver_id.name} @{NOBODY} bus-run {seq}"
+            return f"bus-run {seq}"
+
         sent_done: float | None = None
         last_arrival = time.monotonic()
         reader: asyncio.Task[None] | None = None
@@ -559,6 +709,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
             if not await _open_inbox(rx.proc, run):
                 return run
             rx.ready.set()
+            if run.roster_on and not await _roster_shows(sender, live, run):
+                return run
 
             async def receive() -> None:
                 """`bus.bus_run`'s reader, waiting while the receiver is replaced."""
@@ -576,6 +728,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                         await asyncio.sleep(0.25)
                         continue
                     failures = 0
+                    if run.roster_on:
+                        read_events(run, events, live, time.monotonic())
                     for seq in _arrivals(events, seq_of, seq_of_text):
                         run.arrive(seq)
                         last_arrival = time.monotonic()
@@ -594,6 +748,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
 
             async def open_window() -> None:
                 assert fault is not None
+                run.window_opened_at = time.monotonic()
                 if fault in BYTE_KINDS:
                     await relay.inject(fault, fault_sec)
                 elif fault == "restart":
@@ -605,7 +760,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     await rx.proc.hard_stop()
                     run.consumer_at_kill = await admin.consumer_info(consumer)
                     await asyncio.sleep(fault_sec)
-                    rx.proc = nats_session(stub.url, receiver_id, relay.url, state_dir=receiver_state)
+                    rx.proc = nats_session(stub.url, receiver_id, relay.url, state_dir=receiver_state,
+                                           extra=extra)
                     await rx.proc.start()
                     # Its first CONNECT reconciles the consumer: poll until the
                     # server shows a change, at most 5 s (review nit: no fixed 0.5 s).
@@ -627,7 +783,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                 if fault is not None and seq == count // 2 and window is None:
                     window = asyncio.create_task(open_window())
                     await asyncio.sleep(0)  # let the window open before this send
-                text = f"bus-run {seq}"
+                text = message(seq)
                 seq_of_text[text] = seq
                 run.send(seq)
                 post: Any = None
@@ -635,6 +791,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     post = await sender.call("post_message", message=text)
                 except (McpError, RuntimeError, TimeoutError, OSError) as exc:
                     run.closed = run.closed or f"post_message failed: {type(exc).__name__}: {exc}"[:300]
+                if run.roster_on:
+                    read_result(run, post, live, time.monotonic())
                 if not isinstance(post, dict) or not post.get("id"):
                     run.sent.pop()
                     # Its text stays known: a send that failed may still arrive, and
@@ -662,7 +820,7 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                     await asyncio.sleep(RECOVERY_SEND_SEC)
                     extra += 1
                     seq_extra = count + extra
-                    text = f"bus-run {seq_extra}"
+                    text = message(seq_extra)
                     seq_of_text[text] = seq_extra
                     run.send(seq_extra)
                     post: Any = None
@@ -670,6 +828,8 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                         post = await sender.call("post_message", message=text)
                     except (McpError, RuntimeError, TimeoutError, OSError) as exc:
                         run.closed = run.closed or f"post_message failed: {type(exc).__name__}: {exc}"[:300]
+                    if run.roster_on:
+                        read_result(run, post, live, time.monotonic())
                     if not isinstance(post, dict) or not post.get("id"):
                         run.sent.pop()
                         failed_sends += 1
@@ -678,6 +838,28 @@ async def nats_bus_run(count: int = 10, fault: str | None = None, *, fault_sec: 
                         seq_of[str(post["id"])] = seq_extra
                         run.recovered = True
                         run.recovered_at = run.recovered_at or time.monotonic()
+            if run.roster_on and fault is not None:
+                # The roster is read again once the session is back: a cut's sends fail
+                # while it lasts, so the sends after it are where a check meets a roster
+                # that is not read yet (#252). ROSTER_TAIL more at the run's pace.
+                for _ in range(ROSTER_TAIL):
+                    seq_tail = max(seq_of_text.values(), default=count) + 1  # every seq used
+                    text = message(seq_tail)
+                    seq_of_text[text] = seq_tail
+                    run.send(seq_tail)
+                    post = None
+                    try:
+                        post = await sender.call("post_message", message=text)
+                    except (McpError, RuntimeError, TimeoutError, OSError) as exc:
+                        run.closed = run.closed or f"post_message failed: {type(exc).__name__}: {exc}"[:300]
+                    read_result(run, post, live, time.monotonic())
+                    if not isinstance(post, dict) or not post.get("id"):
+                        run.sent.pop()
+                        failed_sends += 1
+                    else:
+                        run.sent_frames += 1
+                        seq_of[str(post["id"])] = seq_tail
+                    await asyncio.sleep(send_interval)
             sent_done = time.monotonic()
             await reader
         except (McpError, RuntimeError, TimeoutError, OSError) as exc:

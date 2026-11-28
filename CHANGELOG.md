@@ -22,6 +22,19 @@ before 0.5.0 are described in the git history.
   `mm-agent-post.sh --file` are called as before, so the shell needs no change. A
   file id no seen post named takes today's path, as does the switch off in every
   channel; a send that fails with the switch on is an error, never a fallback.
+- **The fault rig measures "nobody told as gone during a cut"** (#252, plan B piece 2,
+  RT-6.21). `CB_PLANB_TEST=2 bus-testrig bus-run --transport nats` hands plan B's test
+  switch to the sessions (the roster from NATS), plays the bridge's records (its signal,
+  a bot record per agent, the owner's account record) and sends each post as a `TASK`
+  naming the receiver by its bridge name and a canary nobody has. It records per window
+  (before, in, after the fault) every live agent told as gone (a `post_message`
+  `not_reachable` entry `gone …`, an event marked `departed`, a server's answer that it
+  `is gone`) and every roster miss; the measurand `told_gone` and the `--summary`
+  columns `told gone` and `roster miss`. A live agent told as gone fails the run (not
+  under `kill-client`, which stops the receiver), and so does a run whose answers never
+  named the canary. CI runs a cut of 20 posts on every PR, and nightly every fault
+  with 100 and a cut of 120 s, longer than a presence stays fresh. Nothing in the bus
+  changes.
 
 ### Fixed
 
