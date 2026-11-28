@@ -5,6 +5,24 @@ before 0.5.0 are described in the git history.
 
 ## Unreleased
 
+### Added
+
+- **Files over the bridge: plan B piece 8** (#244, RT-6.23, RT-6.33). In a home over
+  NATS with `planb.on(8, <channel>)` on, the session makes no Mattermost call for
+  files: an upload's bytes go to the bridge in parts on `<req>.file.<agent>` (the
+  first part declares the length and the SHA-256 hash of the whole, at most 700 KB a
+  part), the bridge checks the file rules again, holds one open transfer per agent
+  (at most 16 across all agents, an unfinished one dropped after 60 s) and uploads
+  with the agent's own bridge bot; `get_file` asks the same subject for a person's
+  file, answered in parts with the metadata and the bytes, checked by length and
+  hash before anything is served; the file's author counts as a trusted human only
+  when the login service's record binds the posting person's account to one of the
+  session's attested trusted anchors, the rule a Mattermost account approves by
+  (RT-6.41 step 6). `attach`, `POST /v1/files` and
+  `mm-agent-post.sh --file` are called as before, so the shell needs no change. A
+  file id no seen post named takes today's path, as does the switch off in every
+  channel; a send that fails with the switch on is an error, never a fallback.
+
 ### Fixed
 
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
@@ -15,7 +33,11 @@ before 0.5.0 are described in the git history.
   be attributed to the wrong post. Now only a mirrored post writes that entry; a
   reaction's own entry is marked and writes none. This changes behaviour with every plan B
   switch off, because the mirror runs regardless of them. An entry already overwritten
-  stays as it is until the post is mirrored again.
+  stays wrong for good: the bridge skips a sequence it has saved, so mirroring the
+  post again does not mend it. A person's reply on such a copy goes out with the
+  reaction's sequence as `root`, so it most likely is not attached to the ask, and a
+  person's reaction there is ignored.
+
 
 ### Breaking
 
@@ -151,6 +173,28 @@ before 0.5.0 are described in the git history.
   record that carries `crown` (`attest.py`), and `/agent-debug on full` now signs one, so update the hosts first) logs the view at each tick: claimants in order,
   members, standing, holder and why nobody stands.
 
+- **Plan B piece 7: replies and reactions to a person's post over NATS, behind a
+  switch that is off** (#244, ADR-014 phase 5, RT-6.42 step 13). With the piece's
+  switch on for a channel over NATS (`planb.on(7, channel)`, off by default), a
+  reply in a person's Mattermost thread and a reaction on a Mattermost post, or its
+  removal, go over NATS naming the post by its Mattermost id (the new optional keys
+  `mm_root` and `mm_ref` of an agent's message, absent from every other body). The
+  session sends them only while the bridge's signal names `"pieces": [7]`, else the
+  tool fails; nothing falls back to Mattermost. That moves the receipts 👀 and ⏳ on a
+  person's post, the ✅ and note of `resolve_ask` on an ask asked on Mattermost before
+  the switch, a reminder of it and the link `🙋 ask <id>` in a person's thread. The
+  bridge reads the named post with its own bot's token and writes the reply or
+  reaction under the agent's bot only when the post is in the home's channel, not
+  deleted, no system or webhook post, and a person's or the sender's own linked
+  bot's, and the root of the thread a reply joins alike; anything else is logged and gets
+  nothing. Other sessions read such a reply in the person's thread, and such a reaction,
+  only for a post they saw in that channel themselves: the id is the sender's word. Every mention in such a reply is
+  plain but a reminder's own, by piece 6's rule. Not moved: the synchronous posts
+  (the BYE at exit), and a reply with files (piece 8). With the switch off nothing
+  changes. Rollout: switch piece 7 on in a channel only once the bridge and every
+  host there run this release (an older session reads such a reply top-level and
+  drops such a reaction), and piece 6 there first or with it, so the mention check
+  before a post reads the directory instead of Mattermost.
 - **Plan B piece 6: asks to humans and their answers over NATS** (#244,
   ADR-014 phase 5, RT-6.11 step 7). With the piece's switch on for a home over
   NATS (`planb.on(6, home)`, off by default), `ask_human` posts the ask on

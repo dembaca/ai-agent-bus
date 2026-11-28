@@ -82,13 +82,13 @@ func TestReactionsAreCountedPerMessageAndEmoji(t *testing.T) {
 		add    bool
 		want   int
 	}{{"a", true, 1}, {"a", true, 1}, {"b", true, 2}, {"a", false, 1}, {"b", false, 0}} {
-		n, err := kv.Reaction(ctx, "home", 1, "thumbsup", step.sender, step.add)
+		n, err := kv.Reaction(ctx, "home", "1", "thumbsup", step.sender, step.add)
 		if err != nil || n != step.want {
 			t.Fatalf("step %+v: %d %v", step, n, err)
 		}
 	}
 	// a different emoji is its own set
-	if n, err := kv.Reaction(ctx, "home", 1, "eyes", "a", true); err != nil || n != 1 {
+	if n, err := kv.Reaction(ctx, "home", "1", "eyes", "a", true); err != nil || n != 1 {
 		t.Fatalf("eyes: %d %v", n, err)
 	}
 }
@@ -98,26 +98,26 @@ func TestReactionsAreCountedPerMessageAndEmoji(t *testing.T) {
 func TestOwnReactionsAreRecordedPerSenderAndEmoji(t *testing.T) {
 	kv, _ := open(t)
 	ctx := context.Background()
-	if err := kv.SetOwnReaction(ctx, "home", 1, "thumbsup", "agent-a", true); err != nil {
+	if err := kv.SetOwnReaction(ctx, "home", "1", "thumbsup", "agent-a", true); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
 		emoji, sender string
 		want          bool
 	}{{"thumbsup", "agent-a", true}, {"eyes", "agent-a", false}, {"thumbsup", "agent-b", false}} {
-		if had, err := kv.OwnReaction(ctx, "home", 1, c.emoji, c.sender); err != nil || had != c.want {
+		if had, err := kv.OwnReaction(ctx, "home", "1", c.emoji, c.sender); err != nil || had != c.want {
 			t.Fatalf("%+v: %v %v", c, had, err)
 		}
 	}
-	if n, _ := kv.Reaction(ctx, "home", 1, "thumbsup", "agent-b", true); n != 1 {
+	if n, _ := kv.Reaction(ctx, "home", "1", "thumbsup", "agent-b", true); n != 1 {
 		t.Fatalf("the counts saw the own bot's reaction: %d", n)
 	}
 	for range 2 { // clearing twice is no error
-		if err := kv.SetOwnReaction(ctx, "home", 1, "thumbsup", "agent-a", false); err != nil {
+		if err := kv.SetOwnReaction(ctx, "home", "1", "thumbsup", "agent-a", false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if had, err := kv.OwnReaction(ctx, "home", 1, "thumbsup", "agent-a"); err != nil || had {
+	if had, err := kv.OwnReaction(ctx, "home", "1", "thumbsup", "agent-a"); err != nil || had {
 		t.Fatalf("still recorded: %v %v", had, err)
 	}
 }

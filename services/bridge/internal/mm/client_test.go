@@ -1,6 +1,7 @@
 package mm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -476,5 +477,213 @@ func TestMember(t *testing.T) {
 	}
 	if _, err := c.Member(context.Background(), "c1", "down"); err == nil {
 		t.Fatal("a failed read must be an error")
+	}
+}
+
+// RT-6.42 step 13, plan B piece 7: Target reads a post and its author for
+// the mirror's check; a refusal keeps its status, an answer without a post
+// counts as none (404), so the mirror skips it instead of retrying.
+func TestTarget(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/posts/p1":
+			_, _ = w.Write([]byte(`{"id":"p1","user_id":"u1","channel_id":"c1","root_id":"r1","type":"",` +
+				`"props":{"from_webhook":"true"},"delete_at":0}`))
+		case "/api/v4/posts/p2":
+			_, _ = w.Write([]byte(`{"id":"p2","user_id":"b1","channel_id":"c1"}`))
+		case "/api/v4/posts/junk":
+			_, _ = w.Write([]byte(`not json`))
+		case "/api/v4/users/u1":
+			_, _ = w.Write([]byte(`{"id":"u1","username":"dembaca","is_bot":false}`))
+		case "/api/v4/users/b1":
+			_, _ = w.Write([]byte(`{"id":"b1","username":"agent-a-bot","is_bot":true}`))
+		case "/api/v4/posts/p3":
+			_, _ = w.Write([]byte(`{"id":"p3","user_id":"u-junk","channel_id":"c1"}`))
+		case "/api/v4/posts/p4":
+			_, _ = w.Write([]byte(`{"id":"p4","user_id":"u-none","channel_id":"c1"}`))
+		case "/api/v4/users/u-junk":
+			_, _ = w.Write([]byte(`{"id":`))
+		case "/api/v4/users/u-none":
+			_, _ = w.Write([]byte(`{}`))
+		case "/api/v4/posts/hidden":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	})
+	got, err := c.Target(context.Background(), "p1")
+	if err != nil || got != (mirror.Target{ID: "p1", ChannelID: "c1", RootID: "r1", Webhook: true, AuthorName: "dembaca"}) {
+		t.Fatalf("p1: %+v %v", got, err)
+	}
+	got, err = c.Target(context.Background(), "p2")
+	if err != nil || !got.AuthorBot || got.AuthorName != "agent-a-bot" || got.Webhook {
+		t.Fatalf("p2: %+v %v", got, err)
+	}
+	// an author that does not decode or is none counts as no such post, never
+	// as a failure to retry for ever
+	for id, want := range map[string]int{"junk": 404, "hidden": 403, "down": 502, "p3": 404, "p4": 404} {
+		_, err := c.Target(context.Background(), id)
+		var st *StatusError
+		if !errors.As(err, &st) || st.Status != want {
+			t.Errorf("%s: %v, want status %d", id, err, want)
+		}
+	}
+}
+
+// RT-6.33 step 4: an upload posts the channel and the file as multipart to
+// /api/v4/files, and the answer's file_infos entry — the shape the
+// create-post answer carries in a post's metadata too — comes back.
+func TestUploadFile(t *testing.T) {
+	var (
+		gotChannel, gotName string
+		gotData             []byte
+		refused             = http.StatusOK
+	)
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/api/v4/files" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data; boundary=") {
+			t.Errorf("the content type %q is no multipart", r.Header.Get("Content-Type"))
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("the multipart does not parse: %v", err)
+			return
+		}
+		gotChannel = r.FormValue("channel_id")
+		file, header, err := r.FormFile("files")
+		if err != nil {
+			t.Errorf("the file field: %v", err)
+			return
+		}
+		gotName, gotData = header.Filename, nil
+		gotData, _ = io.ReadAll(file)
+		if refused != http.StatusOK {
+			w.WriteHeader(refused)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"file_infos": []any{map[string]any{
+			"id": "file0123456789abcdefghijk", "name": "chart.png", "extension": "png",
+			"size": 8, "mime_type": "image/png", "width": 2, "height": 1,
+			"post_id": "", "user_id": "u1", "has_preview_image": true}}})
+	})
+	info, err := c.UploadFile(context.Background(), "ch7", "chart.png", []byte("PNGbytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotChannel != "ch7" || gotName != "chart.png" || string(gotData) != "PNGbytes" {
+		t.Fatalf("the upload sent %q %q %q", gotChannel, gotName, gotData)
+	}
+	if info.ID != "file0123456789abcdefghijk" || info.Name != "chart.png" ||
+		info.Extension != "png" || info.Size != 8 || info.MimeType != "image/png" ||
+		info.Width != 2 || info.Height != 1 || info.UserID != "u1" || !info.HasPreviewImage {
+		t.Fatalf("the file info: %+v", info)
+	}
+	// Mattermost's refusal is the status it answered.
+	refused = http.StatusRequestEntityTooLarge
+	_, err = c.UploadFile(context.Background(), "ch7", "chart.png", []byte("PNGbytes"))
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("got %v, want the status as the error", err)
+	}
+}
+
+// An upload whose answer carries no file info is an error, never a made-up
+// one: the caller's upload failed.
+func TestUploadFileWithoutAFileInfo(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"file_infos":[]}`))
+	})
+	if _, err := c.UploadFile(context.Background(), "ch7", "chart.png", []byte("x")); err == nil {
+		t.Fatal("an upload without a file info is no error")
+	}
+}
+
+// RT-6.23 step 2: the file's info as /files/{id}/info answers it.
+func TestFileInfo(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/files/file0123456789abcdefghijk/info" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"file0123456789abcdefghijk","name":"photo.jpg","extension":"jpg",` +
+			`"size":18342,"mime_type":"image/jpeg","width":640,"height":480,"post_id":"post12345",` +
+			`"user_id":"u-alice","has_preview_image":false}`))
+	})
+	info, err := c.FileInfo(context.Background(), "file0123456789abcdefghijk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Name != "photo.jpg" || info.Extension != "jpg" || info.Size != 18342 ||
+		info.MimeType != "image/jpeg" || info.Width != 640 || info.Height != 480 ||
+		info.PostID != "post12345" || info.UserID != "u-alice" || info.HasPreviewImage {
+		t.Fatalf("the file info: %+v", info)
+	}
+	if _, err := c.FileInfo(context.Background(), "missing0000000000000000"); err == nil {
+		t.Fatal("a missing file is no error")
+	}
+}
+
+// A file's bytes: the preview when it has one, else the file itself — and
+// the head alone of a long body, the limit named by the read.
+func TestFileBytes(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/files/file0123456789abcdefghijk/preview":
+			_, _ = w.Write([]byte("the preview"))
+		case "/api/v4/files/file0123456789abcdefghijk":
+			_, _ = w.Write(bytes.Repeat([]byte("x"), 1000))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	data, err := c.FileBytes(context.Background(), "file0123456789abcdefghijk", true, 512<<10)
+	if err != nil || string(data) != "the preview" {
+		t.Fatalf("the preview: %q %v", data, err)
+	}
+	// the limit is honoured: only its head of a long body is read
+	data, err = c.FileBytes(context.Background(), "file0123456789abcdefghijk", false, 100)
+	if err != nil || len(data) != 100 {
+		t.Fatalf("the limit: %d bytes %v", len(data), err)
+	}
+	// no limit of the caller's own: the cap is the ceiling
+	data, err = c.FileBytes(context.Background(), "file0123456789abcdefghijk", false, 0)
+	if err != nil || len(data) != 1000 {
+		t.Fatalf("the whole body: %d bytes %v", len(data), err)
+	}
+	if _, err := c.FileBytes(context.Background(), "gone000000000000000000000", false, 64); err == nil {
+		t.Fatal("a missing file is no error")
+	}
+}
+
+// One post by id: the fields the file read needs of the post a file is
+// attached to, its channel above all.
+func TestPostByID(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/posts/post12345" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"post12345","user_id":"u-alice","channel_id":"ch7","root_id":"root1",` +
+			`"type":"","message":"see this","create_at":1,"update_at":2,"edit_at":0,"delete_at":0,` +
+			`"file_ids":["file0123456789abcdefghijk"],` +
+			`"metadata":{"reactions":[{"user_id":"u-bot","emoji_name":"tada","create_at":5}]}}`))
+	})
+	post, err := c.PostByID(context.Background(), "post12345")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if post.ID != "post12345" || post.UserID != "u-alice" || post.ChannelID != "ch7" ||
+		post.RootID != "root1" || post.Message != "see this" || post.FileCount != 1 ||
+		!post.HasMetadata || len(post.Reactions) != 1 || post.Reactions[0].EmojiName != "tada" {
+		t.Fatalf("the post: %+v", post)
+	}
+	if _, err := c.PostByID(context.Background(), "gone123"); err == nil {
+		t.Fatal("a missing post is no error")
 	}
 }

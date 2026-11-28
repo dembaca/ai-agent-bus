@@ -167,12 +167,15 @@ func (m *Mirror) asksOn() bool {
 }
 
 // askKind says whether a post is an ask (kind ask, top-level) or its
-// reminder (kind reminder, in a thread): "" for anything else, also for a
-// reminder without a root, which would mention someone outside any ask.
+// reminder (kind reminder, in a thread, also a Mattermost one named by
+// `mm_root` with piece 7 on: an ask asked before the switch, target.go): ""
+// for anything else, also for a reminder without a root, which would mention
+// someone outside any ask.
 func (m *Mirror) askKind(msg message.Msg) string {
 	k, _ := msg.Props[m.Prefix+askKind].(string)
 	switch {
-	case k == "ask" && msg.Root == nil, k == "reminder" && msg.Root != nil:
+	case k == "ask" && msg.Root == nil && msg.MMRoot == "",
+		k == "reminder" && (msg.Root != nil || msg.MMRoot != ""):
 		return k
 	}
 	return ""

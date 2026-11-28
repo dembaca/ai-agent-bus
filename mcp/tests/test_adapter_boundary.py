@@ -116,6 +116,7 @@ FRAME_KEYS_ALLOWED = {
     "mattermost_ws.py": "the adapter's event source: Mattermost's WebSocket frames",
     "client.py": "the Mattermost adapter",
     "hookapi.py": "the hook API's own request body (an upload's bytes), no frame",
+    "natsfiles.py": "the bridge's answer parts (a file's bytes), no frame",
 }
 
 

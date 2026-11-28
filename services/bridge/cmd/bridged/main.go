@@ -28,6 +28,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/agentbots"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/commands"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/files"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/history"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
@@ -90,12 +91,11 @@ func run(log *slog.Logger) error {
 	}
 	h := &health{}
 	var wg sync.WaitGroup
-	// Plan B's switches per channel, as the login service writes them from the
-	// channel directory (RT-6.39 step 5), through the bridge's own consumer
 	// Plan B's switches per channel, as the login service writes them from the channel
 	// directory (RT-6.39 step 5), through the bridge's own consumer bridge_planb made at
-	// every start: the mirror reads piece 6 (asks, RT-6.11), piece 4 decides how a person's
-	// post binds (inbound.ProofPiece, #266), and pieces 5, 9 and 12 read them too.
+	// every start: the mirror reads piece 6 (asks, RT-6.11) and piece 7 (replies and
+	// reactions to a person's post, RT-6.42 step 13), piece 4 decides how a person's post
+	// binds (inbound.ProofPiece, #266), and pieces 5, 9 and 12 read them too.
 	planb := &presence.Switches{}
 	// Plan B piece 9 (piece9.go): the agents' bots show their status, and the
 	// crown holder's header line is written with its own bot; nil without
@@ -103,7 +103,8 @@ func run(log *slog.Logger) error {
 	p9 := newPiece9(cfg, log, client, bots, snapshot, planb)
 	// The request scaffold (ADR-014 phase 5): requests on <req>.<kind>.<agent>
 	// get this phase's "not built" answer on deliver.<agent>.req.<request id>
-	// until a piece is wired in; piece 5 answers the history read. A lost
+	// until a piece is wired in; piece 5 answers the history read and piece 8
+	// the files. A lost
 	// message fails the request; the handler retries a refused subscription
 	// once a minute and only reports why it is not answering, so an image
 	// rolled out before the lab's NATS rights leaves requests unanswered and
@@ -116,6 +117,12 @@ func run(log *slog.Logger) error {
 			hist.Bots = bots
 		}
 		handlers["history"] = hist.Piece
+		fh := &files.Handler{Log: log, Team: cfg.MMTeam, Presence: snapshot,
+			Switches: planb, People: accounts}
+		if bots != nil {
+			fh.Bots = bots
+		}
+		handlers["file"] = fh.Piece
 		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix, Handlers: handlers}
 		h.requests = rq
 		wg.Add(1)
@@ -163,7 +170,7 @@ func run(log *slog.Logger) error {
 		lk := &links.Resolver{Presence: snapshot, Roster: roster{client: client, cid: cid},
 			Window: 90 * time.Second, TTL: 30 * time.Second}
 		mr := &mirror.Mirror{Home: home, Prefix: cfg.Prefix, Log: log, Sink: client, Store: kv, Links: lk,
-			Switches: planb, People: client, Directory: accounts}
+			Switches: planb, People: client, Directory: accounts, Targets: client}
 		if bots != nil {
 			mr.Bots = bots
 		}
@@ -213,7 +220,7 @@ func run(log *slog.Logger) error {
 	// (auth_service, auth_data; RT-6.42 step 3, #266): the admin bot's. Without
 	// it, every person of such a home goes out under "-" (one warning when the
 	// bridge first meets one); with piece 4 off, the record alone binds. The
-	// signal names piece 6 while it is on (RT-6.11 step 7).
+	// signal names pieces 6 and 7 while each is on (RT-6.11 step 7, RT-6.42 step 13).
 	in.Switches = planb
 	if cfg.AdminToken != "" {
 		in.Users = mm.New(cfg.MMURL, cfg.AdminToken)

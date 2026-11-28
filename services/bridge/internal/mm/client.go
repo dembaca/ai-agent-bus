@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"slices"
@@ -235,6 +236,42 @@ func (c *Client) Member(ctx context.Context, channelID, userID string) (bool, er
 	return err == nil, err
 }
 
+// Target reads one post by id and its author, for plan B piece 7 (RT-6.42
+// step 13, mirror.Targets): the bridge checks it before an agent's reply or
+// reaction naming it is written. A refusal keeps its status (StatusError) and
+// a request that got no answer is retried; an answer that does not decode
+// (also a body cut mid-read), or names no post or author, counts as no such
+// post (404), so it is skipped rather than retried for ever.
+func (c *Client) Target(ctx context.Context, postID string) (mirror.Target, error) {
+	var raw postJSON
+	body, err := c.request(ctx, "GET", "/api/v4/posts/"+url.PathEscape(postID), nil)
+	if err != nil {
+		return mirror.Target{}, fmt.Errorf("mattermost: post %q: %w", postID, err)
+	}
+	err = json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&raw)
+	body.Close()
+	if err != nil || raw.ID == "" || raw.UserID == "" {
+		return mirror.Target{}, &StatusError{Status: http.StatusNotFound,
+			Err: fmt.Errorf("mattermost: post %q: no post in the answer", postID)}
+	}
+	u, err := c.GetUser(ctx, raw.UserID)
+	if err != nil {
+		// A refusal keeps its status and the network (a *url.Error: no answer, a
+		// timeout) is retried; an answer that does not decode, or names no user,
+		// is none (404), so it is skipped rather than retried for ever.
+		var st *StatusError
+		var ue *url.Error
+		if !errors.As(err, &st) && !errors.As(err, &ue) {
+			err = &StatusError{Status: http.StatusNotFound, Err: err}
+		}
+		return mirror.Target{}, err
+	}
+	_, hook := raw.Props["from_webhook"]
+	_, override := raw.Props["override_username"]
+	return mirror.Target{ID: raw.ID, ChannelID: raw.ChannelID, RootID: raw.RootID, Type: raw.Type,
+		DeleteAt: raw.DeleteAt, Webhook: hook || override, AuthorName: u.Username, AuthorBot: u.IsBot}, nil
+}
+
 // Post is one of a channel's posts, as the catch-up after a WebSocket
 // reconnect needs it (mmws.Reconnected): who wrote it and where, its
 // thread, Mattermost's clock fields, the text — and the fields the drop
@@ -301,6 +338,34 @@ type postList struct {
 	HasNext bool                `json:"has_next"`
 }
 
+// post is the wire post as the reads carry it: the metadata, the props and
+// the files as Mattermost sent them, the file count from its file_ids.
+func (raw postJSON) post() Post {
+	var reactions []Reaction
+	if raw.Metadata != nil {
+		for _, re := range raw.Metadata.Reactions {
+			reactions = append(reactions, Reaction{UserID: re.UserID,
+				EmojiName: re.EmojiName, CreateAt: re.CreateAt})
+		}
+	}
+	return Post{
+		Reactions:   reactions,
+		HasMetadata: raw.Metadata != nil,
+		ID:          raw.ID,
+		UserID:      raw.UserID,
+		ChannelID:   raw.ChannelID,
+		RootID:      raw.RootID,
+		Type:        raw.Type,
+		Props:       raw.Props,
+		FileCount:   len(raw.FileIDs),
+		CreateAt:    raw.CreateAt,
+		UpdateAt:    raw.UpdateAt,
+		EditAt:      raw.EditAt,
+		DeleteAt:    raw.DeleteAt,
+		Message:     raw.Message,
+	}
+}
+
 // posts gives the list's posts sorted by create_at ascending, the metadata,
 // the props and the files as Mattermost sent them.
 func (l postList) posts() []Post {
@@ -310,29 +375,7 @@ func (l postList) posts() []Post {
 		if !ok {
 			continue
 		}
-		var reactions []Reaction
-		if raw.Metadata != nil {
-			for _, re := range raw.Metadata.Reactions {
-				reactions = append(reactions, Reaction{UserID: re.UserID,
-					EmojiName: re.EmojiName, CreateAt: re.CreateAt})
-			}
-		}
-		out = append(out, Post{
-			Reactions:   reactions,
-			HasMetadata: raw.Metadata != nil,
-			ID:          raw.ID,
-			UserID:      raw.UserID,
-			ChannelID:   raw.ChannelID,
-			RootID:      raw.RootID,
-			Type:        raw.Type,
-			Props:       raw.Props,
-			FileCount:   len(raw.FileIDs),
-			CreateAt:    raw.CreateAt,
-			UpdateAt:    raw.UpdateAt,
-			EditAt:      raw.EditAt,
-			DeleteAt:    raw.DeleteAt,
-			Message:     raw.Message,
-		})
+		out = append(out, raw.post())
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].CreateAt < out[j].CreateAt })
 	return out
@@ -531,6 +574,143 @@ func (c *Client) Unreact(ctx context.Context, postID, emoji string) error {
 	}
 	return refuse(c.do(ctx, "DELETE", "/api/v4/users/"+url.PathEscape(uid)+"/posts/"+
 		url.PathEscape(postID)+"/reactions/"+url.PathEscape(emoji), nil, nil))
+}
+
+// FileInfo is what Mattermost keeps about one uploaded file (RT-6.23), the
+// fields the reads use: its name, extension and mime type, its size in bytes,
+// an image's bounds, the post it is attached to, who uploaded it — Mattermost
+// makes the uploader the post's author — and whether a preview image was
+// made. extension is lower case without the dot; width and height are an
+// image's, 0 else.
+type FileInfo struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Extension       string `json:"extension"`
+	Size            int64  `json:"size"`
+	MimeType        string `json:"mime_type"`
+	Width           int    `json:"width"`
+	Height          int    `json:"height"`
+	PostID          string `json:"post_id"`
+	UserID          string `json:"user_id"`
+	HasPreviewImage bool   `json:"has_preview_image"`
+}
+
+// UploadFile uploads one file to a channel (POST /api/v4/files, multipart:
+// the channel_id and files fields), as the client's own bot, and answers what
+// Mattermost kept about it: the upload answer's first file_infos entry, the
+// shape the create-post answer carries in a post's metadata too. The caller
+// has checked the bytes (plan B piece 8 re-implements the MCP side's attach
+// rules); Mattermost's own MaxFileSize refuses on top, as the status it
+// answers.
+func (c *Client) UploadFile(ctx context.Context, channelID, name string, data []byte) (FileInfo, error) {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	if err := w.WriteField("channel_id", channelID); err != nil {
+		return FileInfo{}, err
+	}
+	file, err := w.CreateFormFile("files", name)
+	if err != nil {
+		return FileInfo{}, err
+	}
+	if _, err := file.Write(data); err != nil {
+		return FileInfo{}, err
+	}
+	if err := w.Close(); err != nil {
+		return FileInfo{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.base+"/api/v4/files", &body)
+	if err != nil {
+		return FileInfo{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return FileInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return FileInfo{}, &StatusError{Status: resp.StatusCode,
+			Err: fmt.Errorf("mattermost POST /api/v4/files: %s: %s", resp.Status,
+				strings.TrimSpace(string(msg)))}
+	}
+	var out struct {
+		FileInfos []FileInfo `json:"file_infos"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+		return FileInfo{}, err
+	}
+	if len(out.FileInfos) == 0 || out.FileInfos[0].ID == "" {
+		return FileInfo{}, errors.New("mattermost: a file upload without a file info")
+	}
+	return out.FileInfos[0], nil
+}
+
+// FileInfo reads what Mattermost keeps about one file
+// (GET /api/v4/files/{id}/info): what a download answers from.
+func (c *Client) FileInfo(ctx context.Context, fileID string) (FileInfo, error) {
+	var info FileInfo
+	path := "/api/v4/files/" + url.PathEscape(fileID) + "/info"
+	if err := c.do(ctx, "GET", path, nil, &info); err != nil {
+		return FileInfo{}, fmt.Errorf("mattermost: file %q: %w", fileID, err)
+	}
+	if info.ID == "" {
+		return FileInfo{}, fmt.Errorf("mattermost: no file %q", fileID)
+	}
+	return info, nil
+}
+
+// maxFileBytes is the ceiling of what one file read may ask: an image the
+// piece serves is at most 5 MB (its preview, else the original) and a text
+// file 80 KB, so a limit past the cap is taken as the cap, never more.
+const maxFileBytes = 32 << 20
+
+// FileBytes reads the head of a file's bytes: at most limit of the body, its
+// preview image when it has one and the caller asks
+// (GET /api/v4/files/{id}/preview), else the file itself
+// (GET /api/v4/files/{id}). A limit of zero or less, or past maxFileBytes,
+// reads maxFileBytes.
+func (c *Client) FileBytes(ctx context.Context, fileID string, preview bool, limit int64) ([]byte, error) {
+	if limit <= 0 || limit > maxFileBytes {
+		limit = maxFileBytes
+	}
+	path := "/api/v4/files/" + url.PathEscape(fileID)
+	if preview {
+		path += "/preview"
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, &StatusError{Status: resp.StatusCode,
+			Err: fmt.Errorf("mattermost GET %s: %s: %s", path, resp.Status,
+				strings.TrimSpace(string(msg)))}
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
+}
+
+// PostByID reads one post (GET /api/v4/posts/{id}): its channel, author,
+// message and clock fields — the fields the file read needs of the post a
+// file is attached to.
+func (c *Client) PostByID(ctx context.Context, postID string) (Post, error) {
+	var raw postJSON
+	path := "/api/v4/posts/" + url.PathEscape(postID)
+	if err := c.do(ctx, "GET", path, nil, &raw); err != nil {
+		return Post{}, fmt.Errorf("mattermost: post %q: %w", postID, err)
+	}
+	if raw.ID == "" {
+		return Post{}, fmt.Errorf("mattermost: no post %q", postID)
+	}
+	return raw.post(), nil
 }
 
 // catchUpCap is what PostsSince may read: `since` answers up to a

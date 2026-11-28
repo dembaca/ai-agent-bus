@@ -1147,6 +1147,26 @@ func TestTheSignalNamesPiece6OnlyWhileItsSwitchIsOn(t *testing.T) {
 	}
 }
 
+// RT-6.42 step 13, plan B piece 7: the signal names piece 7 beside piece 6,
+// each only while its switch is on.
+func TestTheSignalNamesPiece7OnlyWhileItsSwitchIsOn(t *testing.T) {
+	for _, tc := range []struct {
+		on   allOn
+		want []any
+	}{{allOn{7: true}, []any{float64(7)}}, {allOn{6: true, 7: true}, []any{float64(6), float64(7)}}, {allOn{}, nil}} {
+		r := newRigWith(t, nil, func(b *Bridge) { b.Switches = tc.on })
+		r.connect(1)
+		var sig map[string]any
+		if err := json.Unmarshal(waitSignal(t, r.sig).Data, &sig); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := sig["pieces"].([]any)
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Fatalf("on %v: signal %v", tc.on, sig)
+		}
+	}
+}
+
 // A person's post by the account uid.
 func postBy(uid, id string, at int64) *mmws.Posted {
 	return &mmws.Posted{PostID: id, UserID: uid, ChannelID: cid, Message: "go ahead", CreateAt: at, UpdateAt: at}
