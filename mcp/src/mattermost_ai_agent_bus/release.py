@@ -1,24 +1,31 @@
 """The release notice (ADR-011 phase 2, RT-6.30 in docs/arc42/06-runtime-view.md).
 
-The host's release check, bin/mm-agent-release-check.sh, lists the newest
-release tags, checks them as the installer does (RT-6.29: with the pinned keys
-when the host sets CB_RELEASE_SIGNERS) and writes what the CHANGELOG of the
-newest one that passed says into release.env in the host state directory. This
-module only reads that file, and checks every field again: the server parses
-nothing from the network itself. What reaches the agent is a version, the step
-(major, minor, patch), `Breaking`, the `Needs:` lines in their grammar and
-whether the signature was checked; never free text.
+Two sources, one switch: with `CB_RECORDS_URL` unset, the host's release check
+bin/mm-agent-release-check.sh lists the newest release tags, checks them as the
+installer does (RT-6.29: with the pinned keys when the host sets
+CB_RELEASE_SIGNERS) and writes what the CHANGELOG of the newest one that passed
+says into release.env in the host state directory; this module reads that file
+and checks every field again. With `CB_RECORDS_URL` set (plan B piece 14b,
+ADR-014), the bridge is the only source: `GET <address>/register/v1/release`
+answers the bridge's compact JWS, verified fail-closed against the pinned keys
+(`attest.verify_release`), and the host's check is not read or started. Any
+doubt there is no notice, never the file's. What reaches the agent is a version,
+the step (major, minor, patch), `Breaking`, the `Needs:` lines in their grammar
+and whether the record's signature was checked; never free text.
 
 It also starts that check, at most once a day, as a child with a clean
-environment and a timeout that writes only its state (check_loop). Nothing here
-installs anything: a human installs a release on the host
-(`mm-agent-host-install.sh --release v<x.y.z>`), never the agent.
+environment and a timeout that writes only its state (check_loop); with
+`CB_RECORDS_URL` set it reads the record instead and starts no check. Nothing
+here installs anything: a human installs a release on the host
+(`mm-agent-host-install.sh --release v<x.y.z>`) or, with the record, through the
+harness's marketplace, never the agent.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import logging
 import os
@@ -26,11 +33,13 @@ import re
 import signal
 import stat
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from . import config, session_file
+from . import attest, config, selfupdate, session_file
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +50,19 @@ ROOT = Path(__file__).resolve().parents[3]
 # a compaction (RT-6.7) and the overhead counts (RT-6.9) read it.
 SKILL_FILE = ROOT / "skills" / "ai-agent-bus" / "SKILL.md"
 STATE_FILE = "release.env"
+# Plan B piece 14b (ADR-014): the bridge's address for the signed records. Unset
+# is off, and today's host check path stays byte for byte. Later the setting
+# serves the other signed records too; only the release record is read here yet.
+RECORDS_ENV = "CB_RECORDS_URL"
+# TODO(ADR-014 answer 4): MM_REGISTRAR_KEYS keeps its name until the decision
+# release names its CB_ spelling (docs/env-names.md, "Goes with the registrar").
+RECORD_PATH = "/register/v1/release"
+RECORD_EVERY = 600.0      # the record is signed fresh per read; look again every ten minutes
+RECORD_HOUR = 3600        # a record's whole validity (services/bridge/internal/release)
+# What a human does with the record's version: the harness's marketplace, never
+# the agent, and no self-update (RT-6.32 goes in a later piece).
+RECORD_NOTE = ("a human installs a release through the harness's marketplace; you never run "
+               "the installer")
 STAMP_FILE = "release-check.at"          # the last check that succeeded (the script writes it)
 FAILED_FILE = "release-check.failed"     # the failed tries, one epoch a line (this module)
 SCRIPT = Path("bin") / "mm-agent-release-check.sh"
@@ -74,6 +96,9 @@ _TAG = re.compile(r"^v\d+\.\d+\.\d+$")
 # mm_release_notice reads it (no leading zero, at most ten digits).
 _EPOCH = re.compile(r"^[1-9][0-9]{0,9}$")
 _LATEST = re.compile(r"^latest(?: \(v(\d+\.\d+\.\d+)\))?$")
+# The bridge's address: scheme, host (IPv6 in brackets) and a plain path, no
+# credentials, query or fragment (selfupdate.release_url reads alike).
+_HTTP_URL = re.compile(r"^(https?)://([A-Za-z0-9.:\[\]-]+)(/[A-Za-z0-9._~%+-]*)*$")
 
 # The Needs: grammar (ADR-011 point 3, CLAUDE.md "Releasing"): `CB_*` and
 # `MM_*` names (the old ones while their fallbacks and the registrar's names
@@ -190,13 +215,16 @@ def from_status(text: str) -> dict[str, str]:
 
 @dataclass
 class State:
-    """release.env, every field checked again."""
+    """release.env, every field checked again; or the bridge's last verified
+    record (`origin="record"`, `expires_at` its exp)."""
     newest: str
     verified: bool
     checked_at: int = 0
     breaking: set[str] = field(default_factory=set)
     needs: list[tuple[str, str]] = field(default_factory=list)
     withdrawn: set[str] = field(default_factory=set)
+    origin: str = "check"  # "check": release.env; "record": the bridge's signed record
+    expires_at: int = 0    # a record's exp (unix seconds); 0 for release.env
 
 
 def state_dir() -> Path:
@@ -302,7 +330,7 @@ def line(have: str | None = None, state: State | None = None,
          directory: Path | None = None) -> str:
     """One line for the human (the turn-end banner, RT-6.2 step 8); '' when
     there is nothing to say. The same text as mm_release_notice in
-    bin/mm-agent-lib.sh."""
+    bin/mm-agent-lib.sh when the host's check is the source."""
     have = VERSION if have is None else have
     st = state if state is not None else read_state(directory)
     if not _VER.match(have):
@@ -319,7 +347,10 @@ def line(have: str | None = None, state: State | None = None,
 def _release_parts(st: State, have: str) -> list[str]:
     parts: list[str] = []
     if have in st.withdrawn:
-        parts.append(f"this host's {have} is withdrawn (CHANGELOG of v{st.newest})")
+        if st.origin == "record":
+            parts.append(f"this host's {have} is withdrawn (the release record of v{st.newest})")
+        else:
+            parts.append(f"this host's {have} is withdrawn (CHANGELOG of v{st.newest})")
     if _key(st.newest) > _key(have):
         breaking, needs = _between(st, have)
         what = _step(have, st.newest)
@@ -327,13 +358,20 @@ def _release_parts(st: State, have: str) -> list[str]:
             what += ", Breaking"
         if needs:
             what += "; needs: " + "; ".join(needs)
-        what += "; signature checked" if st.verified else "; signature not checked"
+        if st.origin == "record":
+            what += "; record signed"
+        else:
+            what += "; signature checked" if st.verified else "; signature not checked"
         parts.append(f"release v{st.newest} is out ({what})")
     elif _key(st.newest) < _key(have):
         # Never a step back: the check may just not have run since this version.
         when = f" of {time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(st.checked_at))}" if st.checked_at else ""
-        parts.append(f"the release check{when} found v{st.newest} as newest, older than {have}: "
-                     "not run since, or the repository is frozen or rewound")
+        if st.origin == "record":
+            parts.append(f"the release record{when} names v{st.newest} as newest, older than "
+                         f"{have}: the record is stale, or this host runs a build it does not know")
+        else:
+            parts.append(f"the release check{when} found v{st.newest} as newest, older than {have}: "
+                         "not run since, or the repository is frozen or rewound")
     return parts
 
 
@@ -467,6 +505,12 @@ def _note_once(msg: str) -> None:
         log.info("release check: %s (RT-6.30)", msg)
 
 
+def _note_record_once(msg: str) -> None:
+    if msg not in _noted:
+        _noted.add(msg)
+        log.info("release record: %s (RT-6.30)", msg)
+
+
 def check_script() -> tuple[Path, str] | None:
     """Which check script to run, and the CB_BUS_HOST_DIR to give it ('' keeps
     the environment's). This tree's own when no sandbox can write it (a host
@@ -498,6 +542,190 @@ def child_env(host_dir: str = "") -> dict[str, str]:
     elif config.lookup("CB_BUS_HOST_DIR", env, quiet=True) is None and ROOT.parent.name == "releases":
         config.put("CB_BUS_HOST_DIR", str(ROOT.parent.parent / "current"), env)
     return env
+
+
+# --- the release record the bridge serves (RT-6.30, plan B piece 14b) -----------------
+
+
+class RecordFailed(Exception):
+    """The bridge's release record could not be read or verified: why."""
+
+
+def _loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def records_configured(environ: Mapping[str, str] | None = None) -> bool:
+    """CB_RECORDS_URL is set: the bridge's record is the notice's only source."""
+    return bool(config.env(RECORDS_ENV, environ=environ).strip())
+
+
+def records_url(environ: Mapping[str, str] | None = None) -> str | None:
+    """Where the bridge serves the release record; None when the setting is
+    unset, is not https (http only to a loopback host: the record carries no
+    token, but a forged one must not come over a network someone can rewrite),
+    or carries credentials, a query or a fragment. The setting may be the
+    bridge's base address, `…/register/v1` or the registrar's `…/agents`; a
+    full `…/release` is taken as it is."""
+    value = config.env(RECORDS_ENV, environ=environ).strip()
+    if not value or _HTTP_URL.fullmatch(value) is None:
+        return None
+    parts = urlsplit(value)
+    if parts.scheme == "http" and not _loopback(parts.hostname or ""):
+        return None
+    root, path = value.rstrip("/"), parts.path.rstrip("/")
+    if path.endswith("/release"):
+        return root
+    if path.endswith("/agents"):
+        root, path = root[: -len("/agents")], path[: -len("/agents")]
+    if not path.endswith("/register/v1"):
+        root += "/register/v1"
+    return root + "/release"
+
+
+def record_state(url: str | None = None, *, environ: Mapping[str, str] | None = None,
+                 now: float | None = None, transport: Any = None) -> State:
+    """The release record read and verified, or RecordFailed: a 200 with a
+    record, the pinned keys (`MM_REGISTRAR_KEYS`; TODO: its new `CB_` name is
+    open, ADR-014 answer 4), the bridge's kid and Ed25519 signature through
+    attest.verify_release, an hour's validity, and a version `x.y.z` (not
+    `latest`, not keys only). The `Needs:` lines are checked again in their
+    grammar. Any doubt is no state, never a partly trusted one."""
+    env = os.environ if environ is None else environ
+    url = records_url(env) if url is None else url
+    if url is None:
+        raise RecordFailed(f"{RECORDS_ENV} is not an https address (http only on loopback), "
+                           "or carries credentials, a query or a fragment")
+    keys = attest.pinned(env.get(attest.KEYS_ENV, ""))
+    if not keys:
+        raise RecordFailed(f"no pinned key ({attest.KEYS_ENV})")
+    try:
+        token = selfupdate.fetch(url, transport=transport, environ=env)
+    except selfupdate.Failed as exc:
+        raise RecordFailed(str(exc)) from None
+    if token is None:
+        raise RecordFailed("the bridge names no release (no release set)")
+    record, why = attest.verify_release(token, keys, now=time.time() if now is None else now)
+    if record is None:
+        raise RecordFailed(f"refused: {why}")
+    if not 0 < record.exp - record.iat <= RECORD_HOUR:
+        raise RecordFailed(f"validity {record.exp - record.iat} s, not within the hour")
+    if record.version == attest.RELEASE_LATEST:
+        raise RecordFailed("names latest, not a version")
+    if not _VER.match(record.version):
+        raise RecordFailed("names no version")
+    for text in record.needs:
+        if not needs_ok(text):
+            raise RecordFailed("a Needs: line outside its grammar")
+    newest = record.version
+    return State(newest=newest, verified=True, checked_at=record.iat,
+                 breaking=set(record.breaking),
+                 needs=[(newest, text) for text in record.needs],
+                 withdrawn={v for v in record.withdrawn if _key(v) < _key(newest)},
+                 origin="record", expires_at=record.exp)
+
+
+# The last read: (monotonic time, state or None, why). The server's loop fills it
+# (check_loop); `bus_info` and the turn-end banner only read it, so neither
+# waits on the network.
+_record_cache: tuple[float, State | None, str] | None = None
+
+
+def clear_record_cache() -> None:
+    """Forget the last record read (tests, and a setting that changed)."""
+    global _record_cache
+    _record_cache = None
+
+
+def cached_record(now: float | None = None) -> tuple[State | None, str]:
+    """The last verified record and why there is none; a record past its exp
+    counts as none (its hour bounds a copy, not only the read)."""
+    if _record_cache is None:
+        return None, "not read yet"
+    _, state, why = _record_cache
+    if state is not None and state.expires_at and (time.time() if now is None else now) >= state.expires_at:
+        return None, "the record's hour passed"
+    return state, why
+
+
+async def refresh_record(*, environ: Mapping[str, str] | None = None, now: float | None = None,
+                         transport: Any = None) -> tuple[State | None, str]:
+    """Read the record once and cache it; a failure is cached as none, said once
+    in the log, and never falls back to release.env (the switch's promise)."""
+    global _record_cache
+    env = os.environ if environ is None else environ
+    try:
+        state = await asyncio.to_thread(record_state, records_url(env), environ=env,
+                                        now=now, transport=transport)
+    except RecordFailed as exc:
+        state, why = None, str(exc)
+    except Exception as exc:  # noqa: BLE001 — an unreadable record is no notice
+        state, why = None, f"not read ({type(exc).__name__})"
+    else:
+        why = ""
+    if state is None:
+        _note_record_once(f"not read: {why}; no release notice")
+    _record_cache = (time.monotonic(), state, why)
+    return state, why
+
+
+def record_notice(have: str | None = None, state: State | None = None, why: str = "") -> dict[str, Any]:
+    """bus_info's `release` when the bridge's record is the source (RT-6.30,
+    plan B piece 14b): this version, the record's newest and whether it is
+    read, the step, `Breaking`, the `Needs:` lines, `withdrawn` and `older` as
+    the host's check shows them, the line, the note that a human installs it,
+    and `record` ("read", else why not). Never `check` and never a fallback."""
+    have = VERSION if have is None else have
+    if not _VER.match(have):
+        return {}
+    out: dict[str, Any] = {"this": {"version": have, "source": source_label()}}
+    if state is None:
+        out["record"] = f"not read: {why}" if why else "not read"
+        return out
+    out["record"] = "read"
+    out["newest"] = state.newest
+    out["signature"] = "checked"
+    if state.checked_at:
+        out["checked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(state.checked_at))
+    if _key(state.newest) > _key(have):
+        breaking, needs = _between(state, have)
+        out["step"] = _step(have, state.newest)
+        out["breaking"] = breaking
+        if needs:
+            out["needs"] = needs
+    if have in state.withdrawn:
+        out["withdrawn"] = True
+    if older(state, have):
+        out["older"] = True
+    text = record_line(have, state)
+    if text:
+        out["notice"] = text
+        out["note"] = RECORD_NOTE
+    return out
+
+
+def record_line(have: str | None = None, state: State | None = None) -> str:
+    """The turn-end banner's line from the bridge's record (RT-6.2 step 8,
+    RT-6.30); '' when there is nothing to say. No self-update line: RT-6.32
+    goes in a later piece, and the plugin takes the marketplace's version."""
+    have = VERSION if have is None else have
+    if state is None or state.origin != "record" or not _VER.match(have):
+        return ""
+    return "; ".join(_release_parts(state, have))
+
+
+def info(have: str | None = None) -> dict[str, Any]:
+    """bus_info's `release`: the bridge's record when CB_RECORDS_URL is set,
+    else the host's check exactly as before (RT-6.30)."""
+    if not records_configured():
+        return notice(have)
+    state, why = cached_record()
+    return record_notice(have, state, why)
 
 
 def _failures(directory: Path, now: float) -> list[int]:
@@ -594,14 +822,20 @@ async def _stop(proc: asyncio.subprocess.Process) -> None:
 
 
 async def check_loop(first_delay: float = FIRST_DELAY) -> None:
-    """Started with the server: the check when it is due, looked at hourly."""
-    await asyncio.sleep(first_delay)
+    """Started with the server: the host's check when it is due, looked at
+    hourly — or, with CB_RECORDS_URL set, the bridge's record read at once and
+    every RECORD_EVERY, and the host's check never started (RT-6.30, plan B
+    piece 14b: one source, the record)."""
+    record = records_configured()
+    await asyncio.sleep(0 if record else first_delay)
     while True:
         try:
-            if due():
+            if record:
+                await refresh_record()
+            elif due():
                 await run_check()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — a notice, never in the way
             log.debug("release check: %s", exc)
-        await asyncio.sleep(POLL)
+        await asyncio.sleep(RECORD_EVERY if record else POLL)

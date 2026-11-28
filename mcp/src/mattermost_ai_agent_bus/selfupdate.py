@@ -9,8 +9,8 @@ to (`version`): `v<x.y.z>`, or `latest`, the newest release tag the host's
 release check knows that is not withdrawn (RT-6.32 step 4). It counts only verified with the pinned registrar keys
 (MM_REGISTRAR_KEYS, attest.verify_release).
 
-The MCP server never reads it: the host copy's installer (`--auto`, at the
-end of a corral session) and the release check run
+The MCP server never runs this module's read: the host copy's installer
+(`--auto`, at the end of a corral session) and the release check run
 
     <release>/mcp/.venv/bin/python -I -m mattermost_ai_agent_bus.selfupdate
 
@@ -25,6 +25,10 @@ again (mm_registrar_release in bin/mm-agent-lib.sh):
 
 Any other 404, a timeout, a redirect, an answer over RECORD_MAX and a record
 that does not verify are `failed`, which changes nothing on the host.
+
+`release.py` uses `fetch` alone for the release notice when `CB_RECORDS_URL`
+is set (plan B piece 14b, RT-6.30): the bridge serves the same record, and
+`attest.verify_release` checks it there too, with at most an hour's validity.
 """
 
 from __future__ import annotations

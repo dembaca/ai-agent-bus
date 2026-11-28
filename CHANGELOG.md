@@ -7,6 +7,23 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **The release notice from the bridge's signed record: plan B piece 14b** (#244,
+  RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads
+  `GET <address>/register/v1/release` from the bridge (`https`, or `http` only to a
+  loopback host; no redirects, no token, five seconds, at most 8 KiB) and verifies
+  the compact JWS fail-closed against the pinned keys (`MM_REGISTRAR_KEYS`; its new
+  `CB_` name is still open): the bridge's kid, Ed25519, at most an hour between
+  `iat` and `exp`, and a `version` of `v<x.y.z>`. The notice in `bus_info` and the
+  turn-end banner then names that version, the step, `Breaking` and — when the
+  record carries them — the `Needs:` lines and withdrawn versions; the bridge as
+  built names the version and the release signers. Any doubt (an unknown kid, a bad
+  signature, an expired record, a malformed answer, a version that is not
+  `x.y.z`, a non-loopback `http` address, a redirect, a failed request) is no
+  notice, said once in the log, and never `release.env`; the host's release check
+  is neither read nor started, so there is one source. `latest` and a keys-only
+  record name no version and give no notice. Unset (the default), the notice reads
+  `release.env` exactly as before. No self-update is promised: a human installs the
+  version through the harness's marketplace, never the agent.
 - **Files over the bridge: plan B piece 8** (#244, RT-6.23, RT-6.33). In a home over
   NATS with `planb.on(8, <channel>)` on, the session makes no Mattermost call for
   files: an upload's bytes go to the bridge in parts on `<req>.file.<agent>` (the

@@ -465,8 +465,10 @@ def verify_debug(token: object, keys: Mapping[str, Ed25519PublicKey], *, channel
 @dataclass(frozen=True)
 class ReleaseRecord:
     """A verified release record: the release keys the registrar offers
-    (`<type> <base64>` each, in its order) and the version it names: x.y.z,
-    RELEASE_LATEST, or '' for keys only."""
+    (`<type> <base64>` each, in its order), the version it names (x.y.z,
+    RELEASE_LATEST, or '' for keys only) and, when the record carries them for
+    the release notice (plan B piece 14b), its `Needs:` lines, the versions it
+    withdraws and the versions it marks Breaking (x.y.z without the v)."""
 
     signers: tuple[str, ...]
     version: str  # x.y.z without the v, 'latest', or ''
@@ -474,6 +476,9 @@ class ReleaseRecord:
     iat: int
     exp: int
     kid: str
+    needs: tuple[str, ...] = ()
+    withdrawn: tuple[str, ...] = ()
+    breaking: tuple[str, ...] = ()
 
 
 def release_key(line: object) -> str | None:
@@ -497,10 +502,39 @@ def release_key(line: object) -> str | None:
     return f"{m[1]} {base64.b64encode(blob).decode('ascii')}"  # canonical: one spelling per key
 
 
+def _release_versions(value: object) -> tuple[str, ...] | None:
+    """A list of `v<x.y.z>` names, distinct, as x.y.z; None when it is not."""
+    if not isinstance(value, list) or len(value) > RELEASE_SIGNERS_MAX * 2:
+        return None
+    out: list[str] = []
+    for item in value:
+        m = _RELEASE_VERSION.fullmatch(item) if isinstance(item, str) else None
+        if m is None:
+            return None
+        out.append(f"{m[1]}.{m[2]}.{m[3]}")
+    return tuple(out) if len(set(out)) == len(out) else None
+
+
+def _release_needs(value: object) -> tuple[str, ...] | None:
+    """A list of `Needs:` texts as the record carries them, distinct and at
+    most 120 printable characters each; the grammar is checked where the notice
+    is built (release.needs_ok), so a record with a bad line gives no notice."""
+    if not isinstance(value, list) or len(value) > RELEASE_SIGNERS_MAX * 2:
+        return None
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not 0 < len(item) <= 120 or not item.isprintable():
+            return None
+        out.append(item)
+    return tuple(out) if len(set(out)) == len(out) else None
+
+
 def _release_record(payload: Mapping[str, Any], kid: str) -> ReleaseRecord | str:
     """The record's claims, typed; why not when one is missing or malformed:
     a non-empty list of distinct release keys, an optional `v<x.y.z>` or
-    `latest` (that lowercase word exactly, RT-6.32 step 2)."""
+    `latest` (that lowercase word exactly, RT-6.32 step 2), and the optional
+    notice claims of plan B piece 14b (`needs`, `withdrawn`, `breaking`), each
+    strict when present."""
     signers, version, set_at = payload.get("signers"), payload.get("version"), _int(payload.get("set_at_ms"))
     if set_at is None or set_at <= 0:
         return "bad claims"
@@ -512,9 +546,19 @@ def _release_record(payload: Mapping[str, Any], kid: str) -> ReleaseRecord | str
     if version is not None and not (isinstance(version, str) and (
             version == RELEASE_LATEST or _RELEASE_VERSION.fullmatch(version))):
         return "bad version"
+    needs = _release_needs(payload.get("needs", []))
+    if needs is None:
+        return "bad needs"
+    withdrawn = _release_versions(payload.get("withdrawn", []))
+    if withdrawn is None:
+        return "bad withdrawn"
+    breaking = _release_versions(payload.get("breaking", []))
+    if breaking is None:
+        return "bad breaking"
     named = RELEASE_LATEST if version == RELEASE_LATEST else (version or "")[1:]
     return ReleaseRecord(signers=tuple(k for k in keys if k), version=named,
-                         set_at_ms=set_at, iat=payload["iat"], exp=payload["exp"], kid=kid)
+                         set_at_ms=set_at, iat=payload["iat"], exp=payload["exp"], kid=kid,
+                         needs=needs, withdrawn=withdrawn, breaking=breaking)
 
 
 def verify_release(token: object, keys: Mapping[str, Ed25519PublicKey],
