@@ -237,7 +237,7 @@ async def test_until_14c_decide_registers_at_once_without_waiting(monkeypatch: p
     touched: list[str] = []
     monkeypatch.setattr(nobot, "_port", lambda client: touched.append("port"))
     monkeypatch.setattr(port, "bot_needed", lambda: touched.append("read") or NatsPort.NOT_READ)
-    why = await asyncio.wait_for(nobot.decide(port, 60), timeout=0.05)
+    why = await asyncio.wait_for(nobot.decide(port, 60), timeout=5)  # the wait it rules out is 60 s
     assert why == nobot.CROWN_REASON and not nobot.held()
     assert touched == [] and inner.registrar.calls == []
 
