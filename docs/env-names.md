@@ -424,6 +424,10 @@ name with `MM_` for `CB_`):
 - new with the rename, the reading rule's own state in `bin/mm-agent-lib.sh`:
   `CB_ENV_DEFER`, `CB_ENV_ERR`, `CB_ENV_INTERNAL`, `CB_ENV_NAMES`,
   `CB_ENV_QUIET`, `CB_ENV_WARNED`;
+- new with plan B piece 14a, a constant of `bin/mm-agent-lib.sh` assigned on every
+  source, never exported and never read from the environment: `CB_CROWN_NEEDS_BOT`
+  (the start hook defers no session while it is 1; piece 14c flips it with
+  `nobot.CROWN_NEEDS_BOT`);
 - not renamed, they go with the registrar: `MM_UNREG_HTTP`,
   `MM_UNREG_TOKEN_HTTP`, `MM_UNREG_WHY` (unregistering a bot) and
   `MM_RR_KEYS`, `MM_RR_KID`, `MM_RR_STATUS`, `MM_RR_VERSION`, `MM_RR_WHY`

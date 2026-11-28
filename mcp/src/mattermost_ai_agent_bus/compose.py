@@ -223,6 +223,11 @@ def _with_nats(adapter: BusClient) -> BusClient:
         session = session_file.nonce()
     port = NatsPort(adapter, settings, {home}, memory=memory, bridge_bot=env("CB_MM_BRIDGE_BOT"),
                     session=session)
+    from . import nobot
+
+    # Plan B piece 14a (RT-6.18 step 13, RT-6.10 step 8): a session that may be fully switched
+    # and has no bot yet starts its bus without one; nobot.decide says whether it registers.
+    port.bot_deferred = nobot.deferrable(port)
     lease.use_nats(home, port)  # the crown of the home is the NATS bus's (RT-6.38)
     return cast("BusClient", port)
 

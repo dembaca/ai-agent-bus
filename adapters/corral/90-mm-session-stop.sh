@@ -163,10 +163,12 @@ export -n CB_MM_BOT_TOKEN MM_BOT_TOKEN MATTERMOST_TOKEN 2>/dev/null || true
 # --continue or --resume in the same workdir (step 10) or until the grace
 # period ends. Only when its host process saw the Claude session: it wrote the
 # session's key at the first relay handshake. Never for an aborted launch,
-# another agent, or a session file without the bot's own token.
+# another agent, a session file without the bot's own token, or a session started
+# without a bot (DEFERRED=1, plan B piece 14a, RT-6.18 step 13): the next start decides again.
 hosted="${STATE_DIR}/hosted/${SESSION_KEY}"
 KEEP=0 KEPT_SID="" KEPT_WORKDIR=""
-if [[ "${CORRAL_AGENT:-}" == claude && "${CORRAL_AGENT_EXIT:-}" != aborted &&
+DEFERRED="$(mm_kv "$SESSION_FILE" DEFERRED)"
+if [[ "${CORRAL_AGENT:-}" == claude && "${CORRAL_AGENT_EXIT:-}" != aborted && "$DEFERRED" != 1 &&
       -n "${MM_REG_BOT_NAME:-}" && -n "${CB_MM_BOT_TOKEN:-}" &&
       -d "$hosted" && ! -L "$hosted" && ! -L "$hosted/claude-sid.env" ]]; then
   KEPT_SID="$(mm_read_file "$hosted/claude-sid.env" 256 | mm_kv - CB_CLAUDE_SID MM_CLAUDE_SID)" || KEPT_SID=""
@@ -223,6 +225,21 @@ if [[ "$KEEP" -eq 1 ]]; then
   log "WARNING: could not mark ${MM_REG_BOT_NAME} as kept; unregistering it"
 fi
 [[ -d "$hosted" && ! -L "$hosted" ]] && rm -rf "$hosted"
+
+# A session started without a bot (plan B piece 14a, RT-6.18 step 13): preStart marked its file
+# DEFERRED=1. The host process registered one only if a channel or piece was off, and then
+# wrote its token into this file (nobot.record_token), maybe after this hook read it: read
+# again now that the process is stopped. Its exit work above has usually unregistered the bot;
+# the steps below see that (gone already) or keep the file for mm-agent-sweep.sh when the
+# registrar refused. Without a token it registered none: nothing to unregister.
+if [[ "$DEFERRED" == 1 ]]; then
+  mm_load_session_file || true
+  if [[ -z "${CB_MM_BOT_TOKEN:-}" ]]; then
+    log "no bot registered for ${MM_REG_BOT_NAME:-this session} (started without a bot, RT-6.18 step 13); removing its session file"
+    rm -f "$SESSION_FILE"
+    exit 0
+  fi
+fi
 
 if [[ -z "${MM_REG_BOT_NAME:-}" ]]; then
   log "session file has no MM_REG_BOT_NAME; removing it"

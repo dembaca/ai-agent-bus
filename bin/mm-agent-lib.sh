@@ -98,7 +98,7 @@ CB_ENV_NAMES=(
   "CB_AGENT_SESSION_FILE MM_AGENT_SESSION_FILE" "CB_BUS_DEADLINE MM_BUS_DEADLINE"
   "CB_BUS_HOST_DIR MM_BUS_HOST_DIR" "CB_BUS_MAX_TIME MM_BUS_MAX_TIME" "CB_BUS_UPLOAD MM_BUS_UPLOAD"
   "CB_LISTEN_POLL_SEC MM_LISTEN_POLL_SEC" "CB_MM_TEAM_ID MM_TEAM_ID" "CB_REL_GIT_DIR MM_REL_GIT_DIR"
-  "CB_REL_TMP MM_REL_TMP" "CB_BUS_HOOK_DISPATCH MM_BUS_HOOK_DISPATCH"
+  "CB_REL_TMP MM_REL_TMP" "CB_BUS_HOOK_DISPATCH MM_BUS_HOOK_DISPATCH" "CB_NATS_HOMES MM_NATS_HOMES"
 )
 # mm_env_all: mm_env for each of them; 2 when any refuses (CB_ENV_ERR says which).
 mm_env_all() {
@@ -351,6 +351,37 @@ mm_home_channel() {
   local first
   first="$(mm_project_channels | head -n 1)"
   printf '%s' "${first:-$(mm_channel)}"
+}
+
+# Until piece 14c: nobot.CROWN_NEEDS_BOT. The crown still needs the bot's identity, so the host
+# process would register for every session anyway: no start hook defers, every session
+# registers in it as before. Piece 14c flips both in one commit (tests/hooks/
+# test_planb_piece14_hooks.py pins that they agree). A constant of this file, assigned on every
+# source and never exported: no environment setting can turn the deferral on.
+CB_CROWN_NEEDS_BOT=1
+
+# Plan B piece 14a (RT-6.18 step 13): may this session run with no Mattermost bot at all?
+# Only when CB_NATS_HOMES lists every channel of it, the home, each guest and the lobby, as
+# compose.nats_homes_from_env reads it (comma or space separated, a leading ~ dropped, any
+# case). A pre-filter of the host's own settings, never the decision: the host process then
+# reads the login service's records and registers the bot when a channel or piece is off.
+# Until piece 14c it says no to every session (CB_CROWN_NEEDS_BOT above): each registers here.
+mm_bot_deferrable() {
+  local listed=" " n ch
+  [[ "$CB_CROWN_NEEDS_BOT" == 0 ]] || return 1
+  local -a parts=()
+  IFS=$', \t\n' read -r -a parts <<<"${CB_NATS_HOMES:-}"
+  for n in "${parts[@]+"${parts[@]}"}"; do
+    n="${n#\~}"
+    [[ -n "$n" ]] && listed+="$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]') "
+  done
+  [[ "$listed" != " " ]] || return 1
+  while IFS= read -r ch; do
+    [[ -n "$ch" ]] || continue
+    ch="$(printf '%s' "${ch#\~}" | tr '[:upper:]' '[:lower:]')"
+    [[ "$listed" == *" ${ch} "* ]] || return 1
+  done < <(mm_project_channels; mm_channel; echo)
+  return 0
 }
 
 # Should a session hook register a bot for this session on its own?

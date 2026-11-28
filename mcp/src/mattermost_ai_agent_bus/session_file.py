@@ -183,6 +183,16 @@ def host_state_dir() -> Path:
     return Path(base) / "mm-agent-bus"
 
 
+def corral_session_file() -> Path | None:
+    """The corral session file of this host process: `<host state dir>/<key>.env`, beside its
+    own state directory `<host state dir>/hosted/<key>/`, the 0600 file preStart wrote and
+    postEnd and mm-agent-sweep.sh read (RT-6.18). Never in a sandbox: the host's state
+    directory. None outside a keyless session's host process."""
+    if _hosted_dir is None:
+        return None
+    return _hosted_dir.parent.parent / f"{_hosted_dir.name}.env"
+
+
 # The workspace the client named in roots/list, when the environment names none.
 _roots_dir: str | None = None
 # Where the workspace may come from, before roots and cwd (RT-6.17 step 2).
@@ -298,10 +308,12 @@ def write_private(path: Path, text: str) -> None:
         raise
 
 
-def append_private(path: Path, text: str) -> None:
-    """Append to a state file, 0600, never through a symlink (O_NOFOLLOW)."""
+def append_private(path: Path, text: str, create: bool = True) -> None:
+    """Append to a state file, 0600, never through a symlink (O_NOFOLLOW). With `create=False`
+    a file that is not there is not created (FileNotFoundError): a file another process removed
+    must not come back holding only this text (nobot.record_token)."""
     _state_parent(path)
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | (os.O_CREAT if create else 0) | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "a") as fh:
         fh.write(text)
 

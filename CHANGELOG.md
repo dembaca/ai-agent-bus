@@ -61,6 +61,43 @@ before 0.5.0 are described in the git history.
   is stricter for everyone, the host's self-update included: each number of a version is
   at most six digits, a malformed `needs`, `withdrawn` or `breaking` refuses the record,
   and the read of the record stops after five seconds of body in total.
+- **Registration ends, all or nothing: plan B piece 14a, the decision** (#244, ADR-014
+  phase 5 item 14, RT-6.18 step 13, RT-6.10 step 8). A session whose home, guest
+  channels, lobby and stats channel all run over NATS with every plan B piece on
+  registers no Mattermost bot and holds no Mattermost token, once piece 14c is in:
+  until then the decision always names a reason, "the crown needs the bot's identity
+  until piece 14c" (RT-6.6 step 13), since the crown's lease and its claim on NATS still
+  need the bot, so every session still registers; piece 14c removes that line. Until piece 14c
+  no session defers either: the corral start hook registers every session itself, exactly as
+  before (bot kept for `--continue`, channels resolved, status set), by a constant of
+  `bin/mm-agent-lib.sh` that no setting changes and that a test keeps in step with the
+  server's; the host process path below is built and tested, but no session reaches it
+  until piece 14c flips both. Once it does, under corral the start
+  hook registers nothing when `CB_NATS_HOMES` lists every channel of the session; the
+  session's host process decides after its own NATS read and registers the bot only
+  when a channel or piece is off, with the registration secret the start hook handed
+  it on stdin, which it drops afterwards. Without corral `session_start` decides the
+  same way and answers `registered: false` with `no_bot`; `bus_info` says `no_bot`
+  too. The decision reads only the login service's records on the presence stream,
+  never the environment. When it cannot be taken (no login or no presence replay
+  within 60 s, no NATS side, a stale or missing record) the session registers as
+  before. It is kept for the session: a switch turned off later leaves the session
+  without Mattermost, and what needs Mattermost fails with a message that says to
+  restart (`session_end` too, instead of "call session_start first"). With the switches off, as everywhere today, and for every session whose
+  channels `CB_NATS_HOMES` does not all list, nothing changes. Until the host process
+  has decided (up to 60 s) and after a failed registration, `bus_info` (`no_bot`) and
+  what needs Mattermost say so, instead of naming a tool the sandbox does not have. A
+  bot the host process registers goes into the host-side session file at once, so the
+  stop hook, or `bin/mm-agent-sweep.sh` after it, can still unregister it when the
+  exit's own unregister failed; a bot whose token cannot go into that file is unregistered
+  at once and the registration counts as failed; the file is only appended to, so one the stop hook has
+  removed meanwhile is not created again holding just the token. While the bot is being
+  registered, a Mattermost route says so ("a Mattermost bot is being registered, try again
+  in a moment") instead of "bot token required". `CB_NATS_HOMES` and `MM_NATS_HOMES` set to different
+  values now refuse the bus in the start hook too, as they did in the MCP server. The release that
+  carries this with the release notice from the bridge and the identity by NATS name
+  (pieces 14b and 14c) is planned with
+  `Needs: bridge and login service at 0.106.0 or newer, release record from the bridge.`
 - **STATS: own posts by hour** (#290, RT-6.9 step 2, RT-6.45). Each part now carries
   `post_hours`, the agent's own posts by UTC hour and bus word (counts only, only the
   hours with posts), so the console's "24 h" can show hourly bars; `stats.hours_of`
