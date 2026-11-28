@@ -78,8 +78,9 @@ async def test_every_request_needs_the_key(api):
 
 
 async def test_no_session_and_a_dead_bus_fail_the_hook_open(api):
-    """RT-6.17 error handling: no token yet → 503, Mattermost down → 502; the
-    hooks treat either as nothing to do (RT-6.4)."""
+    """RT-6.17 error handling: no token and no decision to run without a bot → 503
+    (a session decided without one is served by its NATS name, test_planb_piece14c2b.py),
+    Mattermost down → 502; the hooks treat either as nothing to do (RT-6.4)."""
     _, h = await api(FakeClient(token=None))
     assert (await h.get("/v1/me")).status_code == 503
     _, h = await api(None)
@@ -965,8 +966,8 @@ async def test_the_terminal_login_line_is_one_per_login(api, monkeypatch):
 
 
 async def test_a_turn_end_without_a_bus_session_still_carries_the_login_line(api, monkeypatch):
-    """#198, plan B: a session with no bot gets 503 for its turn's end, and the
-    waiting approval's line rides with it instead of being lost."""
+    """#198, plan B: a session with no bot and no decision to run without one gets 503
+    for its turn's end, and the waiting approval's line rides with it instead of being lost."""
     from mattermost_ai_agent_bus import login as login_mod
 
     class Running:

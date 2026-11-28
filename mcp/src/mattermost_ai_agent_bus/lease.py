@@ -689,6 +689,41 @@ def _show_by_bridge(shown: dict[str, Any] | None) -> None:
             log.debug("status: presence not sent early: %s", exc)
 
 
+# Why the heartbeat of a session without a Mattermost bot does not run ('' while it does or
+# there is a bot): its status is not mirrored (plan B piece 9), so it would need Mattermost.
+_beat_off = ""
+_beat_warned = False
+
+
+def _beats(client: ChatPort) -> bool:
+    """The status, the crown and the heartbeat run for this session (RT-6.6 step 13): it holds
+    a Mattermost token, as before, or it runs without a bot (identity.bot_less) and its status
+    is mirrored (status_mirrored, plan B piece 9: _set_status then writes nothing to
+    Mattermost and the bridge shows it). Without a bot and not mirrored (piece 9 off or its
+    switch not readable) nothing runs: logged once per start, bus_info shows it (beat_off)."""
+    global _beat_off, _beat_warned
+    if client.token:
+        return True
+    if not identity.bot_less(client):
+        return False
+    home = str(client.work_channel_name or "").strip().lstrip("~").lower()
+    if status_mirrored(home):
+        _beat_off = ""
+        return True
+    _beat_off = (f"no status, crown or heartbeat: this session runs without a Mattermost bot and "
+                 f"its status in ~{home or '?'} is not mirrored over NATS (plan B piece 9 off or "
+                 "not readable, RT-6.6 step 13)")
+    if not _beat_warned:
+        _beat_warned = True
+        log.warning("lease: %s", _beat_off)
+    return False
+
+
+def beat_off() -> str:
+    """Why a session without a bot has no heartbeat ('' while it has one, or has a bot)."""
+    return _beat_off
+
+
 async def set_status(client: ChatPort, state: str, label: str = "") -> None:
     """Show what this agent is doing (RT-6.6 step 1): working, listening (label:
     until epoch), idle, bus (no turn hooks), offline, or renew (the state last
@@ -699,7 +734,7 @@ async def set_status(client: ChatPort, state: str, label: str = "") -> None:
     coordinator loses it when its crown lease runs out. Idle in a session started as
     a channel is reachable: the bus wakes it. ValueError for an unknown
     state; anything Mattermost answers is ignored."""
-    if not client.token:
+    if not _beats(client):
         return
     async with _lock():
         await _set_status(client, state, label)
@@ -1095,7 +1130,7 @@ async def roster(client: ChatPort) -> list[RosterEntry]:
     step 4); [] when it cannot be read. A member whose home is elsewhere does
     not count; one that holds its own home's crown comes last as that home's
     ambassador (crown_of, ADR-002): whom to mention for that team's work."""
-    if not client.token:
+    if not _beats(client):
         return []
     try:
         return await roster_in(client, await client.work_channel_id(), client.work_channel_name)
@@ -1216,7 +1251,7 @@ async def command(client: ChatPort, action: str) -> str:
     then claim or yield). '' when the bus cannot be read."""
     if action not in ACTIONS:
         raise ValueError(f"action must be one of {', '.join(ACTIONS)}")
-    if not client.token:
+    if not _beats(client):
         return ""
     passed: list[bool] = []
     try:
@@ -1516,7 +1551,7 @@ async def _nats_holder_checks(client: ChatPort, source: NatsSource, uid: str, na
 async def nats_beat(client: ChatPort) -> None:
     """The holder's checks on each crown beat (CB_CROWN_BEAT_SEC), not only at the tick: the
     self-yield comes within the wait plus one crown beat (RT-6.38 step 5). Never raises."""
-    if not client.token or not is_nats_home(client.work_channel_name):
+    if not _beats(client) or not is_nats_home(client.work_channel_name):
         return
     try:
         async with _lock():
@@ -2044,7 +2079,7 @@ async def usage_crossed(client: ChatPort) -> None:
     usage.take_band keeps it rare. A normal beat never comes here
     (the heartbeat's own renewal carries the numbers). Never raises."""
     try:
-        if not client.token or not usage.take_band():
+        if not _beats(client) or not usage.take_band():
             return
         uid = await _user_id(client)
         if not _read(_file("presence", uid)).get("STATE"):
@@ -2110,7 +2145,7 @@ async def ctx_line(client: ChatPort) -> None:
     a 4xx (the HELLO deleted, the channel archived) comes back the same: no line
     in this context window, logged once."""
     try:
-        if not client.token:
+        if not _beats(client):
             return
         uid = await _user_id(client)
         rec = ownpost.read(uid)
@@ -2176,7 +2211,7 @@ async def heartbeat(get_client: Callable[[], Awaitable[ChatPort | None]],
         delay = heartbeat_sec()
         try:
             client = await get_client()
-            if client is not None and client.token:
+            if client is not None and _beats(client):
                 uid = await _user_id(client)
                 if not seeded:
                     seeded = True

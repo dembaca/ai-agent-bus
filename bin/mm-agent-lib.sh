@@ -733,7 +733,14 @@ mm_bus_explain() {
   elif [[ "$CB_BUS_STATUS" == 401 ]]; then
     echo "mm-bus: the MCP server refused the key (${CB_BUS_FROM}): a stale file or another server — restart the MCP server of this session" >&2
   elif [[ "$CB_BUS_STATUS" == 503 ]]; then
-    echo "mm-bus: no bot yet: register with the MCP tool session_start first" >&2
+    # The server says why when it knows (no_bot, plan B piece 14c-2b), else the old advice.
+    local why
+    why="$(jq -r '.no_bot // empty | strings' <<<"${CB_BUS_BODY:-}" 2>/dev/null)" || why=""
+    if [[ -n "$why" ]]; then
+      echo "mm-bus: no bus session: ${why}" >&2
+    else
+      echo "mm-bus: no bot yet: register with the MCP tool session_start first" >&2
+    fi
   else
     echo "mm-bus: the MCP server answered HTTP ${CB_BUS_STATUS}: $(jq -r '.error // empty' <<<"${CB_BUS_BODY:-}" 2>/dev/null)" >&2
   fi
@@ -761,11 +768,15 @@ mm_bus_uid() {
 }
 
 # Who this session's bot is, from the hook API: exports CB_MM_BOT_USER_ID and
-# CB_MM_BOT_USERNAME (the per-bot state files key on them), sets CB_BUS_PROJECT
-# (1 in a project channel), CB_CROWN_UNTIL (epoch, 0 without the crown) and
-# CB_BUS_CHANNEL (1 once the agent confirmed the channel check, RT-6.12). Fails
-# without jq or a bus session: the hook then exits 0 and stays quiet (RT-6.4).
-# shellcheck disable=SC2034  # CB_BUS_PROJECT, CB_CROWN_UNTIL are read by the callers
+# CB_MM_BOT_USERNAME (the per-bot state files key on them), sets mm_bus_me_id (the
+# session's own id: the bot id, or the NATS name of a session without a bot),
+# CB_BUS_PROJECT (1 in a project channel), CB_CROWN_UNTIL (epoch, 0 without the
+# crown) and CB_BUS_CHANNEL (1 once the agent confirmed the channel check,
+# RT-6.12). A session without a Mattermost bot (plan B piece 14c-2b) answers
+# with its NATS name: a state key (mm_state_key_re), never exported as
+# CB_MM_BOT_USER_ID, which mm_bus_uid and the status line take for a bot id.
+# Fails without jq or a bus session: the hook then exits 0 and stays quiet (RT-6.4).
+# shellcheck disable=SC2034  # mm_bus_me_id, CB_BUS_PROJECT, CB_CROWN_UNTIL are read by the callers
 mm_bus_me() {
   local uid name project crown channel
   command -v jq >/dev/null 2>&1 || return 1
@@ -773,12 +784,15 @@ mm_bus_me() {
   { read -r uid; read -r name; read -r project; read -r crown; read -r channel; } < <(jq -r '
     (.user_id // ""), (.username // ""), (if .project then 1 else 0 end), (.crown_until // 0),
     (if .channel then 1 else 0 end)' <<<"$CB_BUS_BODY" 2>/dev/null)
-  [[ "${uid:-}" =~ ^[a-z0-9]{26}$ ]] || return 1
-  mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID "$uid"
+  [[ "${uid:-}" =~ $mm_state_key_re ]] || return 1
+  mm_bus_me_id="$uid"
+  [[ "$uid" =~ ^[a-z0-9]{26}$ ]] && mm_env_set CB_MM_BOT_USER_ID MM_BOT_USER_ID "$uid"
   mm_env_set CB_MM_BOT_USERNAME MM_BOT_USERNAME "${name:-}"
   # The kept state's key when it is not the bot id (RT-6.2 step 9): for mm_state_key. A
-  # variable of this process only, never one inherited from the environment.
+  # variable of this process only, never one inherited from the environment. Without a
+  # bot the NATS name is the key.
   mm_state_key_me="$(jq -r '.state_key // ""' <<<"$CB_BUS_BODY" 2>/dev/null)" || mm_state_key_me=""
+  [[ -n "$mm_state_key_me" || "$uid" =~ ^[a-z0-9]{26}$ ]] || mm_state_key_me="$uid"
   CB_BUS_PROJECT="${project:-0}"
   CB_BUS_CHANNEL="${channel:-0}"
   CB_CROWN_UNTIL="${crown:-0}"

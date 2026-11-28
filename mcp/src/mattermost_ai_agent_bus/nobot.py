@@ -43,10 +43,10 @@ DECIDE_SEC = 60.0
 POLL_SEC = 0.1
 
 # Fail closed toward registering until plan B piece 14c: the crown (RT-6.6, RT-6.38) still needs
-# the bot - the lease heartbeat and its NATS beat run only with a token (piece 14c-2b; the claim
-# itself names no bot, and the identity is the NATS name without one since 14c-2a, identity.py) -
-# so a session without a bot would publish no crown claim and a fully switched home would have
-# no coordinator. While this is True, `NatsPort.bot_needed`
+# the bot until piece 14c-2c switches the decision on (the claim itself names no bot, the identity
+# is the NATS name without one since 14c-2a, identity.py, and the hook API, the status and the
+# heartbeat run without a token where the status is mirrored since 14c-2b, lease._beats). While
+# this is True, `NatsPort.bot_needed`
 # names CROWN_REASON even when every channel and piece runs over NATS: the decision logic is
 # built and tested, but every session still registers, and `decide` answers CROWN_REASON at once
 # instead of waiting up to DECIDE_SEC for a read whose answer is known. Piece 14c (the identity on
@@ -64,8 +64,8 @@ WAITING = ("no Mattermost bot yet: the decision about a Mattermost bot is not ta
            "when it is taken")
 REGISTERING = ("a Mattermost bot is being registered, try again in a moment (plan B piece 14, RT-6.18 "
                "step 13)")
-FAILED = ("no Mattermost bot: registering the bot failed ({why}; plan B piece 14, RT-6.18 step 13), so "
-          "this session runs over NATS alone: restart the session")
+FAILED = ("no Mattermost bot: this session needs one, and registering the bot failed ({why}; plan B "
+          "piece 14, RT-6.18 step 13): restart the session")
 
 
 def reason() -> str:

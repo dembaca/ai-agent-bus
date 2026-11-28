@@ -697,8 +697,11 @@ class NatsPort:
                 # Nothing is written or deleted here: the mark outlives a bye (the next server
                 # of a kept bot sends it, and the consumer it recreates replays the absence).
                 bot = await self._bot_id()
-                since = (_since_from_read_mark(bot, {self._s.home, *self._asked_extra()} - {""})
-                         if BOT_RE.fullmatch(bot) else {})
+                # Plan B piece 14c-2b: no bot (yet, piece 14a's deferred start): the read mark
+                # is keyed by the session's NATS name (RT-6.2 step 9), the name this bus gets.
+                key = bot if BOT_RE.fullmatch(bot) else "" if bot else self._name_before(login, owner)
+                since = (_since_from_read_mark(key, {self._s.home, *self._asked_extra()} - {""})
+                         if key else {})
                 bus = NatsBus(self._s, login, owner, self._on_event, on_fatal=self._on_fatal,
                               on_person=self._on_person, on_notice=self._on_notice,
                               session=self._session, since=since, **self._bus_options)
@@ -789,6 +792,19 @@ class NatsPort:
         got = await self._directory_id(self.inner.work_channel_name.strip().lstrip("~").lower())
         self.home_id = self.home_id or got
         return got
+
+    def _name_before(self, login: Any, owner: str) -> str:
+        """The NATS name the bus about to start will have (NatsBus.name, natsbus.agent_name),
+        when it is a state key (session_file.key_ok); '' when it cannot be told."""
+        from .session_file import key_ok
+
+        try:
+            name = natsbus.agent_name(owner, login.nkey().public_key, self._s.name_prefix,
+                                      session=self._session)
+        except Exception as exc:  # noqa: BLE001 — no cursor, as without a read mark
+            log.debug("nats: no name for the hand-over cursor: %s", type(exc).__name__)
+            return ""
+        return name if key_ok(name) else ""
 
     async def _bot_id(self) -> str:
         """The Mattermost user id of the bot, as lease._user_id resolves it."""
@@ -1059,7 +1075,10 @@ class NatsPort:
         return await self.inner.join_channel(channel_name)
 
     async def get_channel(self, channel_id: str) -> Channel:
-        for ch, cid in self._extra_ids().items():
+        # Without a Mattermost bot (plan B piece 14c-2b) the homes too come from the directory;
+        # any other channel is Mattermost's and fails with the no-bot text.
+        known = await self.resolve() if identity.bot_less(self) else self._extra_ids()
+        for ch, cid in known.items():
             if cid == channel_id:
                 return Channel(id=cid, name=ch, type="O")
         return await self.inner.get_channel(channel_id)
@@ -1074,12 +1093,14 @@ class NatsPort:
     async def guest_channel_ids(self) -> set[str]:
         """The adapter's (the bot's Mattermost memberships, RT-6.22 step 1), plus the guests
         over NATS (piece 12) by the directory's ids; the lobby and a channel switched on but
-        not reachable are none of them. Without piece 12 the adapter's, unchanged."""
+        not reachable are none of them. Without piece 12 the adapter's, unchanged. Without a
+        Mattermost bot (plan B piece 14c-2b) no Mattermost memberships: the NATS guests alone."""
         extra = self._extra_ids()
-        if not extra and not self._closed12:
+        bot_less = identity.bot_less(self)
+        if not extra and not self._closed12 and not bot_less:
             return set(await self.inner.guest_channel_ids())
         try:
-            got = set(await self.inner.guest_channel_ids())
+            got = set() if bot_less else set(await self.inner.guest_channel_ids())
         except Exception as exc:  # noqa: BLE001 — the Mattermost guests are left out, not ours
             log.warning("could not read the guest channels on Mattermost: %s", exc)
             got = set()
@@ -3125,8 +3146,11 @@ class NatsPort:
         """The adapter's, a NATS home marked `nats` with its newest remembered
         NATS post as `nats_last_post_at` (Mattermost does not know it): its NATS
         posts have a read watermark of their own (watermark.lane), and the unread
-        count and the inbox's backfill compare each lane's newest with its mark."""
-        rows = await self.inner.member_channels()
+        count and the inbox's backfill compare each lane's newest with its mark. Without a
+        Mattermost bot (identity.bot_less, plan B piece 14c-2b) no Mattermost read: the NATS
+        homes, guests and lobby are the rows, each with its NATS lane only."""
+        bot_less = identity.bot_less(self)
+        rows = [] if bot_less else await self.inner.member_channels()
         ids = await self.resolve()
         newest = {ids[ch]: max((p.create_at for p in mem.values()), default=0)
                   for ch, mem in self._posts.items() if ch in ids}
@@ -3136,8 +3160,10 @@ class NatsPort:
         # A guest or the lobby over NATS (plan B piece 12) the bot is no Mattermost member of:
         # a row of its own, so the count and the backfill read its NATS lane (RT-6.22 step 7).
         have = {r.channel_id for r in rows}
+        more = ({ch: cid for ch, cid in ids.items() if cid not in self._closed_ids} if bot_less
+                else self._extra_ids())
         out += [UnreadChannel(cid, "O", name=ch, nats=True, nats_last_post_at=newest.get(cid, 0))
-                for ch, cid in self._extra_ids().items() if cid not in have]
+                for ch, cid in more.items() if cid not in have]
         return out
 
     # --- the senders: agent names, no Mattermost accounts ----------------------------------------
@@ -3423,7 +3449,8 @@ class NatsPort:
         circle = await self._circle4(user_id)
         if circle is not None:
             return circle.owner_name or circle.owner_anchor
-        return None if user_id == identity.key_now(self) else ""
+        me = identity.key_now(self)
+        return None if me and user_id == me else ""  # an unknown own key ('') is nobody's own
 
     async def _circle4(self, user_id: str) -> AttestedCircle | None:
         """Piece 4: the circle of the agent behind `user_id` from the login service's
@@ -3448,7 +3475,7 @@ class NatsPort:
         bus = self._live()
         if bus is None or not user_id:
             return ""
-        if user_id == identity.key_now(self):
+        if (me := identity.key_now(self)) and user_id == me:
             return bus.name
         bots, known = self._known2({user_id})
         if known:

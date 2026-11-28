@@ -255,6 +255,7 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
     finally:
         nats.cancel()
         await asyncio.gather(nats, return_exceptions=True)  # a start under way ends here, not later
+        await _bye_on_nats()
         await _final_stats_on_nats()
         await compose.stop_nats(_client)
         task.cancel()
@@ -291,6 +292,18 @@ async def _final_stats_on_nats() -> None:
         stats.final_nats = await asyncio.wait_for(stats.publish_nats(stats.final(VERSION, _fixed())), 5)
     except Exception as exc:  # noqa: BLE001 — never block the end
         log.info("overhead stats: the last part not on NATS: %s", type(exc).__name__)
+
+
+async def _bye_on_nats() -> None:
+    """RT-6.2, plan B piece 14c-2b: a session without a Mattermost bot posts its BYE over NATS
+    while the bus still runs (the exit handler's bye_sync needs the token); the bus's stop then
+    says bye in the presence, which the bridge shows as offline (piece 9). Never raises."""
+    if _client is None or _exit_handled or not identity.bot_less(_client):
+        return
+    try:
+        log.info("BYE: %s", await ownpost.bye(_client, identity.key_now(_client)))
+    except Exception as exc:  # noqa: BLE001 — never block the end
+        log.info("BYE skipped: %s", type(exc).__name__)
 
 
 def wire_nats(port: Any) -> None:
@@ -1144,6 +1157,27 @@ async def session_end(name: str = "") -> str:
     return _out("session_end", {"ok": True, "ended": ended})
 
 
+def _no_bot_info(client: BusClient, no_bot: str) -> dict[str, Any]:
+    """bus_info without a Mattermost bot (RT-6.18 step 13): why (nobot.status); decided so
+    (identity.bot_less, plan B piece 14c-2b) also the NATS name the session is known by, why its
+    state is not keyed by that name (session_file.latch_refused) and why its heartbeat does not
+    run (lease.beat_off), each when there is one."""
+    out: dict[str, Any] = {
+        "version": VERSION, "on_bus": True, "bot": None, "no_bot": no_bot,
+        "home": client.work_channel_name, "guests": list(getattr(client, "guest_channel_names", ())),
+        "lobby": client.channel_name,
+        **({"over_nats": over} if (over := lease.nats_visibility()) else {}),
+        "release": release.notice(VERSION),
+    }
+    if identity.bot_less(client):
+        out["nats_name"] = identity.nats_name(client) or None  # None: the NATS bus is not up yet
+        if refused := session_file.latch_refused():
+            out["state_key_refused"] = refused
+        if off := lease.beat_off():
+            out["heartbeat_off"] = off
+    return out
+
+
 @tool()
 async def bus_info() -> str:
     """This bus session at a glance: plugin/MCP version, bot, responsible and
@@ -1160,18 +1194,14 @@ async def bus_info() -> str:
     client: BusClient | None = None
     try:
         client = _get_client()
+        if identity.bot_less(client):  # no users/me without a bot (plan B piece 14c-2b)
+            return _out("bus_info", _no_bot_info(client, nobot.status()))
         me = await client.get_me()
     except RuntimeError as exc:
         # Plan B piece 14a: on the bus over NATS alone (RT-6.18 step 13), decided so, the host
         # process's decision still open, or its registration failed (nobot.status).
         if client is not None and (no_bot := nobot.status()):
-            return _out("bus_info", {
-                "version": VERSION, "on_bus": True, "bot": None, "no_bot": no_bot,
-                "home": client.work_channel_name, "guests": list(getattr(client, "guest_channel_names", ())),
-                "lobby": client.channel_name,
-                **({"over_nats": over} if (over := lease.nats_visibility()) else {}),
-                "release": release.notice(VERSION),
-            })
+            return _out("bus_info", _no_bot_info(client, no_bot))
         return _out("bus_info", {
             "version": VERSION,
             "on_bus": False,
@@ -3721,7 +3751,7 @@ def _cleanup_on_exit() -> None:
         return
     # Before unregistering: the bot must still exist to post.
     try:
-        log.info("BYE: %s", ownpost.bye_sync(_client, _client.bot_id))
+        log.info("BYE: %s", ownpost.bye_sync(_client, identity.key_now(_client)))
     except Exception as exc:  # noqa: BLE001 — never block teardown
         log.info("BYE skipped: %s", exc)
     try:

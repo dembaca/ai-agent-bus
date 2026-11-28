@@ -76,7 +76,10 @@ async def after(client: ChatPort, unread: set[str] | None = None) -> list[After]
     `unread`, when given, takes the ids of the channels whose read failed:
     their posts are missing from the result (#238)."""
     uid = (await identity.self_me(client)).id
-    floor = max(await client.account_created(), int(time.time() * 1000) - DAY_MS)
+    # Without a Mattermost bot (plan B piece 14c-2b) there is no account to date: a day back
+    # alone. The NATS lane, the one such a session reads, never takes the floor (below).
+    day = int(time.time() * 1000) - DAY_MS
+    floor = day if identity.bot_less(client) else max(await client.account_created(), day)
     marks = watermark.read(uid)
     gated = gate.gated(uid)
     out: list[After] = []
