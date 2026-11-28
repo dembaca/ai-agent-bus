@@ -31,7 +31,7 @@ import stat
 import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -353,6 +353,27 @@ def use_nats_name(name: str, home: str) -> None:
 
     global _nats_name
     _nats_name = (name, home) if name and key_ok(name) and planb.on(2, home) else None
+    if _nats_name is not None and _key_listener is not None:
+        try:
+            _key_listener()
+        except Exception as exc:  # noqa: BLE001 — bookkeeping (the endpoint file)
+            logging.getLogger(__name__).debug("state key not announced: %s", type(exc).__name__)
+
+
+# Told once the key is latched: the hook API writes it into its endpoint file (CB_STATE_KEY),
+# so mm-agent-sweep.sh keeps the name's files while this server runs (RT-6.1 step 7).
+_key_listener: Callable[[], None] | None = None
+
+
+def on_state_key(listener: Callable[[], None] | None) -> None:
+    """Call `listener` when use_nats_name latches a NATS name (one per process: the last set)."""
+    global _key_listener
+    _key_listener = listener
+
+
+def nats_state_key() -> str:
+    """The NATS name the kept state is keyed by (RT-6.2 step 9), "" while that is the bot id."""
+    return _nats_name[0] if _nats_name else ""
 
 
 def key_ok(key: str) -> bool:
