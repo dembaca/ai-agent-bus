@@ -6191,6 +6191,41 @@ never an empty chart (answer of the design contact). A part counts in the bucket
 a slider or free date range, and figures by agent, home or owner on this
 page (point 15). In the wording, many agents are a flock, never a fleet.
 
+**Addition, 2026-11-28: the Asks view, answering disabled** (issue #285; the
+owner decided on 2026-11-28 that the view is built now, with everything that
+writes disabled). The Asks view lists one row per ask (the chip "for you" or
+"may answer", the need with agent, home, asked human and kind, the age, the
+state, a thread button with the post count and a red count of replies by others
+since the person last opened the thread). A click on the row unfolds it: the
+answer box ("This counts as your approval of: the ask's wording" and the answers
+as buttons) and "Chat with agent", which opens the ask's thread as a drawer from
+the right with its posts read only. The answer buttons and the drawer's reply
+field are disabled and say "answer in the chat for now": **answering stays
+disabled until the human security review**; no write endpoint, no publish right
+of the console's credential and no answer binding is built or switched on.
+The read position per person and ask (the replies by others seen when the
+thread was last open) is kept in the browser's `localStorage` under the
+operator's name, since the server has no per-person store and no write path to
+the bus. Design contact's answers, same day: the answer box of an approval shows go / no-go
+(RT-6.11), a question has none, and nothing is invented; once the bus carries an
+ask's own answers, exactly two stand side by side without letters and more stand
+as rows with the key caps A to D (the layout is built and works with none); an
+answered ask says "answered" in the state column; the red count is the replies by
+others since the operator last opened the thread, never the ask's own post or the
+operator's own posts; the "for you" chip stays in a narrow window, above the
+need; an ask that is not the operator's to answer has no answer box; the thread
+button is a small speech-bubble SVG with the number alone. The ask's own answers
+(and the one chosen) are not on the ask record, and **carrying them is not
+decided here**: it takes optional record keys that widen the rule of a title, no
+body, and that couple the console server's rollout to the agents' (an older
+console server refuses a whole record with unknown keys), so it is the owner's
+separate decision. The ask record holds no context, recommendation or "where"
+either, so none is shown and no caption stands over nothing; `GET /v1/threads/<id>`
+returns no posts yet, so nothing there is drawn. A restriction to an approval goes into the thread and the agent asks
+again (RT-6.11); there is no "go with a comment". Rejected: everything in the
+drawer without unfolding in the list, and a free "write to an agent" or a
+channel list. RT-6.43 (the console's runtime) is unchanged: it only reads.
+
 ## ADR-016: The bus without a chat as its source
 
 **Status:** Accepted (2026-11-23) by the owner (ask

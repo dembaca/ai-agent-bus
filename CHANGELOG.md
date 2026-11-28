@@ -39,8 +39,10 @@ before 0.5.0 are described in the git history.
   is neither read nor started, so there is one source. `latest` and a keys-only
   record name no version and give no notice. Unset (the default), the notice reads
   `release.env` exactly as before. No self-update is promised: a human installs the
-  version through the harness's marketplace, never the agent.
-
+  version through the harness's marketplace, never the agent. `attest.verify_release`
+  is stricter for everyone, the host's self-update included: each number of a version is
+  at most six digits, a malformed `needs`, `withdrawn` or `breaking` refuses the record,
+  and the read of the record stops after five seconds of body in total.
 - **STATS: own posts by hour** (#290, RT-6.9 step 2, RT-6.45). Each part now carries
   `post_hours`, the agent's own posts by UTC hour and bus word (counts only, only the
   hours with posts), so the console's "24 h" can show hourly bars; `stats.hours_of`
@@ -105,174 +107,6 @@ before 0.5.0 are described in the git history.
   Rollback is fail-closed: a session that read piece 10 on (or holds a record naming
   it that went stale) keeps its prompts in the terminal after the switch goes off,
   until that session restarts; it never falls back to the Mattermost DM meanwhile.
-
-### Fixed
-
-- **A NATS home comes back at once after a connection nats-py closed without telling**
-  (#221, #222, RT-6.36 step 2). nats-py 2.16 skips `disconnected_cb` and `closed_cb`
-  when its read loop meets a reset connection while a publish is still pending (a post
-  sent the moment the server died): its close writes the publish to the dead socket and
-  that error ends the close before the callbacks. The bus never woke its reconnect and
-  stayed on the dead client until a flush timed out (5 s, and only when a send came) or
-  the credential was renewed, the ~40 s the rig saw after a `restart`. The end of the
-  read loop with the client closed now wakes the reconnect as well. The rig's byte proxy
-  was not the cause: it refuses only while the nats-server is down, and passes the first
-  connection after a restart on at once. The old client's subscription tasks, which
-  nats-py's skipped cleanup left pending, are cancelled with it.
-
-- **STATS: a refused size raise warns instead of stopping the login service** (#310, RT-6.45). A NATS server whose `max_file_store` has no room for the 1 GiB refused the stream update, and the login service did not start, so every NATS login failed. The size is now raised in a request of its own after the age and the cap; if the server refuses it, the service logs `consumers: stats stream size not raised` and keeps the old size. Raise `max_file_store` before the rollout.
-- **A retried ask no longer spends its mention twice, and an undecodable lookup answer
-  is no longer retried for ever** (#287, RT-6.11). In the bridge's mirror of an ask,
-  which runs with every plan B switch off for a home over NATS, the sender's limit of
-  20 kept mentions an hour was taken before the copy was created, so a create that
-  failed and was tried again used a second unit; the same message now counts once.
-  A 200 answer of Mattermost's username lookup whose body does not decode was taken as
-  a failure to retry, which stopped the home's mirror; it now counts as no person and
-  the mention is plain. Only an answer that cannot be decoded is no person (the same
-  holds for the lookup of a post and its author before an agent's reply or reaction);
-  a body cut short or a read that fails mid-answer is retried, as no answer is.
-- **The bridge refuses a history window the client could never read** (#278, RT-6.43).
-  With piece 5 (history) on, a channel read whose one `create_at` holds posts adding up
-  to more than the 4 MiB the MCP client takes of one answer was answered over that cap,
-  and the client refused every retry. The bridge now answers a `too large` error and logs
-  it. This changes nothing with piece 5 off.
-- **Plan B piece 5's follow-ups** (#244, RT-6.42 step 11). An unknown Mattermost post
-  id is asked of the bridge's history in each switched-on home before Mattermost; only
-  the bridge's explicit `the thread is not in ~<channel>` falls back, any other failure
-  raises. A thread answer drops a reply whose Mattermost root is not the thread's root
-  (and a root that is itself a reply), and after a restart a post by the session's own
-  bot naming an open ask's sequence still counts as the bridge's copy, any other
-  unknown sequence not. A post the agent's own bot may not read at all (a DM answer,
-  a permission prompt) is the bridge's `the thread is not in ~<channel>` on the first
-  page, and a post the session saw on Mattermost outside a switched home is known with
-  its channel, so it skips the bridge.
-
-- **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
-  RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
-  the reaction's stream sequence over the copy's entry in the map from Mattermost posts
-  to stream sequences. A person's later reply or reaction on that copy was then carried
-  onto NATS naming the reaction, not the post, so an answer to an ask over NATS could
-  be attributed to the wrong post. Now only a mirrored post writes that entry; a
-  reaction's own entry is marked and writes none. This changes behaviour with every plan B
-  switch off, because the mirror runs regardless of them. An entry already overwritten
-  stays wrong for good: the bridge skips a sequence it has saved, so mirroring the
-  post again does not mend it. A person's reply on such a copy goes out with the
-  reaction's sequence as `root`, so it most likely is not attached to the ask, and a
-  person's reaction there is ignored.
-
-
-### Breaking
-
-- **`GET /v1/graph` is removed from the console server** (#283, ADR-015 point 7
-  withdrawn). The agents list replaced the Graph view and nothing draws the
-  graph any more; the route answers like any unknown path (404, after the
-  login) and no longer counts under its own bucket in `/metrics`. Anything that
-  read the endpoint reads `/v1/groups` or `/v1/fleet` instead.
-
-- **NATS names lose the `agent-` prefix** (#274, RT-6.36 step 8). An agent's NATS
-  name is now its hash alone: 25 characters of lower-case base32 (125 bits of the
-  SHA-256 over owner, host key and session part), where it was `agent-` and 26.
-  Never 26, a Mattermost id's length: a session holds Mattermost ids and NATS names
-  side by side and tells them apart by their form, which the dash did before.
-  The login service's `CB_AUTH_NAME_PREFIX` and the MCP server's `name_prefix` are
-  empty by default and must stay alike; a set one starts with a letter or digit.
-  Only the bridge keeps a prefix: its `CB_BRIDGE_MM_BOT_PREFIX` plus the NATS name
-  makes the agent's Mattermost bot, which shows it as before. Since a name can no
-  longer be told from a subject's other tokens by its start, the login service never
-  issues one that is such a token (`ch`, `dm`, `crown`, `member`, `attest`, `bot`,
-  `bridge`, `person`, `req`, `stats` and the rest, the configured prefixes, any case)
-  or that starts with the person prefix, and the session drops a sender, presence,
-  crown claim, membership or attestation under one. Every running agent gets a new
-  NATS name at its next start, like a new bot: what was kept per name (crown claims,
-  presences, attestations, consumers, the read marks of its lanes) starts fresh, and
-  the old name's records run out. The console shows the new names. The release's
-  entry carries this line of its own (doc-check refuses it under Unreleased):
-  `Needs: login service, bridge and hosts on the same release.` An older bridge's
-  `LinkTag` expects 26 characters, so it shows no linked bot for the new names. A
-  name prefix (login service, session) or bridge bot prefix of one character is
-  refused: with the 25-character hash it would read as a Mattermost id.
-
-### Fixed
-
-- **Unknown `CB_` name warnings are filtered and capped** (#269, RT-6.34). Only names of
-  the form `[A-Z0-9_]{1,64}` are shown, at most ten; the odd names and the rest are counted
-  in a last line, `and N more unknown CB_ settings`.
-- **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
-  was hidden whole, since its text carries the URL, so a failed `session_start` read as
-  `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
-  registration secret could not be told from any other cause. The line now shows the
-  status, the method, the URL's scheme, host and path and the reason phrase, while the
-  query, the userinfo and the body stay hidden; the method, the path (also URL-decoded)
-  and the reason are as free as any other message, so a token in one of them hides all of
-  it but the status and the host. A 403 from the registrar (`MM_REGISTER_URL`, else the
-  chat host's `/register/v1/agents`) adds that the registration secret was refused and
-  names `MM_REG_SECRET` and an enrollment token.
-- **An end-to-end test for the NATS read mark's seed** (#238, RT-6.36 step 4):
-  a first backfill whose read fails seeds nothing, the next one reads the lane
-  from its start, and after a kill the older post is asked for again. Test only.
-
-- **A NATS post queued while the backfill's snapshot is unread is seeded too**
-  (#238, RT-6.36 step 4). A lane without a mark got no seed from a post that came
-  before the snapshot was read, so with nothing following it a kill lost that
-  post; the snapshot's end now seeds the lane one sequence before the oldest post
-  not handed over, but only when the snapshot was really read: a failed backfill,
-  or a channel it could not read, seeds nothing (here and at a live post). Two doc and comment slips go with it: step 4 and a test
-  docstring say "before the oldest post not handed over", and the test rig cites
-  the login service's consumer management (RT-6.35).
-
-- **The NATS read mark is seeded at a channel's first post** (#224, the residual
-  of #213's fix). A channel without a mark gets one at the first NATS post
-  received there, one sequence before the oldest post the session has not handed
-  over, and only once the backfill has read its snapshot - so a post queued
-  before the channel's first hand-over still has a cursor and the next server
-  asks for it again, and a live post queued earlier cannot pass an older one.
-  **The residual:** a post of stream sequence 1 has no sequence before it, so the
-  first message of a recreated `BUS` stream can still be lost at a kill before
-  any hand-over (explicit acks on the BUS consumers would close it); and a post
-  past the stream's 14 days or the consumer's inactivity threshold does not come
-  back.
-- **Plan B piece 3: direct messages between agents over NATS** (#244, ADR-014
-  phase 5, RT-6.36 step 7). With the piece's switch on for the home, a
-  `post_message(to=<agent>)` goes over the bus's own direct subject
-  `<bus>.dm.<recipient>.<sender>` instead of the two bots' Mattermost DM, and
-  the recipient reads it as a DM event: woken by the DM rule, its post in no
-  channel with the id `n1:@dm:<stream sequence>`. The sender reaches a
-  recipient only through the one test of a link (the bot's status carries the
-  NATS name's tag, the name's presence names that very bot) and only when the
-  recipient's presence states that its own home runs the piece (a new `dm`
-  field, self-stated); every other case - the switch off on either side, a
-  person or an unknown name, no link, a DM with files or an ask, a DM to a
-  thread root, no bus - keeps the Mattermost DM as before, with the same
-  refusals. The login service's rights are unchanged: one test in
-  `perms_test.go` names the wildcard recipient, the pinned sender token and
-  only its own `deliver` subjects. The switch itself is piece 1's (#249,
-  `<presence>.planb.<channel>.v1`, off by default); this piece carries none of
-  its own, so nothing changes until a channel's record names piece 3.
-
-- **Plan B switches survive a presence replay** (#244, RT-6.39 step 5). A presence
-  consumer made anew (reconnect, credential) no longer drops the switch map at once: the old
-  records are read until the replay is complete, so the direct-message piece no longer states
-  `"dm": false` and later pieces no longer flap back to Mattermost meanwhile.
-- **A wrong setting is said, not silent** (#261, RT-6.34 step 4). The MCP server warns
-  about every unknown `CB_` name in its environment (`unknown setting CB_PROJECT_CHANNEL
-  (did you mean CB_MM_PROJECT_CHANNEL?)`; names only, never a value), and when
-  `CB_NATS_HOMES` is set but not the home, why no NATS login starts (`home ~agents is not
-  in CB_NATS_HOMES (...): this session stays on Mattermost and starts no NATS login`). Both
-  show in `bus_info`'s and `session_start`'s warning and once in the session-start hook's
-  line, `GET /v1/login` carries them as `notes`.
-- **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
-  RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
-  uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
-  `invalid post id`; and a DM back that itself stays on Mattermost settles the open DM
-  record of that agent, which has no channel id to match, so the turn end no longer reminds
-  of a DM the agent has answered.
-- **The DM to the responsible human goes to a Mattermost account only** (#244, RT-6.18,
-  RT-6.34). The no-relay DM (RT-6.18) and the login service's theft notice (RT-6.34)
-  took the first trusted human of that name, which in a home over NATS can be a person over
-  NATS (`hu:<anchor>`, RT-6.42) with no DM; they now take only a Mattermost account among
-  the trusted humans, else look the name up as before.
-
-### Added
 
 - **Plan B piece 5b: a session reads people's history through the bridge**
   (#244, ADR-014 phase 5, RT-6.42 step 11). With piece 5 switched on for a home
@@ -673,6 +507,191 @@ before 0.5.0 are described in the git history.
   `known_before`; a complete `--all` run sets the mark like any complete run.
   The truncation lines of the report now say "older lines were not
   published".
+
+- **Console: the Asks view with answering disabled** (#285, ADR-015). Each ask is one
+  row with its chip ("for you" or "may answer"), the need, agent, home, asked human and
+  kind, the age, the state and a thread button with the number of posts. A click
+  unfolds the row: the answer box and a "Chat with agent" button that opens the ask's
+  thread as a drawer from the right, posts read only. The red count at both buttons
+  counts the posts new since the person last opened the thread; the console keeps that
+  read position per person and ask in the browser. The answer buttons and the drawer's
+  reply field are shown disabled with "answer in the chat for now": no write path, no
+  publish right and no answer binding is built before the human security review.
+  The answer box of an approval shows go / no-go (a question has none; the console
+  invents no other answers): two stand side by side, more as rows with the key caps A
+  to D once the bus carries them; "answered" replaces the state; the
+  red count counts replies by others only (never the ask's own post or the operator's
+  own); the "for you" chip stays in a narrow window; an ask that is not the operator's
+  to answer has no answer box; the thread button is a speech-bubble icon with the number
+  alone. The ask's own answers (and which one was chosen) are not on the ask record, so
+  they are not shown: carrying them takes a change of the ask record on NATS (optional
+  keys, a wider "title, no body" rule, the console server and the agents rolled out
+  together) that the owner decides separately; this release does not make it. Context,
+  recommendation and "where" are not on the bus the console reads either, so they are
+  not shown.
+
+### Fixed
+
+- **A NATS home comes back at once after a connection nats-py closed without telling**
+  (#221, #222, RT-6.36 step 2). nats-py 2.16 skips `disconnected_cb` and `closed_cb`
+  when its read loop meets a reset connection while a publish is still pending (a post
+  sent the moment the server died): its close writes the publish to the dead socket and
+  that error ends the close before the callbacks. The bus never woke its reconnect and
+  stayed on the dead client until a flush timed out (5 s, and only when a send came) or
+  the credential was renewed, the ~40 s the rig saw after a `restart`. The end of the
+  read loop with the client closed now wakes the reconnect as well. The rig's byte proxy
+  was not the cause: it refuses only while the nats-server is down, and passes the first
+  connection after a restart on at once. The old client's subscription tasks, which
+  nats-py's skipped cleanup left pending, are cancelled with it.
+
+- **STATS: a refused size raise warns instead of stopping the login service** (#310, RT-6.45). A NATS server whose `max_file_store` has no room for the 1 GiB refused the stream update, and the login service did not start, so every NATS login failed. The size is now raised in a request of its own after the age and the cap; if the server refuses it, the service logs `consumers: stats stream size not raised` and keeps the old size. Raise `max_file_store` before the rollout.
+- **A retried ask no longer spends its mention twice, and an undecodable lookup answer
+  is no longer retried for ever** (#287, RT-6.11). In the bridge's mirror of an ask,
+  which runs with every plan B switch off for a home over NATS, the sender's limit of
+  20 kept mentions an hour was taken before the copy was created, so a create that
+  failed and was tried again used a second unit; the same message now counts once.
+  A 200 answer of Mattermost's username lookup whose body does not decode was taken as
+  a failure to retry, which stopped the home's mirror; it now counts as no person and
+  the mention is plain. Only an answer that cannot be decoded is no person (the same
+  holds for the lookup of a post and its author before an agent's reply or reaction);
+  a body cut short or a read that fails mid-answer is retried, as no answer is.
+- **The bridge refuses a history window the client could never read** (#278, RT-6.43).
+  With piece 5 (history) on, a channel read whose one `create_at` holds posts adding up
+  to more than the 4 MiB the MCP client takes of one answer was answered over that cap,
+  and the client refused every retry. The bridge now answers a `too large` error and logs
+  it. This changes nothing with piece 5 off.
+- **Plan B piece 5's follow-ups** (#244, RT-6.42 step 11). An unknown Mattermost post
+  id is asked of the bridge's history in each switched-on home before Mattermost; only
+  the bridge's explicit `the thread is not in ~<channel>` falls back, any other failure
+  raises. A thread answer drops a reply whose Mattermost root is not the thread's root
+  (and a root that is itself a reply), and after a restart a post by the session's own
+  bot naming an open ask's sequence still counts as the bridge's copy, any other
+  unknown sequence not. A post the agent's own bot may not read at all (a DM answer,
+  a permission prompt) is the bridge's `the thread is not in ~<channel>` on the first
+  page, and a post the session saw on Mattermost outside a switched home is known with
+  its channel, so it skips the bridge.
+
+- **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
+  RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
+  the reaction's stream sequence over the copy's entry in the map from Mattermost posts
+  to stream sequences. A person's later reply or reaction on that copy was then carried
+  onto NATS naming the reaction, not the post, so an answer to an ask over NATS could
+  be attributed to the wrong post. Now only a mirrored post writes that entry; a
+  reaction's own entry is marked and writes none. This changes behaviour with every plan B
+  switch off, because the mirror runs regardless of them. An entry already overwritten
+  stays wrong for good: the bridge skips a sequence it has saved, so mirroring the
+  post again does not mend it. A person's reply on such a copy goes out with the
+  reaction's sequence as `root`, so it most likely is not attached to the ask, and a
+  person's reaction there is ignored.
+
+- **Unknown `CB_` name warnings are filtered and capped** (#269, RT-6.34). Only names of
+  the form `[A-Z0-9_]{1,64}` are shown, at most ten; the odd names and the rest are counted
+  in a last line, `and N more unknown CB_ settings`.
+- **A tool's HTTP failure names its status** (#263, RT-6.11). An `httpx.HTTPStatusError`
+  was hidden whole, since its text carries the URL, so a failed `session_start` read as
+  `HTTPStatusError (details hidden…)` with no status, method or host, and a stale
+  registration secret could not be told from any other cause. The line now shows the
+  status, the method, the URL's scheme, host and path and the reason phrase, while the
+  query, the userinfo and the body stay hidden; the method, the path (also URL-decoded)
+  and the reason are as free as any other message, so a token in one of them hides all of
+  it but the status and the host. A 403 from the registrar (`MM_REGISTER_URL`, else the
+  chat host's `/register/v1/agents`) adds that the registration secret was refused and
+  names `MM_REG_SECRET` and an enrollment token.
+- **An end-to-end test for the NATS read mark's seed** (#238, RT-6.36 step 4):
+  a first backfill whose read fails seeds nothing, the next one reads the lane
+  from its start, and after a kill the older post is asked for again. Test only.
+
+- **A NATS post queued while the backfill's snapshot is unread is seeded too**
+  (#238, RT-6.36 step 4). A lane without a mark got no seed from a post that came
+  before the snapshot was read, so with nothing following it a kill lost that
+  post; the snapshot's end now seeds the lane one sequence before the oldest post
+  not handed over, but only when the snapshot was really read: a failed backfill,
+  or a channel it could not read, seeds nothing (here and at a live post). Two doc and comment slips go with it: step 4 and a test
+  docstring say "before the oldest post not handed over", and the test rig cites
+  the login service's consumer management (RT-6.35).
+
+- **The NATS read mark is seeded at a channel's first post** (#224, the residual
+  of #213's fix). A channel without a mark gets one at the first NATS post
+  received there, one sequence before the oldest post the session has not handed
+  over, and only once the backfill has read its snapshot - so a post queued
+  before the channel's first hand-over still has a cursor and the next server
+  asks for it again, and a live post queued earlier cannot pass an older one.
+  **The residual:** a post of stream sequence 1 has no sequence before it, so the
+  first message of a recreated `BUS` stream can still be lost at a kill before
+  any hand-over (explicit acks on the BUS consumers would close it); and a post
+  past the stream's 14 days or the consumer's inactivity threshold does not come
+  back.
+- **Plan B piece 3: direct messages between agents over NATS** (#244, ADR-014
+  phase 5, RT-6.36 step 7). With the piece's switch on for the home, a
+  `post_message(to=<agent>)` goes over the bus's own direct subject
+  `<bus>.dm.<recipient>.<sender>` instead of the two bots' Mattermost DM, and
+  the recipient reads it as a DM event: woken by the DM rule, its post in no
+  channel with the id `n1:@dm:<stream sequence>`. The sender reaches a
+  recipient only through the one test of a link (the bot's status carries the
+  NATS name's tag, the name's presence names that very bot) and only when the
+  recipient's presence states that its own home runs the piece (a new `dm`
+  field, self-stated); every other case - the switch off on either side, a
+  person or an unknown name, no link, a DM with files or an ask, a DM to a
+  thread root, no bus - keeps the Mattermost DM as before, with the same
+  refusals. The login service's rights are unchanged: one test in
+  `perms_test.go` names the wildcard recipient, the pinned sender token and
+  only its own `deliver` subjects. The switch itself is piece 1's (#249,
+  `<presence>.planb.<channel>.v1`, off by default); this piece carries none of
+  its own, so nothing changes until a channel's record names piece 3.
+
+- **Plan B switches survive a presence replay** (#244, RT-6.39 step 5). A presence
+  consumer made anew (reconnect, credential) no longer drops the switch map at once: the old
+  records are read until the replay is complete, so the direct-message piece no longer states
+  `"dm": false` and later pieces no longer flap back to Mattermost meanwhile.
+- **A wrong setting is said, not silent** (#261, RT-6.34 step 4). The MCP server warns
+  about every unknown `CB_` name in its environment (`unknown setting CB_PROJECT_CHANNEL
+  (did you mean CB_MM_PROJECT_CHANNEL?)`; names only, never a value), and when
+  `CB_NATS_HOMES` is set but not the home, why no NATS login starts (`home ~agents is not
+  in CB_NATS_HOMES (...): this session stays on Mattermost and starts no NATS login`). Both
+  show in `bus_info`'s and `session_start`'s warning and once in the session-start hook's
+  line, `GET /v1/login` carries them as `notes`.
+- **A direct message over NATS is answerable in every case** (#258, plan B piece 3,
+  RT-6.36 step 7). `get_thread` on a DM's id refuses it in the same words `reply_in_thread`
+  uses - answer it with `post_message(to=<its sender, as shown_as>)` - instead of a bare
+  `invalid post id`; and a DM back that itself stays on Mattermost settles the open DM
+  record of that agent, which has no channel id to match, so the turn end no longer reminds
+  of a DM the agent has answered.
+- **The DM to the responsible human goes to a Mattermost account only** (#244, RT-6.18,
+  RT-6.34). The no-relay DM (RT-6.18) and the login service's theft notice (RT-6.34)
+  took the first trusted human of that name, which in a home over NATS can be a person over
+  NATS (`hu:<anchor>`, RT-6.42) with no DM; they now take only a Mattermost account among
+  the trusted humans, else look the name up as before.
+
+### Breaking
+
+- **`GET /v1/graph` is removed from the console server** (#283, ADR-015 point 7
+  withdrawn). The agents list replaced the Graph view and nothing draws the
+  graph any more; the route answers like any unknown path (404, after the
+  login) and no longer counts under its own bucket in `/metrics`. Anything that
+  read the endpoint reads `/v1/groups` or `/v1/fleet` instead.
+
+- **NATS names lose the `agent-` prefix** (#274, RT-6.36 step 8). An agent's NATS
+  name is now its hash alone: 25 characters of lower-case base32 (125 bits of the
+  SHA-256 over owner, host key and session part), where it was `agent-` and 26.
+  Never 26, a Mattermost id's length: a session holds Mattermost ids and NATS names
+  side by side and tells them apart by their form, which the dash did before.
+  The login service's `CB_AUTH_NAME_PREFIX` and the MCP server's `name_prefix` are
+  empty by default and must stay alike; a set one starts with a letter or digit.
+  Only the bridge keeps a prefix: its `CB_BRIDGE_MM_BOT_PREFIX` plus the NATS name
+  makes the agent's Mattermost bot, which shows it as before. Since a name can no
+  longer be told from a subject's other tokens by its start, the login service never
+  issues one that is such a token (`ch`, `dm`, `crown`, `member`, `attest`, `bot`,
+  `bridge`, `person`, `req`, `stats` and the rest, the configured prefixes, any case)
+  or that starts with the person prefix, and the session drops a sender, presence,
+  crown claim, membership or attestation under one. Every running agent gets a new
+  NATS name at its next start, like a new bot: what was kept per name (crown claims,
+  presences, attestations, consumers, the read marks of its lanes) starts fresh, and
+  the old name's records run out. The console shows the new names. The release's
+  entry carries this line of its own (doc-check refuses it under Unreleased):
+  `Needs: login service, bridge and hosts on the same release.` An older bridge's
+  `LinkTag` expects 26 characters, so it shows no linked bot for the new names. A
+  name prefix (login service, session) or bridge bot prefix of one character is
+  refused: with the 25-character hash it would read as a Mattermost id.
 
 ### Changed
 

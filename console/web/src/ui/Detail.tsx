@@ -310,7 +310,7 @@ export function plainText(markdown: string): string {
 
 /** One post: time, its bus word as a chip, author and plain text —
  * worked out once per message. */
-function PostRow({ post }: { post: Post }) {
+export function PostRow({ post }: { post: Post }) {
   const { word, text } = useMemo(() => {
     const { word, rest } = busWord(post.message)
     return { word, text: plainText(rest) }

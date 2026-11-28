@@ -13,6 +13,7 @@ import asyncio
 import base64
 import json
 import time
+from collections.abc import Iterator
 
 import httpx
 import pytest
@@ -394,3 +395,23 @@ async def test_the_record_is_read_again_every_record_every(monkeypatch):
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(release.check_loop(), 0.3)
     assert len(reads) >= 3
+
+
+def test_a_dripping_answer_ends_the_read_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.30 step 5, review of #312: the whole read is bounded inside
+    `selfupdate.fetch`, so the worker thread `release.py` waits on ends at the
+    deadline as well - each chunk arrives well within the per-phase timeout."""
+    monkeypatch.setattr(selfupdate, "TIMEOUT", 0.05)
+
+    def drip(request: httpx.Request) -> httpx.Response:
+        def chunks() -> Iterator[bytes]:
+            for _ in range(40):
+                time.sleep(0.02)
+                yield b" "
+        return httpx.Response(200, content=chunks())
+
+    started = time.monotonic()
+    with pytest.raises(selfupdate.Failed) as err:
+        selfupdate.fetch(URL + "/release", transport=httpx.MockTransport(drip), environ={})
+    assert "not read within 0.05 s" in str(err.value)
+    assert time.monotonic() - started < 0.5
