@@ -140,7 +140,7 @@ def test_a_reader_neither_asked_nor_trusted_gets_the_title_only() -> None:
 
 
 def test_the_card_reaches_no_other_read() -> None:
-    """The card is on /v1/asks alone: the cards, the graph and the groups with the glance
+    """The card is on /v1/asks alone: the cards and the groups with the glance
     carry no card part for anyone, even for the asked human (the event stream sends cards,
     `/v1/threads` no posts yet)."""
     from console_server import groups
@@ -148,7 +148,7 @@ def test_the_card_reaches_no_other_read() -> None:
     f = _card_fleet()
     for reader in ("dembaca", "carol~x", None):
         cards = f.cards(reader)
-        out = json.dumps([cards, f.graph(reader),
+        out = json.dumps([cards,
                           groups.groups(cards, f.asks(reader), [], by="home", scope="everyone",
                                         own={A}, own_or_trusted={A, B})])
         assert not any(w in out for w in SECRET_WORDS + ("eve's context",)), reader

@@ -6240,7 +6240,7 @@ direction character, `chosen` one of `answers`; a bad record is dropped whole
 human and to the people the asking agent's attestation names as owner or
 trusted (RT-6.41); everyone else, and everyone before the operator's own anchor
 is known, gets the title alone, with no card key in the row. The card reaches no
-other read: the cards, the event stream, the graph, the groups and the panel's
+other read: the cards, the event stream, the groups and the panel's
 numbers, and `/v1/threads` carry none of it. The raw record reaches only the
 consoles' consumers for the channels a person may see and the unattended metrics
 reading, which counts asks only; no agent's consumer delivers ask records. An
