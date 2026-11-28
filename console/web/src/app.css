@@ -177,36 +177,28 @@ button, input, select { font: inherit; color: inherit; }
   min-width: 0;
 }
 
-/* the view, alone or beside a detail (#200): its width drives the
-   Overview's columns (a container query) */
-.solo, .view, .split__detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.view { container: view / inline-size; }
+/* the view; a detail is a drawer from the right, not part of it (#283) */
+.solo, .view { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
-/* a detail beside the view, half and half; the detail stays in sight while
-   the list scrolls. Below 1000 px the view hides: the detail is the page */
-.stage--split { max-width: 1680px; }
-.split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
-}
-.split__detail {
-  position: sticky;
-  top: calc(var(--topbar-h) + 14px);
-  max-height: calc(100vh - var(--topbar-h) - 28px);
+/* the drawer: about half the width, the full width on a narrow window; not
+   modal, nothing dims or locks the page behind it */
+.drawer {
+  position: fixed;
+  top: var(--topbar-h);
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 50vw;
+  min-width: min(520px, 100vw);
+  max-width: 100vw;
   overflow: auto;
-  padding: 2px 6px 8px;
-  margin: -2px -6px 0;
+  padding: 14px 18px 24px;
+  background: var(--bg);
+  border-left: 1px solid var(--line);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, .12);
 }
-/* up to 1230 px the list gets three fifths: its table keeps its columns */
-@media (max-width: 1230px) {
-  .split { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
-}
-@media (max-width: 999px) {
-  .split { grid-template-columns: minmax(0, 1fr); }
-  .split > .view { display: none; }
-  .split__detail { position: static; max-height: none; overflow: visible; padding: 0; margin: 0; }
+@media (max-width: 799px) {
+  .drawer { width: 100vw; border-left: 0; }
 }
 
 .hint {
