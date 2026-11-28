@@ -530,3 +530,28 @@ async def test_the_scaffold_bounds_a_request_body_by_its_kind() -> None:
         await request(Stub(), "file", {"op": "put", "data": part + "x" * 100_000})
     with pytest.raises(ValueError, match="history.*body"):
         await request(Stub(), "history", {"since": 1, "fill": part})
+
+
+class DownNats(UpNats):
+    """The gate's bus with no connection (#299)."""
+
+    @property
+    def connected(self) -> bool:  # noqa: SLF001 - what the gate reads
+        return False
+
+
+async def test_with_piece_8_on_and_the_bus_down_files_raise_instead_of_mattermost(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """#299: RT-6.33 and the docstrings promise no Mattermost call with the switch on; a
+    bus that is down must raise, not upload or fetch over Mattermost."""
+    from mattermost_ai_agent_bus.nats_port import NatsPortError
+
+    monkeypatch.setenv("CB_PLANB_TEST", "8")
+    port, inner = _port()
+    port.use_bus(object.__new__(DownNats))  # type: ignore[arg-type]
+    with pytest.raises(NatsPortError, match="bus is not connected"):
+        await port.upload_file(CID, "chart.png", b"\x89PNG\r\n\x1a\n")
+    files.saw([FileInfo(id=FILE_ID)], CID)  # a seen post lets fetch reach the switch
+    with pytest.raises(NatsPortError, match="bus is not connected"):
+        await port.fetch_file(FILE_ID)
+    assert inner.uploads == []  # no Mattermost upload for the NATS channel
