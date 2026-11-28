@@ -103,6 +103,26 @@ class Run:
     #: beside what the server had already pushed (issue #213)
     consumer_at_kill: dict[str, Any] = field(default_factory=dict)
     consumer_at_resume: dict[str, Any] = field(default_factory=dict)
+    #: plan B's test switch the sessions ran with (`CB_PLANB_TEST`), "" for none
+    planb: str = ""
+    #: the roster from NATS (plan B piece 2) was on: the run recorded, per window, who
+    #: was told as gone and every roster miss (#252); off, `told_gone` is null
+    roster_on: bool = False
+    window_opened_at: float = 0.0
+    #: post_message answers whose roster check ran (the canary was named), by phase
+    roster_checks: dict[str, int] = field(default_factory=dict)
+    #: a live agent told as gone / named unreachable for another reason: name, why,
+    #: via (post_message or event), phase (before, window, after) and at_s
+    told_gone: list[dict[str, Any]] = field(default_factory=list)
+    roster_misses: list[dict[str, Any]] = field(default_factory=list)
+
+    def phase(self, at: float) -> str:
+        """Where `at` falls against the fault's window: before, window or after."""
+        if not self.window_opened_at or at < self.window_opened_at:
+            return "before"
+        if not self.window_closed_at or at < self.window_closed_at:
+            return "window"
+        return "after"
 
     def send(self, seq: int) -> Sent:
         item = Sent(seq=seq, at=time.monotonic())
@@ -143,6 +163,7 @@ class Run:
             "latency_p95": _pct(open_latencies, 95) if open_latencies else None,
             "duplicates": dupes,
             "takeover_p95": _pct(sorted(self.takeovers), 95) if self.takeovers else None,
+            "told_gone": len(self.told_gone) if self.roster_on else None,
         }
 
     def measure(self, path: Any = None) -> dict[str, dict[str, Any]]:
@@ -198,18 +219,32 @@ class Run:
                                       if seq not in {s.seq for s in self.sent}),
             "consumer_at_kill": self.consumer_at_kill or None,
             "consumer_at_resume": self.consumer_at_resume or None,
+            "planb_test": self.planb or None,
+            "roster": ({"checks": self.roster_checks, "told_gone": self.told_gone[:50],
+                        "misses": len(self.roster_misses),
+                        "misses_by_phase": _by_phase(self.roster_misses),
+                        "first_misses": self.roster_misses[:20]}
+                       if self.roster_on else None),
             "measured": self.measure(),
         }
 
 
+def _by_phase(entries: list[dict[str, Any]]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for e in entries:
+        out[e["phase"]] = out.get(e["phase"], 0) + 1
+    return out
+
+
 SUMMARY_COLUMNS = ("target", "fault", "sent", "loss", "dup", "p50 ms", "p95 ms", "max ms",
-                   "takeover p95 s", "takeover max s")
+                   "takeover p95 s", "takeover max s", "told gone", "roster miss")
 
 
 def summary_rows(runs: list[Run]) -> list[tuple[str, ...]]:
-    """One row per run: the delivery numbers (p50, p95, max, loss, duplicates) and, for
-    a coordinator run, the take-over's p95 and max. A number the run did not measure
-    is "-", never 0."""
+    """One row per run: the delivery numbers (p50, p95, max, loss, duplicates), for
+    a coordinator run the take-over's p95 and max, and with the roster from NATS
+    (`CB_PLANB_TEST=2`) the live agents told as gone, which must be 0, and the roster
+    misses. A number the run did not measure is "-", never 0."""
     def num(value: float | None, digits: int = 1) -> str:
         return "-" if value is None else f"{value:.{digits}f}"
 
@@ -225,6 +260,8 @@ def summary_rows(runs: list[Run]) -> list[tuple[str, ...]]:
             num(values["latency_p50"]), num(values["latency_p95"]),
             num(lat[-1] if lat else None),
             num(values["takeover_p95"]), num(max(run.takeovers) if run.takeovers else None),
+            str(len(run.told_gone)) if run.roster_on else "-",
+            str(len(run.roster_misses)) if run.roster_on else "-",
         ))
     return rows
 
