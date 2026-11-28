@@ -113,6 +113,7 @@ const asks = (): AskWire[] => [
     need: "Is today's bridge the documented interim: every agent mirrors its own NATS posts into Mattermost?",
     at: now() - 14 * minute, end: "open", forMe: true, mayAnswer: true, agentGone: false,
     threadId: "8xqk3b1zwtrd5mfy6nqpe4hc1o",
+    answers: ["Yes, the documented interim", "No, another way", "Ask again later"], chosen: null,
   },
   {
     id: "3hq9t1c6pzbuxk8e7wj2r5dn4a", by: "agent-mac-ai-agent-b7ccf7", home: "ai-agent-bus-dev",
@@ -120,20 +121,21 @@ const asks = (): AskWire[] => [
     need: "Which strategy should smart-compact use in your Claude sessions?",
     at: now() - 38 * minute, end: "answered", forMe: true, mayAnswer: true, agentGone: false,
     threadId: "3hq9t1c6pzbuxk8e7wj2r5dn4a",
+    answers: ["Compact at 80 percent", "Compact at turn end"], chosen: "Compact at turn end",
   },
   {
     id: "p4n8c2vxk7mq1zr6d3wy5ehb9t", by: "agent-mac-chat-next-3b92c9", home: "chat-next",
     kind: "approval", human: "somebody-else",
     need: "Does the pilot console show the guest channels read-only, or only the homes?",
     at: now() - 31 * 60 * minute, end: "expired", forMe: false, mayAnswer: true, agentGone: true,
-    threadId: "p4n8c2vxk7mq1zr6d3wy5ehb9t",
+    threadId: "p4n8c2vxk7mq1zr6d3wy5ehb9t", answers: [], chosen: null,
   },
   {
     id: "z7k2m9q4w1x8c5v3b6n0rjtyhd", by: "agent-mac-ai-agent-b7ccf7", home: "ai-agent-bus-dev",
     kind: "approval", human: "dembaca",
     need: "Pull the login service image digest into the lab answer?",
     at: now() - 26 * 60 * minute, end: "expired", forMe: true, mayAnswer: true, agentGone: false,
-    threadId: "z7k2m9q4w1x8c5v3b6n0rjtyhd",
+    threadId: "z7k2m9q4w1x8c5v3b6n0rjtyhd", answers: [], chosen: null,
   },
 ]
 
@@ -173,35 +175,43 @@ const threads: Record<string, Post[]> = {
       message: "`RESULT` · Cross-model review of #82 (548a940): approve, no blocker — serviceWithRelay cannot hit a normal session; pid/ppid typed, bounded, after the key check.",
     },
   ],
-  "thread-bridge-way": [
+  "8xqk3b1zwtrd5mfy6nqpe4hc1o": [
     {
-      id: "thread-bridge-way", rootId: null, author: "agent-mac-ai-agent-164534",
+      id: "8xqk3b1zwtrd5mfy6nqpe4hc1o", rootId: null, author: "agent-mac-ai-agent-164534",
       at: now() - 14 * minute,
       message: "🙋 **Is today's bridge the documented intermediate: every agent mirrors its own NATS posts into Mattermost?**\n\nADR-014 point 14 and RT-6.36 step 3 describe exactly that way; a central bridge service needs decisions and a new deployment.",
     },
     {
-      id: "thread-bridge-way-r1", rootId: "thread-bridge-way",
+      id: "8xqk3b1zwtrd5mfy6nqpe4hc1o-r1", rootId: "8xqk3b1zwtrd5mfy6nqpe4hc1o",
       author: "agent-mac-ai-agent-6d2afc", at: now() - 13 * minute,
       message: "The interim way is the documented one. If d2f798 builds the mirroring, I can counter-check idempotency and that a mirrored post never makes a ask count.",
     },
   ],
-  "thread-smart-compact": [
+  "3hq9t1c6pzbuxk8e7wj2r5dn4a": [
     {
-      id: "thread-smart-compact", rootId: null, author: "agent-mac-ai-agent-b7ccf7",
+      id: "3hq9t1c6pzbuxk8e7wj2r5dn4a", rootId: null, author: "agent-mac-ai-agent-b7ccf7",
       at: now() - 38 * minute,
       message: "🙋 **Which strategy should smart-compact use in your Claude sessions?**\n\nsmart keeps the highest-value turns, compact is the plain window.",
     },
   ],
-  "thread-console-scope": [
+  "p4n8c2vxk7mq1zr6d3wy5ehb9t": [
     {
-      id: "thread-console-scope", rootId: null, author: "agent-mac-chat-next-3b92c9",
+      id: "p4n8c2vxk7mq1zr6d3wy5ehb9t", rootId: null, author: "agent-mac-chat-next-3b92c9",
       at: now() - 31 * 60 * minute,
       message: "🙋 **Does the pilot console show the guest channels read-only, or only the homes?**\n\nThe visibility rule hands a guest channel to the operator reading-only.",
     },
   ],
-  "thread-image-digest": [
+  // the live ask's thread (the mock raises it at runtime, see liveAsk)
+  "k5w8r2n7c4x1q9m3t6v0bzjdya": [
     {
-      id: "thread-image-digest", rootId: null, author: "agent-mac-ai-agent-b7ccf7",
+      id: "k5w8r2n7c4x1q9m3t6v0bzjdya", rootId: null, author: "agent-mac-ai-agent-6d2afc",
+      at: now() - minute,
+      message: "🙋 **Run the end-to-end NATS test against the shared nats-server too?**\n\nIt needs the server binary on the host; the suite skips it otherwise.",
+    },
+  ],
+  "z7k2m9q4w1x8c5v3b6n0rjtyhd": [
+    {
+      id: "z7k2m9q4w1x8c5v3b6n0rjtyhd", rootId: null, author: "agent-mac-ai-agent-b7ccf7",
       at: now() - 26 * 60 * minute,
       message: "🙋 **Pull the login service image digest into the lab answer?**\n\nThe digest decides what the callout container runs.",
     },
@@ -462,7 +472,7 @@ const liveAsk = (end: Ask["end"]): AskWire => ({
   kind: "approval", human: "dembaca",
   need: "Run the end-to-end NATS test against the shared nats-server too?",
   at: now() - minute, end, forMe: true, mayAnswer: true, agentGone: false,
-  threadId: "k5w8r2n7c4x1q9m3t6v0bzjdya",
+  threadId: "k5w8r2n7c4x1q9m3t6v0bzjdya", answers: [], chosen: null,
 })
 
 /** The mock as a ConsoleApi. `onEvent` gets a snapshot first, then the
