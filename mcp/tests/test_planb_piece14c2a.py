@@ -160,7 +160,7 @@ def test_until_14c_the_crown_still_needs_the_bot() -> None:
 
 async def test_the_crown_command_takes_a_nats_name_and_refuses_junk(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """RT-6.6 step 13: lease._command's gate is session_file.identity_ok: exactly a bot id (26
+    """RT-6.6 step 13: lease._command's gate is session_file.key_ok: exactly a bot id (26
     `[a-z0-9]`) or a NATS name (25 `[a-z2-7]`), not 26 characters only and not any short name."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     session_file.state_dir().mkdir(parents=True)
