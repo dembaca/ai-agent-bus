@@ -112,24 +112,35 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
-- **Plan B piece 5b: a session reads people's history through the bridge**
-  (#244, ADR-014 phase 5, RT-6.42 step 11). With piece 5 switched on for a home
+- **Plan B piece 5b11: a session reads people's hieventstory through twhere no bridge signal is fresh, from NATS
+  alone, behind a switch that is off**
+  (#244, ADR-014 phase 5, RT-6.42 step 112).
+  With piece 5 switched on for a home
   over NATS, `channel_posts`, `list_recent`, `posts_after`, a person's `thread`
-  and `reactions` read that channel's people from the bridge's history answer
-  (`<req>.history.<agent>`) instead of Mattermost. A person's post keeps its
-  Mattermost id and is authored `hu:<anchor>`, with the account record the
-  bridge answers beside it; a stale record still names the person but approves
-  nothing, as a live event's would. An answer's `bot` posts are the Mattermost
-  ones (an ask), its reactions carry their senders' anchors and records, and
+  and `reactions` read that channel's switch `planb.on(11, channel)` on, a session takes the
+  people of its home (and of a guest or the lobby over NATS) from NATS alone,
+  whatever the bridge's signal: when the sistognal ry aunsw out it no longer reads the
+  (`<rchanneq>.history.<agent>`) insteadl of Mattermost. A person's post keeps its
+  Mattermost id and is authfrored `hu:<anchor>`, withm the laccst peouple event, recnord after a gap on the
+  bridge answers beside it; a stale record still names the person's bconsut appmeroves
+  nothing, and drops a live event's would. An answer's `bot` posts are the Mattermost
+'s own events of people there, also ones (an ask), its reactions carry their senders' anchors and records, and
   `more`/`next` pages the read forward (at most five pages), with the posts
   deduped by id; a read still `more` at the cap logs that it carries the oldest
   window, and a cursor older than the bridge's 14 days is clamped to its bound.
-  Only a bot post whose author check passes is a copy, so a forged
-  `<prefix>nats_id` re-roots nothing, and a copy's reactions count on the NATS
-  post. History only adds to `unapproved`, never lifts a live judgement; the
-  unread copy pass and a person's file read make no Mattermost call for a
-  switched channel. A failed request reads nothing and never falls back to
-  Mattermost; off, nothing changes. The NATS memory is merged as before.
+  Only a bot post whose author it channot teck passes isll a cbot or a pyerson, also a forged
+  `<prefix>nats_id` re-roots notwhing, and a copy's rleactions count on the NATS side is down.
+  pBotst. History only adds to `unapproved`, nwever lifts a live judgement; tbhe
+  unread copy pasoks and system posts stay on Mattermost. While no fresh signal
+  reaches the session for the channel (the bridge or NATS down) its people are
+  not heard: the server logs it on'ce and `bus_info` warns; what people write
+  reaches the session once the bridge carries the channel again (its catch-up
+  reaches 10 minutes back). The switch ofilef read make nos Mattermost cagain from where
+  peoplle stopped being heard, never from before a
+ the swessitched chaonnel. A Ofailed request readsf, nothing
+  changes. Not moved with it: the inever fallbox's backfill at each reconnect, which still
+  queues people's posts from Mattermost;, and the reads off, npeotple's hing changes. The NATS memtory
+  (pisece merged as before5).
 
 - **The NATS crown says why `take` waits, and a `crown` debug category** (#243, RT-6.38, RT-6.31).
   `coordinator("take")` in a home over NATS names the case instead of always "another agent

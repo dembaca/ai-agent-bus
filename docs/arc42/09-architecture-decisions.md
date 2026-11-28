@@ -4678,6 +4678,44 @@ which each piece reads for itself.
       - Test: no Mattermost read on a stale signal; `testrig`: a bridge
         stop under load, what arrives after it. Lab: the bridge stopped and
         started in the test home.
+      - Built (after 0.104.0), behind `planb.on(11, channel)` (the channel's
+        switch, RT-6.39 step 5, off by default; RT-6.42 step 12), in the MCP
+        server alone: the bridge already carries people and signals as
+        before, so no Go code changed. With it on for a channel (the home,
+        or a guest or the lobby over NATS, piece 12) the session takes that
+        channel's people from NATS alone, whatever the signal: no catch-up
+        on Mattermost when the signal runs out, none after a gap on the
+        person's consumer, Mattermost's own events of people there dropped
+        as while the signal is fresh. Bots, webhooks and system posts stay
+        on Mattermost, and so do a webhook post and a post with a type. "People
+        are not heard" is a log line when it begins and when it ends, and a
+        `bus_info` warning while it holds. Where the build settles what the
+        text leaves open: an event whose author cannot be told a bot or a
+        person is dropped (fail closed, kept with the switch off), and so is
+        a person's while the NATS side is down for good; an event in a
+        channel whose id is not known yet is kept; the way back reads
+        Mattermost again from the last people event before the people
+        stopped being heard, or from the moment they stopped when no signal
+        was fresh before (never from before the session, at most an hour
+        back, the keys' reach), so a switch off during an outage loses
+        nothing the old path would have read; a catch-up already running
+        when the switch goes on finishes once; the switch reads as off
+        before the bus has read its records and once the record is older
+        than two hours, as every piece's, so a NATS outage of more than two
+        hours reads people on Mattermost again. Not moved with it: the
+        inbox's backfill at each connect of its event source, a reconnect of
+        the Mattermost WebSocket included, which still queues people's posts
+        from Mattermost as events (a post that also comes over NATS once,
+        by its Mattermost id; a reaction can come twice); and the reads of
+        people's history (piece 5), which still show from Mattermost what
+        was not heard: the unread count and the turn hooks, `list_recent`,
+        `get_thread` and an ask's reminders, which stop once they read an
+        answer the session never heard as an event. What people wrote
+        during an outage longer than the bridge's catch-up (10 minutes)
+        comes as no event over NATS. Tests in
+        `mcp/tests/test_planb_piece11.py`, one against a real `nats-server`
+        for both switch states. The `testrig` run and the lab check follow
+        when the switch lands.
   12. **Guest channels and the lobby** (RT-6.22). Needs channels from the
       directory (piece 1).
       - Moves: onto NATS like a home, the bridge mirroring; the wake rules
