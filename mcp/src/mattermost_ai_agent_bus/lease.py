@@ -311,6 +311,11 @@ class NatsSource(Protocol):
         hear now, the switch on and no fresh signal of the bridge; sorted."""
         ...
 
+    def permission_unrelayed(self) -> bool:
+        """Plan B piece 10 (RT-6.13 step 7): the switch on and no fresh signal of the bridge
+        that relays permission prompts: they stay in the terminal."""
+        ...
+
     def presence_soon(self) -> None:
         """Plan B piece 9: the next presence goes out now, not at the next heartbeat."""
         ...
@@ -468,6 +473,10 @@ def nats_notes() -> list[str]:
                    f"NATS is up and the bridge carries ~{ch} again (what it missed, up to 10 minutes back) "
                    "(RT-6.42)"
                    for ch in _nats_source.people_unheard())
+        if _nats_source.permission_unrelayed():
+            out.append(f"plan B piece 10 is on in ~{_nats_home}, but no fresh signal of the bridge says it relays "
+                       "tool permission prompts there (the bridge is down, older, or its switch is not read yet): "
+                       "your permission prompts stay in your terminal, none goes to Mattermost (RT-6.13)")
     return out
 
 

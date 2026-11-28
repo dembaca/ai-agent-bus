@@ -23,9 +23,10 @@ import (
 )
 
 // kindOK says whether kind is one of the scaffold's: the history read, file
-// parts and the header line (ADR-014 phase 5).
+// parts, the header line and a tool permission prompt's DM (ADR-014 phase 5,
+// plan B piece 10, RT-6.13).
 func kindOK(kind string) bool {
-	return kind == "history" || kind == "file" || kind == "header"
+	return kind == "history" || kind == "file" || kind == "header" || kind == "permission"
 }
 
 // agentRE is an agent name as the bus writes it: the subject's last token.
@@ -38,7 +39,7 @@ var requestRE = regexp.MustCompile(`^[a-z0-9]{16}$`)
 // history read and a header line carry an anchor, never the messages
 // themselves; only a file part carries bytes, and then one part of a file.
 const (
-	maxBody     = 64 << 10 // history and header
+	maxBody     = 64 << 10 // history, header and permission
 	maxFileBody = 1 << 20  // file
 )
 
@@ -491,7 +492,7 @@ func (h *Handler) subject(subject string) (agent, kind string, err error) {
 	}
 	kind, agent = tokens[1], tokens[2]
 	if !kindOK(kind) {
-		return "", "", fmt.Errorf("kind %q is not history, file or header", kind)
+		return "", "", fmt.Errorf("kind %q is not history, file, header or permission", kind)
 	}
 	if !agentRE.MatchString(agent) {
 		return "", "", fmt.Errorf("agent %q is no agent name", agent)

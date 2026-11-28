@@ -556,6 +556,26 @@ func (c *Client) Create(ctx context.Context, channelID, text, rootID string,
 	return p.ID, nil
 }
 
+// DirectChannel opens (or finds) the direct message channel between the
+// client's own account and otherUserID, and returns its id (RT-6.13, plan B
+// piece 10). A refusal is mirror.Refused as Create's.
+func (c *Client) DirectChannel(ctx context.Context, otherUserID string) (string, error) {
+	me, err := c.Me(ctx)
+	if err != nil {
+		return "", err
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	if err := c.do(ctx, "POST", "/api/v4/channels/direct", []string{me, otherUserID}, &ch); err != nil {
+		return "", refuse(err)
+	}
+	if ch.ID == "" {
+		return "", errors.New("mattermost: a direct channel without an id")
+	}
+	return ch.ID, nil
+}
+
 // React adds emoji to a post as the bridge's bot.
 func (c *Client) React(ctx context.Context, postID, emoji string) error {
 	uid, err := c.Me(ctx)

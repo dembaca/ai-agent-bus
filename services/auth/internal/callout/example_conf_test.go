@@ -299,7 +299,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.ACK.PRESENCE.bridge_presence.>", "$KV.BUS_BRIDGE.>",
 				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE",
 				// people onto NATS (RT-6.42)
-				"bus.hu.home.*", "presence.bridge.home.v1", "presence.bot.*.v1",
+				"bus.hu.home.*", "bus.hu.dm.*.*", "presence.bridge.home.v1", "presence.bot.*.v1",
 				// the crown claims, its own consumer (plan B piece 9, RT-6.38)
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_crown.presence.crown.*.*",
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>",
@@ -308,6 +308,9 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				// the memberships the history read checks, its own consumer
 				// (RT-6.37, RT-6.42 step 11)
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_members.presence.member.*.*",
+				// the attestations the permission DMs check, its own consumer
+				// (plan B piece 10, RT-6.13)
+				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_attest.presence.attest.*.v1",
 				"$KV.BUS_BRIDGE_SEEN.>",
 				"$JS.API.STREAM.INFO.KV_BUS_BRIDGE_SEEN", "$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE_SEEN",
 				// the bridge's own slash command records (issue #151 step 3),
@@ -350,7 +353,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_crown.presence.crown.*.*" &&
 					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>" &&
 					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1" &&
-					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_members.presence.member.*.*" {
+					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_members.presence.member.*.*" &&
+					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_attest.presence.attest.*.v1" {
 					t.Errorf("the bridge may create consumers by %s", subject)
 				}
 			}

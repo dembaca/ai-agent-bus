@@ -22,6 +22,36 @@ before 0.5.0 are described in the git history.
   `mm-agent-post.sh --file` are called as before, so the shell needs no change. A
   file id no seen post named takes today's path, as does the switch off in every
   channel; a send that fails with the switch on is an error, never a fallback.
+- **Plan B piece 10, first part: the lane for a person's direct message to one agent**
+  (#244, ADR-014 phase 5, RT-6.13). The agent's direct-message consumer (`<name>_dm`) now
+  also filters `<bus>.hu.dm.<name>.*`, the subject on which the bridge carries a person's
+  direct message to that agent - a permission prompt's answer among them - and the bridge
+  may publish `bus.hu.dm.*.*`. The agent's name is the subject's third token, so no other
+  agent's consumer sees it, and no agent may publish there.
+- **Permission prompts by DM over the bridge: plan B piece 10** (#244, ADR-014 phase 5,
+  RT-6.13 step 7). In a home over NATS with `planb.on(10, home)` on, the session makes no
+  Mattermost call for a tool permission prompt: it asks the bridge on
+  `<req>.permission.<agent>` (op `prompt`) to DM it to the responsible human, taken from
+  the session's own attestation, only while the bridge's fresh signal names piece 10;
+  else the prompt stays in the terminal and `bus_info` says so. The bridge
+  (`internal/permission`) DMs the one account the login service binds to that person
+  (piece 4's proof when on), under the agent's own bot or the bridge bot, polls the DM
+  and carries only that person's reaction on the prompt, reply in its thread or
+  `yes`/`no` naming its id onto the lane. It takes a prompt only from an agent whose
+  fresh attestation (its new consumer `bridge_attest`) states that home, with a fresh
+  membership there, for its attested owner or a trusted human, within 16 open prompts
+  per agent, 32 per owner and 6 a minute, refused beyond. A switch the session cannot
+  tell off keeps the terminal. A verdict counts only from the very person the
+  prompt went to, an attested trusted human who approves, within 24 h; a `yes <id>` read
+  on Mattermost never answers such a prompt. The lines under the prompt go to the bridge
+  (op `note`). With the switch off nothing changes. Rollout: the bridge and every host
+  of the home on this release before the switch goes on; piece 4 with it and the
+  bridge's admin token, and the bridge's right to create `bridge_attest`, else the bridge
+  refuses every prompt; the bridge keeps open
+  prompts in memory, so a restart drops their answers (the terminal still answers).
+  Rollback is fail-closed: a session that read piece 10 on (or holds a record naming
+  it that went stale) keeps its prompts in the terminal after the switch goes off,
+  until that session restarts; it never falls back to the Mattermost DM meanwhile.
 
 ### Fixed
 

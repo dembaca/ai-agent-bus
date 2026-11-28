@@ -281,7 +281,8 @@ func TestALoginMakesTheConsumers(t *testing.T) {
 	for _, w := range []want{
 		{"BUS", "_ch_home", "ch.home", []string{"bus.ch.home.*"}},
 		{"BUS", "_ch_secret", "ch.secret", []string{"bus.ch.secret.*"}},
-		{"BUS", "_dm", "dm", []string{"bus.dm." + bob.name + ".*"}},
+		// the DM lane, with a person's direct message to this agent on it (plan B piece 10)
+		{"BUS", "_dm", "dm", []string{"bus.dm." + bob.name + ".*", "bus.hu.dm." + bob.name + ".*"}},
 		{"BUS", "_hu_home", "hu.home", []string{"bus.hu.home.*"}},
 		{"BUS", "_hu_secret", "hu.secret", []string{"bus.hu.secret.*"}},
 		{"PRESENCE", "_presence", "presence", []string{"presence.*.*", "presence.attest.*.v1", "presence.account.mattermost.*.v1", "presence.bot.*.v1", "presence.notice.bob.copied.v1", "presence.notice.bob.moved.v1", "presence.crown.home.*", "presence.member.home.*", "presence.bridge.home.v1", "presence.planb.home.v1", "presence.crown.secret.*", "presence.member.secret.*", "presence.bridge.secret.v1", "presence.planb.secret.v1", "presence.directory." + bob.name + ".v1"}},
