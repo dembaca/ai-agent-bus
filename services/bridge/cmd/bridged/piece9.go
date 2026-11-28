@@ -64,10 +64,11 @@ func newPiece9(cfg config.Config, log *slog.Logger, client *mm.Client, bots *age
 }
 
 // handlers are the request kinds piece 9 answers: the header line; none
-// without the agents' own bots ("not built").
+// without the agents' own bots ("not built"). The map is never nil: the
+// caller adds the other pieces' kinds to it, and a nil map panics on that.
 func (p *piece9) handlers() map[string]requests.Piece {
 	if p == nil {
-		return nil
+		return map[string]requests.Piece{}
 	}
 	return map[string]requests.Piece{"header": p.writer.Piece}
 }
