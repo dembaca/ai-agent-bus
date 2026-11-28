@@ -308,12 +308,16 @@ def wire_nats(port: Any) -> None:
 
 def _open_asks() -> list[natsbus.OpenAsk]:
     """This session's open asks for the record on NATS (RT-6.43 step 5): the asked human by
-    name, which the bus maps to its anchor through the own attestation."""
+    name, which the bus maps to its anchor through the own attestation, and the ask's card
+    as posted (context, recommendation, decision, where, its answers and the one picked)."""
     me = stats.bot_id()
     if not me:
         return []
-    return [natsbus.OpenAsk(mm=pid, kind=kind, human=human, title=title, asked=at, answered=done)
-            for pid, at, human, title, kind, done in asks.records(me)]
+    return [natsbus.OpenAsk(mm=pid, kind=kind, human=human, title=title, asked=at, answered=done,
+                            context=card["context"], recommendation=card["recommendation"],
+                            decision=card["decision"], where=card["where"],
+                            answers=tuple(card["answers"]), chosen=card["chosen"])
+            for pid, at, human, title, kind, done, card in asks.records(me)]
 
 
 # What this session's last HELLO stated (announce): model, task, branch, for the presence
@@ -2511,7 +2515,11 @@ async def _post_ask(client: ChatPort, me: Any, *, to: str, head: str, need: str,
     # a later post in a shared thread; too late after 24 h (RT-6.11).
     post = await client.post(text, props=shown)
     asks.add(me.id, post.id, to, post.id, title=head, question=human, blocking=blocking,
-             answers=answers or None, kind=kind, at=post.create_at / 1000 if post.create_at else 0)
+             answers=answers or None, kind=kind, at=post.create_at / 1000 if post.create_at else 0,
+             # RT-6.43 step 5: the card as posted, for the record on NATS (the console server
+             # shows it only to the asked human and those the asking agent trusts)
+             card={"context": context, "recommendation": recommendation, "decision": decision,
+                   "where": where})
     # RT-6.9: coord marks a question to the 👑 (RT-6.25), else it reached a human.
     # forwarded: the server's ask for a question the 👑 left open, which counts already.
     stats.record("ask", id=post.id, **({"coord": 1} if human else {}), **({"forwarded": 1} if forwarded else {}))
@@ -2964,12 +2972,14 @@ async def _roots_from_trusted(client: ChatPort, roots: set[str],
     return out
 
 
-def _note_answer(uid: str, root: str, create_at_ms: int, *, thread: bool, questions: Mapping[str, str]) -> None:
+def _note_answer(uid: str, root: str, create_at_ms: int, *, thread: bool, questions: Mapping[str, str],
+                 chosen: str = "") -> None:
     """RT-6.9: a trusted human's first answer to an ask, with its wait and its
     own time (`at`, for the saved waiting); `coord` when it answers a question
     to the 👑 (RT-6.25), which the asks' waits leave out, also in a later part
-    than the question's."""
-    got = asks.answered(uid, root, create_at_ms / 1000, thread=thread)
+    than the question's. chosen: the answer a reaction picked, for the ask
+    record on NATS (RT-6.43 step 5)."""
+    got = asks.answered(uid, root, create_at_ms / 1000, thread=thread, chosen=chosen)
     if got:
         stats.record("answer", id=got[0], wait=got[1], at=int(create_at_ms / 1000),
                      **({"coord": 1} if got[0] in questions else {}))
@@ -3082,7 +3092,8 @@ async def _event_items(events: list[Any], raw: bool = False) -> list[dict[str, A
         if uid and root and cls == gate.TRUSTED and not item.get("not_approver") and (
                 e.kind != "reaction" or item.get("answer") or item.get("choice")):
             # RT-6.42 step 9: a not_approver answer leaves the ask waiting (reminded, queue held).
-            _note_answer(uid, root, e.post.create_at, thread=e.kind != "reaction", questions=questions)
+            _note_answer(uid, root, e.post.create_at, thread=e.kind != "reaction", questions=questions,
+                         chosen=str(item.get("chosen") or ""))
         if raw:
             item |= {"post": e.post.json(), "channel": e.channel.json() if e.channel else None}
         else:

@@ -89,6 +89,72 @@ def test_with_the_operators_anchor_for_me_and_may_answer_compare_anchors() -> No
     assert not any(r["for_me"] or r["may_answer"] for r in f.asks("carol"))
 
 
+CARD = {"context": "Two PRs touch the same file.\nMine is smaller.", "recommendation": "Merge mine first.",
+        "where": "PR 118", "decision": "Merge PR 118 into main", "answers": ("go", "no-go"),
+        "chosen": "go"}
+SECRET_WORDS = ("Two PRs touch", "Merge mine first", "PR 118", "Merge PR 118 into main", "no-go")
+
+
+def _card_fleet() -> Fleet:
+    """A (owner dembaca, trusts carol as carol~x) asks dembaca with a full card; B (owner
+    carol, trusts nobody) asks eve with one."""
+    rec_a = encode_ask_record([OpenAsk(mm(1), "approval", "dembaca", "Merge?", int(NOW) - 60,
+                                       answered=True, **CARD)], int(NOW))
+    rec_b = encode_ask_record([OpenAsk(mm(2), "question", "eve", "Which way?", int(NOW) - 30,
+                                       context="eve's context", answers=("A", "B", "C"))], int(NOW))
+    return fleet_with((A, "dev", rec_a, NOW), (B, "ops", rec_b, NOW))
+
+
+def test_the_asked_human_and_a_trusted_person_get_the_card() -> None:
+    """The owner's decision of 2026-11-28 (ADR-015): the card goes to the asked human and to
+    the people the asking agent trusts, as plain text, its answers in order."""
+    f = _card_fleet()
+    mine = {r["id"]: r for r in f.asks("dembaca")}[mm(1)]
+    assert mine["for_me"] is True and mine["card"] == {
+        "context": "Two PRs touch the same file.\nMine is smaller.", "recommendation": "Merge mine first.",
+        "where": "PR 118", "decision": "Merge PR 118 into main", "answers": ["go", "no-go"],
+        "chosen": "go"}
+    trusted = {r["id"]: r for r in f.asks("carol~x")}
+    assert trusted[mm(1)]["for_me"] is False and trusted[mm(1)]["may_answer"] is True
+    assert trusted[mm(1)]["card"] == mine["card"]
+    # B is carol's own agent: she may answer its ask to eve, so she reads its card too
+    assert trusted[mm(2)]["card"]["answers"] == ["A", "B", "C"] and trusted[mm(2)]["card"]["chosen"] is None
+    assert trusted[mm(2)]["card"]["decision"] == "" and trusted[mm(2)]["card"]["where"] == ""
+
+
+def test_a_reader_neither_asked_nor_trusted_gets_the_title_only() -> None:
+    """Fail closed: a reader the asking agent's attestation does not name gets the title and
+    no `card` key at all, and so does the asked human of an agent that does not trust them,
+    and every reader before the login's own record gives the operator's anchor."""
+    f = _card_fleet()
+    for reader in ("mallory", "dembaca~other", None):
+        rows = f.asks(reader)
+        assert [r["need"] for r in rows] == ["Merge?", "Which way?"]
+        assert not any("card" in r for r in rows), reader
+        assert not any(w in json.dumps(rows) for w in SECRET_WORDS + ("eve's context",)), reader
+    # eve is B's asked human, but B's attestation names only carol: title only for eve
+    eve = {r["id"]: r for r in f.asks("eve")}
+    assert eve[mm(2)]["for_me"] is False and "card" not in eve[mm(2)]
+    # dembaca owns A, not B: B's card stays with B's people
+    assert "card" not in {r["id"]: r for r in f.asks("dembaca")}[mm(2)]
+
+
+def test_the_card_reaches_no_other_read() -> None:
+    """The card is on /v1/asks alone: the cards, the graph and the groups with the glance
+    carry no card part for anyone, even for the asked human (the event stream sends cards,
+    `/v1/threads` no posts yet)."""
+    from console_server import groups
+
+    f = _card_fleet()
+    for reader in ("dembaca", "carol~x", None):
+        cards = f.cards(reader)
+        out = json.dumps([cards, f.graph(reader),
+                          groups.groups(cards, f.asks(reader), [], by="home", scope="everyone",
+                                        own={A}, own_or_trusted={A, B})])
+        assert not any(w in out for w in SECRET_WORDS + ("eve's context",)), reader
+        assert '"card"' not in out and '"context"' not in out
+
+
 def test_a_record_runs_out_and_the_newest_wins() -> None:
     """RT-6.43 step 6: shown while `exp` is ahead of the floored clock; a newer record replaces
     the older, an empty one ends the asks."""

@@ -71,6 +71,10 @@
   background: var(--ask-bg);
 }
 .asks__box p { margin: 0; }
+.asks__part p { margin: 0; }
+.asks__part .asks__caption { margin: 0 0 2px; }
+/* the card's own line breaks kept, long lines wrapped: no cut, no inner scrolling */
+.asks__text { white-space: pre-wrap; }
 .asks__answers { display: flex; gap: 8px; max-width: 78ch; }
 .asks__answers--side button { flex: 1 1 0; }
 .asks__answers--stack { flex-direction: column; align-items: stretch; }

@@ -425,12 +425,15 @@ logged-in operator:
 Both subjects end with the agent's name: an agent may publish only under
 its own name, and its asks only in the home of its hello; NATS refuses
 anything else. A person's credential publishes nothing. An ask record with
-two open asks, and the empty one at the agent's bye:
+two open asks, the first with its card, and the empty one at the agent's bye:
 
 ```json
 {"v": 1, "asks": [
   {"mm": "8xqk3b1zwtrd5mfy6nqpe4hc1o", "kind": "approval", "human": "dembaca",
-   "title": "Merge PR 118 after the review", "asked": 1764061200, "answered": false},
+   "title": "Merge PR 118 after the review", "asked": 1764061200, "answered": true,
+   "context": "The review is done.\nTwo checks are still running.",
+   "recommendation": "Merge once both checks pass.", "where": "PR 118",
+   "decision": "Merge PR 118 into main", "answers": ["go", "no-go"], "chosen": "go"},
   {"mm": "3hq9t1c6pzbuxk8e7wj2r5dn4a", "kind": "question", "human": "-",
    "title": "Which branch holds the fix?", "asked": 1764050000, "answered": true}],
  "more": 0, "iat": 1764061800, "exp": 1764063600}
@@ -447,9 +450,30 @@ two open asks, and the empty one at the agent's bye:
 | `mm` | ask | The ask's Mattermost post id, 26 of `[a-z0-9]`, unique in the list |
 | `kind` | ask | `approval` or `question`, as `ask_human` set it |
 | `human` | ask | The asked human's anchor in its subject form, as the session's record from the login service gives it: the directory's anchor (a lower-case letter or digit, then up to 63 of `[a-z0-9._-]`) with every `.` written as `~`, the encoding of the presence subject's owner token (`ownerToken` in `services/auth/internal/callout/perms.go`, `natsbus.owner_token` in the MCP server), so a lower-case letter or digit, then up to 63 of `[a-z0-9~_-]`; `-` when the record gives none. "For me" compares it, in that form, with the operator's own anchor in the same form, never with a name |
-| `title` | ask | The ask's title line, at most 200 characters, shown as plain text with control and direction characters stripped; never the ask's context, recommendation or answer |
+| `title` | ask | The ask's title line, at most 200 characters, shown as plain text with control and direction characters stripped |
 | `asked` | ask | The ask's server time (Unix seconds); after 24 h a yes approves nothing |
 | `answered` | ask | The asking server saw a first answer by a trusted human |
+| `context` | ask | Optional, the card: the ask's context as posted, plain text with its line breaks (spaces collapsed, at most one blank line in a row), 1 to 900 characters |
+| `recommendation` | ask | Optional, the card: the ask's recommendation, as `context`, 1 to 900 characters |
+| `where` | ask | Optional, the card: the ask's "where" (PR, thread or host), one line of 1 to 200 characters |
+| `decision` | ask | Optional, the card: the decision's wording, what a yes approves, as `context`, 1 to 400 characters |
+| `answers` | ask | Optional, the card: the ask's own answers in the order it was posted with (the first is the go), two to four one-line texts of 1 to 120 characters each |
+| `chosen` | ask | Optional, only with `answers`: the answer a trusted human's reaction picked, one of them word for word; absent for a reply or none yet |
+
+The six card keys are sent only when the ask has that part (an empty one is
+left out), so the record of an ask without a card keeps the shape a reader
+before them takes; a reader before them refuses the record of an ask with
+one (unknown key), which is why the console server is updated before the
+agents. The card parts carry no control or direction character (the line
+break only in `context`, `recommendation` and `decision`). One ask with every
+part at its bound fits the record in ASCII; when the record would not fit,
+the encoder drops the newest asks' texts first, then their answers, and only
+then the newest asks, counted in `more`. The console server hands the card
+only to the asked human and to the people the asking agent trusts (its
+attestation names them as owner or trusted, "for me" or "may answer");
+everyone else gets the title alone
+([ADR-015](arc42/09-architecture-decisions.md#adr-015-operator-web-console),
+the owner's decision of 2026-11-28).
 
 The whole record is at most 4 KiB; the MCP server's encoder stops at 3840
 bytes, since the stream's limit counts headers too (it sends none). No

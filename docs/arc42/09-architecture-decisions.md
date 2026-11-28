@@ -5926,7 +5926,10 @@ agent publishes passes for a person's word.
     read where it is answered. Alternative: the whole ask. Rejected: more
     text in the console's memory (point 15) for no decision it can take
     there. Alternative: the count alone, which presence carries. Rejected:
-    no "for me" from a count.
+    no "for me" from a count. (Loosened for asks by the owner's decision of
+    2026-11-28, the addition "the ask record carries the whole card" below:
+    the record may carry the ask's card, and the console server shows it
+    only to the asked human and to the people the asking agent trusts.)
 11. **An ask record is fresh or gone.** Recommended: the server publishes
     the record at each change (an ask, its first answer, `resolve_ask`)
     and every 10 minutes while an ask is open, each valid 30 minutes
@@ -6209,17 +6212,50 @@ answered ask says "answered" in the state column; the red count is the replies b
 others since the operator last opened the thread, never the ask's own post or the
 operator's own posts; the "for you" chip stays in a narrow window, above the
 need; an ask that is not the operator's to answer has no answer box; the thread
-button is a small speech-bubble SVG with the number alone. The ask's own answers
-(and the one chosen) are not on the ask record, and **carrying them is not
-decided here**: it takes optional record keys that widen the rule of a title, no
-body, and that couple the console server's rollout to the agents' (an older
-console server refuses a whole record with unknown keys), so it is the owner's
-separate decision. The ask record holds no context, recommendation or "where"
-either, so none is shown and no caption stands over nothing; `GET /v1/threads/<id>`
-returns no posts yet, so nothing there is drawn. A restriction to an approval goes into the thread and the agent asks
+button is a small speech-bubble SVG with the number alone. Carrying the ask's
+own answers and its card on the ask record was left to the owner's separate
+decision, since it widens the rule of a title, no body, and couples the console
+server's rollout to the agents'; the owner took it the same day (the next
+addition). `GET /v1/threads/<id>` returns no posts yet, so nothing there is drawn. A restriction to an approval goes into the thread and the agent asks
 again (RT-6.11); there is no "go with a comment". Rejected: everything in the
 drawer without unfolding in the list, and a free "write to an agent" or a
 channel list. RT-6.43 (the console's runtime) is unchanged: it only reads.
+
+**Addition, 2026-11-28: the ask record carries the whole card** (issue #285;
+the owner's decision on the same day, ask `9s1x3af91fnp9bzbgwefpeer5c`, recorded
+on the issue by the design contact). The rule of a title, no body (point 10 of
+the addition of 2026-11-25) is loosened for asks: the ask record may carry the
+ask's card as the ask was posted in the chat (RT-6.11): its context,
+recommendation, where and decision's wording, its own answers (two to four) and
+the one a trusted human's reaction picked. It is one record change: six optional
+keys, each sent only when the ask has that part, each bounded (context and
+recommendation 900 characters with their line breaks, decision 400, where one
+line of 200, answers 120 each) so that one ask with a full card fits the 4 KiB
+record; when the record would not fit, the newest asks' cards go before any ask
+does. The decoders stay strict: exact keys, types and bounds, no control or
+direction character, `chosen` one of `answers`; a bad record is dropped whole
+([protocol.md](../protocol.md#over-nats-the-consoles-asks-and-stats-lines)).
+**The console server filters**: `/v1/asks` hands a row the card only when it is
+"for me" or "I may answer" for the logged-in operator, so only to the asked
+human and to the people the asking agent's attestation names as owner or
+trusted (RT-6.41); everyone else, and everyone before the operator's own anchor
+is known, gets the title alone, with no card key in the row. The card reaches no
+other read: the cards, the event stream, the graph, the groups and the panel's
+numbers, and `/v1/threads` carry none of it. The raw record reaches only the
+consoles' consumers for the channels a person may see and the unattended metrics
+reading, which counts asks only; no agent's consumer delivers ask records. An
+asked human whom the asking agent's attestation does not name is not "for me"
+(the rule of RT-6.43 step 6) and gets the title alone: fail closed. Rollout: the
+console server first, then the agents, since a console server before this change
+refuses a whole record with an unknown key and would show no ask of an updated
+agent that has a card. No new right is added, and **answering stays disabled**:
+no write endpoint, no publish right of the console's credential, no answer
+binding. Alternative: the answers and the one chosen alone (the earlier draft of
+the same day). Rejected by the owner: the context, the recommendation and the
+decision's wording are what an approval rests on; the answer box says "This
+counts as your approval of" the decision's wording, never the title.
+Alternative: the card for every reader of the home. Rejected: the card can
+carry what the asking agent shares with its own people only.
 
 ## ADR-016: The bus without a chat as its source
 

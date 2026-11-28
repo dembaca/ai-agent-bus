@@ -19,6 +19,7 @@ from mattermost_ai_agent_bus.natsbus import (
 from test_natsbus import _unit_bus
 
 UID = "u" * 26
+NO_CARD = {"context": "", "recommendation": "", "decision": "", "where": "", "answers": [], "chosen": ""}
 
 
 def _id(i: int) -> str:
@@ -304,8 +305,8 @@ def test_the_asks_file_gives_the_records_open_asks(monkeypatch) -> None:
     asks.answered(UID, _id(1), t0 + 100)
     rows = asks.records(UID)
     assert [r[0] for r in rows] == [_id(1), _id(2)]
-    assert rows[0][1:] == (t0, "dembaca", "Merge PR 118?", "approval", True)
-    assert rows[1][2:] == ("carol", "Which branch?", "question", False)
+    assert rows[0][1:] == (t0, "dembaca", "Merge PR 118?", "approval", True, NO_CARD)
+    assert rows[1][2:] == ("carol", "Which branch?", "question", False, NO_CARD)
     asks.resolve(UID, _id(1))
     assert [r[0] for r in asks.records(UID)] == [_id(2)] and len(changed) == 5
     monkeypatch.setenv("MM_BOT_USER_ID", UID)
@@ -474,10 +475,22 @@ async def test_ask_human_keeps_the_kind_for_the_record(monkeypatch) -> None:
 
     c = _Client()
     monkeypatch.setattr(server, "_get_client", lambda: c)
-    q = json.loads(await server.ask_human(need="Which order?", kind="question", answers=["A", "B", "C"]))
+    q = json.loads(await server.ask_human(need="Which order?", kind="question", answers=["A", "B", "C"],
+                                          context="Two PRs touch\n\n\nthe same file.",
+                                          recommendation="Mine first.", where="PR 118"))
     me = (await c.get_me()).id
     rows = {r[0]: r for r in asks.records(me)}
     assert rows[q["ask"]][4] == "question" and rows[q["ask"]][3] == "Which order?"
+    # RT-6.43 step 5: the card as posted, its answers in order (the record cuts it, below)
+    card = rows[q["ask"]][6]
+    assert card["answers"] == ["A", "B", "C"] and card["where"] == "PR 118"
+    assert card["recommendation"] == "Mine first." and "the same file." in card["context"]
+    assert card["decision"] == "" and card["chosen"] == ""
+    monkeypatch.setattr(stats, "bot_id", lambda: me)
+    (sent,) = [a for a in server._open_asks() if a.mm == q["ask"]]
+    obj = json.loads(encode_ask_record([sent], 5))["asks"][0]
+    assert obj["context"] == "Two PRs touch\n\nthe same file." and obj["answers"] == ["A", "B", "C"]
+    assert "decision" not in obj and "chosen" not in obj
 
 
 def test_the_protocols_examples_pass_the_real_decoders() -> None:
@@ -544,3 +557,80 @@ def test_the_harness_names_agree_everywhere() -> None:
     union = re.search(r"export type Harness =([^\n]*\n[^\n]*)", ts)
     assert union is not None
     assert set(re.findall(r'"([a-z-]+)"', union.group(1))) == set(stats.RUNTIMES)
+
+
+# --- the ask's card on the record (RT-6.43 step 5, owner's decision of 2026-11-28) --------
+FULL = {"context": "Line one\n  spaced   out\n\n\n\nafter a gap", "recommendation": "Merge it.",
+        "decision": "Merge PR 118 into main", "where": "PR 118 on github", "answers": ("go", "no-go")}
+
+
+def test_the_record_carries_the_card_only_where_the_ask_has_one() -> None:
+    """An ask without a card keeps the old shape (a reader before this change still takes
+    it); one with a card sends each part it has, cleaned and within its bound."""
+    plain = json.loads(encode_ask_record([_ask(1)], 5))["asks"][0]
+    assert set(plain) == {"mm", "kind", "human", "title", "asked", "answered"}
+    obj = json.loads(encode_ask_record([_ask(2, **FULL, chosen="go", answered=True)], 5))["asks"][0]
+    assert obj["context"] == "Line one\nspaced out\n\nafter a gap"
+    assert obj["recommendation"] == "Merge it." and obj["decision"] == "Merge PR 118 into main"
+    assert obj["where"] == "PR 118 on github" and obj["answers"] == ["go", "no-go"] and obj["chosen"] == "go"
+    back = decode_ask_record(encode_ask_record([_ask(2, **FULL, chosen="go")], 5)).asks[0]
+    assert (back.context, back.where, back.answers, back.chosen) == (
+        "Line one\nspaced out\n\nafter a gap", "PR 118 on github", ("go", "no-go"), "go")
+    only = json.loads(encode_ask_record([_ask(3, where="host\u202e hogan\nnext")], 5))["asks"][0]
+    assert only["where"] == "host hogan next" and "context" not in only and "answers" not in only
+
+
+def test_the_cards_bounds_and_the_answers_rules() -> None:
+    long = {"context": "c" * 5000, "recommendation": "r" * 5000, "decision": "d" * 5000,
+            "where": "w" * 5000, "answers": ("a" * 500, "b")}
+    obj = json.loads(encode_ask_record([_ask(1, **long)], 5))["asks"][0]
+    assert [len(obj[k]) for k in ("context", "recommendation", "decision", "where")] == [
+        natsbus.ASK_CONTEXT_MAX, natsbus.ASK_RECOMMENDATION_MAX, natsbus.ASK_DECISION_MAX,
+        natsbus.ASK_WHERE_MAX]
+    assert obj["answers"] == ["a" * natsbus.ASK_ANSWER_MAX, "b"]
+    # a full card at every bound fits one record, in ASCII
+    assert len(encode_ask_record([_ask(1, title="t" * 200, **long, chosen="b")], 5)) <= ASK_BODY_MAX
+    # one answer is no choice, and a chosen that is none of them is dropped, never invented
+    one = json.loads(encode_ask_record([_ask(3, answers=("only",), chosen="only")], 5))["asks"][0]
+    assert "answers" not in one and "chosen" not in one
+    stray = json.loads(encode_ask_record([_ask(4, answers=("a", "b"), chosen="c")], 5))["asks"][0]
+    assert stray["answers"] == ["a", "b"] and "chosen" not in stray
+
+
+def test_a_record_that_does_not_fit_sheds_the_newest_cards_before_any_ask() -> None:
+    """Every ask keeps its title before any keeps its card: the newest asks' texts go first,
+    then their answers; `more` counts only asks left out."""
+    big = {k: v * 900 for k, v in (("context", "c"), ("recommendation", "r"))} | {
+        "decision": "d" * 400, "answers": ("x" * 120, "y" * 120, "z" * 120)}
+    rec = decode_ask_record(encode_ask_record([_ask(i, **big) for i in range(1, 4)], 5))
+    assert [a.mm for a in rec.asks] == [_id(1), _id(2), _id(3)] and rec.more == 0
+    assert rec.asks[0].context and rec.asks[0].answers
+    assert not rec.asks[2].context and not rec.asks[2].decision
+    many = decode_ask_record(encode_ask_record([_ask(i, **big) for i in range(1, ASK_MAX + 1)], 5))
+    assert len(many.asks) + many.more == ASK_MAX and not many.asks[-1].answers
+
+
+@pytest.mark.parametrize("extra", [
+    {"answers": ["only"]}, {"answers": ["a", ""]}, {"answers": "ab"}, {"answers": ["a"] * 5},
+    {"answers": ["a", "b"], "chosen": "c"}, {"chosen": "a"}, {"answers": ["a", "b"], "chosen": 1},
+    {"answers": ["a\nb", "c"]}, {"answers": ["x" * 121, "c"]}, {"props": {}},
+    {"context": ""}, {"context": 5}, {"context": "c" * 901}, {"context": "a\u202eb"},
+    {"recommendation": "r" * 901}, {"decision": "d" * 401}, {"decision": None},
+    {"where": "a\nb"}, {"where": "w" * 201}, {"where": "a\x07b"}, {"body": "x"},
+])
+def test_the_decoder_refuses_a_bad_card(extra: dict[str, Any]) -> None:
+    """Strict: a card part off its type or bound, a control or direction character, a chosen
+    that is none of the answers or an unknown key drops the whole record."""
+    obj = json.loads(encode_ask_record([_ask(1)], 5))
+    obj["asks"][0].update(extra)
+    with pytest.raises(MessageError):
+        decode_ask_record(json.dumps(obj).encode())
+
+
+def test_a_reactions_choice_and_the_card_are_kept_for_the_record() -> None:
+    asks.add(UID, _id(7), "dembaca", _id(7), title="Which?", kind="question", answers=["A", "B", "C"],
+             card={"context": "why\nnow", "where": "", "decision": "", "recommendation": "B"})
+    asks.answered(UID, _id(7), time.time(), chosen="B")
+    row = next(r for r in asks.records(UID) if r[0] == _id(7))
+    assert row[5] is True and row[6] == {"context": "why\nnow", "recommendation": "B", "decision": "",
+                                         "where": "", "answers": ["A", "B", "C"], "chosen": "B"}

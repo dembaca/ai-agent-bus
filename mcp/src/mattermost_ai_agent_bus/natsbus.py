@@ -41,7 +41,7 @@ import ssl
 import time
 from urllib.parse import urlsplit
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import AbstractSet, Any, Protocol
 
 from nats.aio.client import Client as NatsClient
@@ -437,6 +437,18 @@ def card_text(v: object, limit: int) -> str | None:
     return " ".join(_CARD_CONTROL.sub(" ", v).split())[:limit].rstrip()
 
 
+def card_block(v: object, limit: int) -> str | None:
+    """A card text of several lines (an ask's context, recommendation or decision): line
+    breaks kept, control characters out, the spaces of each line collapsed, a run of blank
+    lines made one, the ends trimmed, at most `limit` characters; None for no string."""
+    if not isinstance(v, str):
+        return None
+    lines = (" ".join(_CARD_CONTROL.sub(" ", line).split())
+             for line in v.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return text[:limit].rstrip()
+
+
 def card_branch(v: object) -> str | None:
     """A branch name when it is a safe git ref name (BRANCH_RE and git's rules), '' for none
     stated; None for anything else (dropped, never repaired)."""
@@ -714,7 +726,9 @@ def normalise_trusted(names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
 
 # --- the open asks, one record per agent (RT-6.43 step 5, ADR-015 addition of 2026-11-25) -----
 # `<presence>.ask.<home>.<name>` in PRESENCE: the asking agent's open asks, for the operator
-# console. A title and no body; bounded so that no agent can stretch it.
+# console. A title, and since the owner's decision of 2026-11-28 (ask 9s1x3af91fnp9bzbgwefpeer5c)
+# optionally the ask's card; bounded so that no agent can stretch it. The console server
+# hands the card only to the asked human and the people the asking agent trusts.
 ASK_MAX = 20  # asks in one record; the rest is counted in `more`
 ASK_TITLE_MAX = 200  # characters
 ASK_RECORD_MAX = 4096  # bytes, the whole record: what a reader accepts (protocol.md)
@@ -724,10 +738,23 @@ ASK_BODY_MAX = 3840
 ASK_VALID_SEC = 1800  # `exp` - `iat`: a record not renewed runs out after 30 min
 ASK_RENEW_SEC = 600.0  # renewed this often while an ask is open
 ASK_KINDS = ("approval", "question")
+# The ask's card, each part optional and sent only when the ask has it (protocol.md).
+# Bounded so that one ask with a full card fits a record (about 3.5 KB in ASCII); a record
+# that would not fit drops the newest cards first, then the newest asks (encode_ask_record).
+ASK_CONTEXT_MAX = 900  # characters, line breaks kept
+ASK_RECOMMENDATION_MAX = 900  # characters, line breaks kept
+ASK_DECISION_MAX = 400  # characters, line breaks kept: what a yes approves
+ASK_WHERE_MAX = 200  # characters, one line
+ASK_ANSWER_MAX = 120  # characters of one answer, one line; an ask offers two to four
+ASK_TEXTS = (("context", ASK_CONTEXT_MAX), ("recommendation", ASK_RECOMMENDATION_MAX),
+             ("decision", ASK_DECISION_MAX))
 # The asked human's anchor in subject form (owner_token's encoding: "." as "~"); "-": none.
 HUMAN_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9~_-]{0,63}")
 _ASK_RECORD_KEYS = frozenset({"v", "asks", "more", "iat", "exp"})
 _ASK_KEYS = frozenset({"mm", "kind", "human", "title", "asked", "answered"})
+# Optional, sent only when the ask has them (a reader before this change refuses a record
+# with an unknown key, so an ask without a card keeps the old shape).
+_ASK_CARD_KEYS = frozenset({"context", "recommendation", "decision", "where", "answers", "chosen"})
 
 
 @dataclass(frozen=True)
@@ -735,7 +762,11 @@ class OpenAsk:
     """One open ask as the record carries it: `mm` the ask's Mattermost post id, `human` the
     asked human's anchor in subject form or NO_OWNER (in what the MCP server hands the bus:
     the asked human's username, which the bus maps through its attestation), `asked` server
-    time in Unix seconds, `answered` a trusted human's first answer was seen."""
+    time in Unix seconds, `answered` a trusted human's first answer was seen. The card, ""
+    or () for none: `context`, `recommendation` and `decision` (the wording a yes approves)
+    as plain text with line breaks, `where` one line, `answers` the ask's own answers in the
+    order it was posted with (two to four), `chosen` the one a trusted human's reaction
+    picked ("" for a reply or none yet)."""
 
     mm: str
     kind: str
@@ -743,6 +774,12 @@ class OpenAsk:
     title: str
     asked: int
     answered: bool = False
+    context: str = ""
+    recommendation: str = ""
+    decision: str = ""
+    where: str = ""
+    answers: tuple[str, ...] = ()
+    chosen: str = ""
 
 
 @dataclass(frozen=True)
@@ -754,15 +791,53 @@ class AskRecord:
 
 
 def _ask_obj(a: OpenAsk) -> dict[str, Any]:
-    return {"mm": a.mm, "kind": a.kind, "human": a.human, "title": a.title,
-            "asked": a.asked, "answered": a.answered}
+    obj: dict[str, Any] = {"mm": a.mm, "kind": a.kind, "human": a.human, "title": a.title,
+                           "asked": a.asked, "answered": a.answered}
+    for key, _limit in ASK_TEXTS:
+        if getattr(a, key):
+            obj[key] = getattr(a, key)
+    if a.where:
+        obj["where"] = a.where
+    if a.answers:
+        obj["answers"] = list(a.answers)
+        if a.chosen:
+            obj["chosen"] = a.chosen
+    return obj
+
+
+def _clean_answers(answers: Iterable[str], chosen: str) -> tuple[tuple[str, ...], str]:
+    """The answers a record may carry: two to four non-empty one-line texts, each cut to
+    ASK_ANSWER_MAX; otherwise none (and then no chosen). `chosen` must be one of them."""
+    cut = tuple(card_text(a, ASK_ANSWER_MAX) or "" for a in answers)
+    if not 2 <= len(cut) <= 4 or not all(cut):
+        return (), ""
+    pick = card_text(chosen, ASK_ANSWER_MAX) or ""
+    return cut, pick if pick in cut else ""
+
+
+def _shed_card(kept: list[OpenAsk]) -> bool:
+    """One step of making a record fit: the newest ask's texts go, else the newest ask's
+    answers; False when no ask carries a card any more."""
+    for i in reversed(range(len(kept))):
+        a = kept[i]
+        if a.context or a.recommendation or a.decision or a.where:
+            kept[i] = replace(a, context="", recommendation="", decision="", where="")
+            return True
+    for i in reversed(range(len(kept))):
+        if kept[i].answers:
+            kept[i] = replace(kept[i], answers=(), chosen="")
+            return True
+    return False
 
 
 def encode_ask_record(asks: Iterable[OpenAsk], iat: int, more: int = 0) -> bytes:
     """The ask record (protocol.md): the open asks oldest first, at most ASK_MAX, each title
     cut to one line of ASK_TITLE_MAX characters, the whole within ASK_BODY_MAX bytes; the
     newest that do not fit are counted in `more`, as is an ask with a malformed id or a
-    repeated one. A `human` off HUMAN_TOKEN_RE goes as NO_OWNER, an unknown kind as approval."""
+    repeated one. A `human` off HUMAN_TOKEN_RE goes as NO_OWNER, an unknown kind as approval.
+    The card is cut to its bounds (ASK_TEXTS, ASK_WHERE_MAX, _clean_answers); when the record
+    would be too big, the newest asks' texts go first, then their answers, and only then the
+    newest asks themselves: every ask keeps its title before any keeps its card."""
     seen: set[str] = set()
     clean: list[OpenAsk] = []
     for a in asks:
@@ -770,11 +845,16 @@ def encode_ask_record(asks: Iterable[OpenAsk], iat: int, more: int = 0) -> bytes
             more += 1
             continue
         seen.add(a.mm)
+        answers, chosen = _clean_answers(a.answers, a.chosen)
         clean.append(OpenAsk(
             mm=a.mm, kind=a.kind if a.kind in ASK_KINDS else "approval",
             human=a.human if a.human == NO_OWNER or HUMAN_TOKEN_RE.fullmatch(a.human or "") else NO_OWNER,
             title=card_text(a.title, ASK_TITLE_MAX) or "",
-            asked=max(0, int(a.asked)), answered=bool(a.answered)))
+            asked=max(0, int(a.asked)), answered=bool(a.answered),
+            context=card_block(a.context, ASK_CONTEXT_MAX) or "",
+            recommendation=card_block(a.recommendation, ASK_RECOMMENDATION_MAX) or "",
+            decision=card_block(a.decision, ASK_DECISION_MAX) or "",
+            where=card_text(a.where, ASK_WHERE_MAX) or "", answers=answers, chosen=chosen))
     clean.sort(key=lambda a: a.asked)
     kept, more = clean[:ASK_MAX], more + max(0, len(clean) - ASK_MAX)
     iat = int(iat)
@@ -783,8 +863,9 @@ def encode_ask_record(asks: Iterable[OpenAsk], iat: int, more: int = 0) -> bytes
                        "iat": iat, "exp": iat + ASK_VALID_SEC}).encode()
         if len(body) <= ASK_BODY_MAX or not kept:
             return body
-        kept.pop()  # the newest goes first
-        more += 1
+        if not _shed_card(kept):
+            kept.pop()  # the newest goes first
+            more += 1
 
 
 def _nonneg(v: object, what: str) -> int:
@@ -797,7 +878,9 @@ def decode_ask_record(data: bytes) -> AskRecord:
     """Strict: a record that is not format v1 within ASK_RECORD_MAX bytes, with an unknown,
     missing or duplicate key, more than ASK_MAX asks, a title over ASK_TITLE_MAX characters,
     a `human` that is neither NO_OWNER nor an anchor in subject form, or a malformed or
-    repeated `mm`, or an `exp` not after `iat` or more than ASK_VALID_SEC after it raises
+    repeated `mm`, a card part off its type or bound or with a control or direction character
+    (the line break only in the texts), a `chosen` that is none of the two to four `answers`,
+    or an `exp` not after `iat` or more than ASK_VALID_SEC after it raises
     MessageError (dropped whole; the text carries none of it)."""
     if len(data) > ASK_RECORD_MAX:
         raise MessageError("ask record too big")
@@ -813,7 +896,7 @@ def decode_ask_record(data: bytes) -> AskRecord:
     out: list[OpenAsk] = []
     seen: set[str] = set()
     for a in raw:
-        if not isinstance(a, dict) or set(a) != _ASK_KEYS:
+        if not isinstance(a, dict) or not _ASK_KEYS <= set(a) <= _ASK_KEYS | _ASK_CARD_KEYS:
             raise MessageError("ask keys")
         mm, kind, human, title, answered = a["mm"], a["kind"], a["human"], a["title"], a["answered"]
         if not isinstance(mm, str) or not BOT_RE.fullmatch(mm) or mm in seen:
@@ -827,9 +910,37 @@ def decode_ask_record(data: bytes) -> AskRecord:
             raise MessageError("ask title")
         if not isinstance(answered, bool):
             raise MessageError("ask answered")
+        context, recommendation, decision = (_card_field(a, key, limit, lines=True)
+                                             for key, limit in ASK_TEXTS)
+        where = _card_field(a, "where", ASK_WHERE_MAX, lines=False)
+        answers = a.get("answers", [])
+        if "answers" in a and (not isinstance(answers, list) or not 2 <= len(answers) <= 4
+                               or not all(_card_line(x, ASK_ANSWER_MAX) for x in answers)):
+            raise MessageError("ask answers")
+        chosen = a.get("chosen", "")
+        if "chosen" in a and (not isinstance(chosen, str) or chosen not in answers):
+            raise MessageError("ask chosen")
         out.append(OpenAsk(mm=mm, kind=kind, human=human, title=title,
-                           asked=_nonneg(a["asked"], "asked"), answered=answered))
+                           asked=_nonneg(a["asked"], "asked"), answered=answered,
+                           context=context, recommendation=recommendation, decision=decision,
+                           where=where, answers=tuple(answers), chosen=chosen))
     return AskRecord(asks=tuple(out), more=_nonneg(obj["more"], "more"), iat=iat, exp=exp)
+
+
+def _card_line(v: object, limit: int) -> bool:
+    return isinstance(v, str) and 0 < len(v) <= limit and not _CARD_CONTROL.search(v)
+
+
+def _card_field(a: dict[str, Any], key: str, limit: int, *, lines: bool) -> str:
+    """An optional card text of an ask: absent is "", present must be a non-empty string
+    within `limit` characters with no control or direction character (`lines`: but the line
+    break); anything else drops the record."""
+    if key not in a:
+        return ""
+    v = a[key]
+    if not _card_line(v.replace("\n", " ") if lines and isinstance(v, str) else v, limit):
+        raise MessageError(f"ask {key}")
+    return str(v)
 
 
 def encode_claim() -> bytes:
