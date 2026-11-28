@@ -55,13 +55,15 @@ if ! mm_bus_me; then
   if [[ "$CB_BUS_STATUS" == 502 ]]; then
     echo "Bus unreachable: cannot listen. Finish."
   elif [[ "$CB_BUS_STATUS" == 503 ]]; then
-    echo "No bus session (no bot registered): nothing to listen to. Finish."
+    # The server's reason when it gives one (no_bot, plan B piece 14c-2b).
+    why="$(jq -r '.no_bot // empty | strings' <<<"${CB_BUS_BODY:-}" 2>/dev/null)" || why=""
+    echo "No bus session (${why:-no bot registered}): nothing to listen to. Finish."
   else
     mm_bus_explain 2>&1 | sed 's/$/ Finish./'
   fi
   exit 0
 fi
-ME="$CB_MM_BOT_USER_ID"
+ME="$CB_BUS_ME"  # the bot id, or the NATS name of a session without a bot (its posts' user_id)
 LF="$(mm_bot_state_file listen "$(mm_state_key "$ME")")" || exit 0
 
 POLL="${CB_LISTEN_POLL_SEC:-15}"

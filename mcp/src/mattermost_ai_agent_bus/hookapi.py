@@ -71,7 +71,10 @@ instead, served next to the WebSocket inbox in the server's event loop:
 HTTP/1.1 on 127.0.0.1 only, an ephemeral port, one random key per server: every
 request carries ``Authorization: Bearer <key>``, compared in constant time, or
 gets 401 (a malformed request: 400, before the key is looked at). 503 means
-no bus session (no token yet), 502 that Mattermost failed. At most
+no bus session: no token, and no decision to run without a Mattermost bot that
+has a NATS name (nobot.held, plan B piece 14c-2b: then every route keys by the
+NATS name, identity.py); the answer's no_bot says why when there is no bot
+(nobot.status). 502 means the chat failed. At most
 MAX_CONNECTIONS connections at once and MAX_HEAVY_RUNS Mattermost-heavy requests.
 The hooks find endpoint and key in CB_BUS_ENDPOINT / CB_BUS_KEY, else in the
 discovery file ``endpoint-sid-<key>.env`` (0600) in the state dir, keyed like the
@@ -108,11 +111,11 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import config
 from . import (
-    a2a, asks, attach, channel, files, gate, hosted, lease, life, model, ownpost, release, session_file, stall, stats,
-    planb, tasks, turnend, unanswered, unread, usage,
+    a2a, asks, attach, channel, files, gate, hosted, identity, lease, life, model, nobot, ownpost, release,
+    session_file, stall, stats, planb, tasks, turnend, unanswered, unread, usage,
 )
 from .homes import guest_ids, watched_channel_ids
-from .ids import InvalidId, mm_id, mm_name, post_id_arg
+from .ids import NATS_POST, InvalidId, mm_id, mm_name, post_id_arg
 # model.NotAllowed and model.NotFound stay qualified below: attach.NotAllowed,
 # a refused file, is a different one.
 from .model import Post, Refused
@@ -201,6 +204,21 @@ def _answers(endpoint: str, key: str) -> bool:
         return False
     finally:
         conn.close()
+
+
+NEEDS_BOT = ("a DM or a Mattermost post's channel needs a Mattermost bot, and this session runs "
+             "without one (plan B piece 14c-2b, RT-6.33): upload to the home, a guest channel or "
+             "the lobby, or to a thread there")
+NO_NAME = ("no Mattermost bot in this session and its NATS bus is not up yet, so it has no NATS "
+           "name to answer for (plan B piece 14c-2b, RT-6.17): try again in a moment")
+
+
+def served(client: ChatPort) -> bool:
+    """The hook API answers for this client (RT-6.17): it holds a Mattermost token, or it
+    decided to run without a bot (identity.bot_less) and has its NATS name (identity.key_now).
+    Never a wrong key: a session without a bot whose bus is down has no name and gets 503.
+    Authentication is this server's own key either way (_authorized), never the token."""
+    return bool(client.token or (identity.bot_less(client) and identity.key_now(client)))
 
 
 def file_path() -> Path:
@@ -491,11 +509,15 @@ class HookAPI:
             client = await self._get_client()
         except Exception:  # noqa: BLE001 — no bus configured
             client = None
-        if client is None or not client.token:
+        if client is None or not served(client):
             # No chat to check the turn against, but a login may wait: its line goes
             # with the 503, so a session without a bot (plan B) does not lose the
             # approval (review of #230).
             answer: dict[str, Any] = {"error": "no bus session"}
+            if client is not None and (why := nobot.status()):
+                # Plan B piece 14c-2b: the bot's decision open, its registration under way or
+                # failed, or decided without one and the NATS bus not up (no name yet).
+                answer["no_bot"] = NO_NAME if nobot.held() else why
             if route is turn_end and (line := login_line()):
                 answer["login"] = line
             return 503, answer
@@ -659,7 +681,8 @@ async def _read_head(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, 
 # --- routes -------------------------------------------------------------------
 
 async def _uid(client: ChatPort) -> str:
-    return (await client.get_me()).id
+    """The session's own key (identity.self_key): the bot's id, without a bot its NATS name."""
+    return await identity.self_key(client)
 
 
 def _project(client: ChatPort) -> bool:
@@ -668,7 +691,7 @@ def _project(client: ChatPort) -> bool:
 
 async def me(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]) -> Reply:
     """Who the bot is, whether it works in a project channel, its crown (RT-6.6)."""
-    who = await client.get_me()
+    who = await identity.self_me(client)  # without a bot: the NATS name (plan B piece 14c-2b)
     uid = who.id
     project = _project(client)
     # channel: the agent confirmed the channel check (RT-6.12); the hooks of a
@@ -678,7 +701,7 @@ async def me(client: ChatPort, query: Mapping[str, str], body: Mapping[str, Any]
     relay = hosted.relay_warning()
     return 200, {"user_id": uid, "username": who.username,
                  "project": project, "crown_until": lease.crown_until(uid),
-                 "channel": bool(_UID.fullmatch(uid)) and channel.confirmed(uid),
+                 "channel": session_file.key_ok(uid) and channel.confirmed(uid),
                  # The key of the kept state when it is not the bot id (RT-6.2 step 9): the NATS
                  # name with plan B piece 2 on; the hooks' files follow it (mm_state_key).
                  **({"state_key": key} if (key := session_file.state_key(uid)) != uid else {}),
@@ -1055,7 +1078,8 @@ async def reminded(client: ChatPort, query: Mapping[str, str], body: Mapping[str
     so a check whose answer was dropped leaves them due."""
     ids = body.get("post_ids")
     if (not isinstance(ids, list) or len(ids) > MAX_REMINDED
-            or not all(isinstance(i, str) and _UID.fullmatch(i) for i in ids)):
+            or not all(isinstance(i, str) and (_UID.fullmatch(i) or NATS_POST.fullmatch(i)) for i in ids)):
+        # A Mattermost post id or a NATS one (n1:<channel>:<seq>): a NATS home's posts wait too.
         raise BadRequest(f"post_ids: at most {MAX_REMINDED} post ids")
     return 200, {"ok": True, "marked": unanswered.remind(await _uid(client), ids)}
 
@@ -1175,6 +1199,8 @@ async def upload_channel(client: ChatPort, cid: str) -> str:
     bus watches) or a DM of the bot; anything else, a group too, is Forbidden."""
     if cid in await watched(client):
         return cid
+    if identity.bot_less(client):  # a DM of the bot is Mattermost's (plan B piece 14c-2b)
+        raise Forbidden(f"channel {cid}: not the home, a guest channel or the lobby; {NEEDS_BOT}")
     try:
         found = await client.get_channel(mm_id(cid, "channel"))
     except InvalidId:
@@ -1199,6 +1225,10 @@ async def files_route(client: ChatPort, query: Mapping[str, str],
     where = {k: query.get(k, "").strip() for k in ("channel", "root", "to")}
     if sum(bool(v) for v in where.values()) > 1:
         raise BadRequest("channel, root, to: one of them")
+    bot_less = identity.bot_less(client)
+    if bot_less and (where["to"] or (where["root"] and not NATS_POST.fullmatch(where["root"]))):
+        # Plan B piece 14c-2b: a DM's channel and a Mattermost post's channel are Mattermost's.
+        raise Forbidden(f"{'to' if where['to'] else 'root'}: {NEEDS_BOT}")
     if where["to"]:
         try:
             cid = await client.direct_channel_with_bot(where["to"])
@@ -1360,7 +1390,7 @@ async def wake(client: ChatPort, query: Mapping[str, str], body: Mapping[str, An
     _, fresh = await ask_reactions(client, query, body)
     if fresh["fresh"] > 0:
         return 200, turnend.wake_reactions(fresh["fresh"])
-    who = await client.get_me()
+    who = await identity.self_me(client)
     uid = who.id
     own = await _own_posts(client, uid, body)
     _, new = await posts(client, {"since": str(since)}, body)

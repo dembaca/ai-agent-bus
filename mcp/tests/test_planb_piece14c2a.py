@@ -258,19 +258,19 @@ SRC = Path(identity.__file__).parent
 
 # (module, function) -> why it still reads Mattermost's users/me.
 ALLOWED: dict[tuple[str, str], str] = {
-    ("client.py", "*"): "the Mattermost adapter itself: users/me is its own account",
+    ("client.py", "account_created"): "the Mattermost adapter: its own account's creation",
+    ("client.py", "direct_channel_with"): "the Mattermost adapter: a DM channel is the bot's",
+    ("client.py", "add_reaction"): "the Mattermost adapter: a reaction is the bot's",
+    ("client.py", "join_channel"): "the Mattermost adapter: the bot joins a channel",
     ("identity.py", "self_key"): "with a bot: its id when neither the session nor the env names it",
     ("identity.py", "self_me"): "with a bot: users/me as before",
     ("attest.py", "start"): "the registrar's attestation of the bot (needs its token)",
-    ("hookapi.py", "_uid"): "the hook API without a token is piece 14c-2b",
-    ("hookapi.py", "me"): "the hook API without a token is piece 14c-2b",
-    ("hookapi.py", "wake"): "the hook API without a token is piece 14c-2b",
     ("hosted.py", "_relay_dm"): "the permission relay's Mattermost DM",
     ("lease.py", "_crown_taken"): "the crown_taken post of Mattermost's election (no NATS home)",
     ("login_notice.py", "*"): "the login approval's DM and ask: piece 14c-3",
     ("nats_port.py", "_bot_id"): "the bot's own Mattermost id: none without a bot",
     ("nats_port.py", "_bot_name"): "the bot's username in the presence: none without a bot",
-    ("server.py", "bus_info"): "says why there is no bot (nobot.status); its status without a token is 14c-2b",
+    ("server.py", "bus_info"): "with a bot: users/me as before",
     ("server.py", "get_me"): "the get_me tool's raw=true: users/me as is",
 }
 

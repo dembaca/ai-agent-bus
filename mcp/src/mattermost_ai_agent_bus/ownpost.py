@@ -35,6 +35,7 @@ channel showed it a moment later.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -192,5 +193,24 @@ def bye_sync(client: ChatPort, uid: str) -> str:
                                 timeout=BYE_TIMEOUT_SEC)
         record(uid, last["CHANNEL"], post)
     except Exception as exc:  # noqa: BLE001 — exit handler: fail open
+        return f"BYE not posted: {type(exc).__name__}"
+    return "BYE posted"
+
+
+async def bye(client: ChatPort, uid: str) -> str:
+    """bye_sync for a session without a Mattermost bot (plan B piece 14c-2b, RT-6.2): the same
+    BYE, posted over NATS while the event loop still runs at the shutdown (its HELLO thread is
+    in a NATS home), before the bus says bye in the presence. Bounded, fail-open."""
+    last = read(uid)
+    if not (uid and last.get("HELLO") and last.get("CHANNEL")):
+        return "no announcement"
+    if a2a.word(last.get("MSG", "")) in SIGN_OFFS:
+        return "signed off"
+    try:
+        post = await asyncio.wait_for(client.post(
+            a2a.styled(with_guest_threads(BYE, uid)), channel_id=last["CHANNEL"],
+            root_id=last["HELLO"], props=a2a.props(BYE)), BYE_TIMEOUT_SEC)
+        record(uid, last["CHANNEL"], post)
+    except Exception as exc:  # noqa: BLE001 — the shutdown: fail open
         return f"BYE not posted: {type(exc).__name__}"
     return "BYE posted"
