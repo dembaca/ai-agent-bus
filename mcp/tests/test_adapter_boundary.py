@@ -2,8 +2,9 @@
 
 Post props, custom status and crown, unread counters and the profile the
 registrar wrote are Mattermost's. Only the modules in ALLOWED read or write
-them, and only client.py talks HTTP (and selfupdate.py, which the server never
-runs: RT-6.32); the rest of the server gets bus types
+them, and only client.py talks HTTP (and selfupdate.py, whose fetch the
+release notice uses for the bridge's record when CB_RECORDS_URL is set:
+RT-6.30, RT-6.32); the rest of the server gets bus types
 (model.py), a post as a Post that client.post_of built.
 
 The modules in PORT_MODULES talk to the chat through port.ChatPort only: they

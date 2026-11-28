@@ -93,11 +93,33 @@ NATS permissions or release and signing always take the full way. It keeps:
   areas a PR changes; a file no area claims runs all of them).
 - **The merge go** as usual.
 
-**Basis rule.** A PR whose CI went green on a base that `main` has since passed only
-by commits for which `checks.yml` runs just `docs` and `lint` (files no test reads)
-may merge without a new run, if GitHub
-says mergeable and clean and its CHANGELOG lines read clean against `main`. The
-~chat-next coordinator granted this once on 2026-11-28; it is up to the merge approver.
+**Basis rule** (the merge approver's call, agreed with the ~chat-next coordinator on
+2026-11-28 at the owner's request). A PR whose CI went green on an older `main` may
+merge without a new run when all of these hold:
+
+- the areas `changes`' script sets for `main`'s commits since the PR's base and those it
+  sets for the PR (its outputs `py`, `opencode`, `pi`, `site`, `console`, not
+  directories: `mcp/` sets four) share none, and neither side touches a path that runs everything
+  (`checks.yml`, an unclaimed path, a deletion or a rename);
+- `main`'s commits touch none of `docs/doc-map.toml`, `scripts/`, `ruff.toml` and
+  `.shellcheckrc`, and the `docs` job's two commands pass on the merged tree
+  (`arc42-lint.py docs/arc42 --strict`, `doc-check.py`): doc-check reads all of
+  `docs/arc42/`, `docs/env-names.md`, the versions and every tracked file for
+  scenario ids and environment names, so a PR and `main` can each pass it alone and
+  fail together;
+- the PR and those commits do not both touch the paths of another workflow
+  (`auth.yml`, `bridge.yml`, `keycloak.yml`, `testrig.yml`);
+- `main`'s newest completed run is green and no run of a merge made under this rule
+  is still going, so at most one such merge is unproven at a time;
+- GitHub says mergeable and clean with no commit since the run, and the PR's
+  CHANGELOG lines read clean against `main`.
+
+A request under it names the base, `main`'s head, the areas of both diffs and the
+result of the two docs commands on a trial merge, with the two commits it was made
+from (the PR's head and `main`'s head; a result for an older `main` does not count).
+A trial merge that needs a conflict resolved by hand turns the rule off for that PR:
+merge `main` in and rerun. The approver takes both file lists from GitHub and runs
+the script's `case` on them.
 
 **Conflicts.** Resolve a conflict in text by taking whole sides or writing it by
 hand, never with a character- or word-level merge script (one garbled the CHANGELOG
