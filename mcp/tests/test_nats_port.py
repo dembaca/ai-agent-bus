@@ -172,6 +172,17 @@ class FakeNats:
         self.sent.append(("unreact", channel, ref, emoji))
         await self._come_back(channel, Message("unreaction", ref=ref, emoji=emoji))
 
+    async def post_mm(self, channel: str, text: str, mm_root: str,
+                      props: dict[str, natsbus.Prop] | None = None) -> None:
+        """Plan B piece 7: a reply naming a Mattermost post (RT-6.42 step 13)."""
+        self.sent.append(("post_mm", channel, text, mm_root, props))
+        await self._come_back(channel, Message("post", text, props=props or {}, mm_root=mm_root))
+
+    async def react_mm(self, channel: str, mm_ref: str, emoji: str, remove: bool = False) -> None:
+        self.sent.append(("unreact_mm" if remove else "react_mm", channel, mm_ref, emoji))
+        await self._come_back(channel, Message("unreaction" if remove else "reaction",
+                                               emoji=emoji, mm_ref=mm_ref))
+
     async def dm(self, recipient: str, text: str, root: int | None = None,
                  props: dict[str, natsbus.Prop] | None = None) -> None:
         """A direct message (plan B piece 3): no own copy comes back, as on the bus."""

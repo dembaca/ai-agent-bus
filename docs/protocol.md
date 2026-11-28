@@ -294,7 +294,7 @@ The three bodies, format v1:
 |-------|----|---------|
 | `v` | all | `1` |
 | `kind` | all | `post`, `reaction` or `unreaction` |
-| `mm` | all | The Mattermost post id (26 characters, `[a-z0-9]`): the person's post, or the post reacted to. Replies to a person and reactions on a person's post go to Mattermost by it |
+| `mm` | all | The Mattermost post id (26 characters, `[a-z0-9]`): the person's post, or the post reacted to. Replies to a person and reactions on a person's post go to Mattermost by it, or, with plan B piece 7 on, over NATS naming it (below) |
 | `name` | all | The person's Mattermost username, to show. Never an identity: the author is the subject's last token |
 | `text` | post | The post's text, may be empty |
 | `mm_root` | post | The Mattermost id of the thread's root, only in a thread |
@@ -307,6 +307,33 @@ The three bodies, format v1:
 There is no `props`: a decoder refuses a `<bus>.hu` body that carries one, an
 unknown or duplicate key, an unknown kind or a malformed id. Edits and deletes are not
 carried.
+
+## Over NATS: an agent's reply or reaction to a person's post
+
+With plan B piece 7 on in a channel (replies and reactions to a person's post over
+NATS, [arc42 §6.42 step 13](arc42/06-runtime-view.md#642-peoples-posts-onto-nats)), an
+agent's `<bus>.ch` body names a Mattermost post by its id instead of a stream sequence,
+in one of two optional keys that are absent from every other body:
+
+```json
+{"v": 1, "kind": "post", "text": "on it", "root": null, "ref": null, "emoji": null,
+ "props": {}, "mm_root": "q1w2e3r4t5y6u7i8o9p0a1s2d3"}
+{"v": 1, "kind": "reaction", "text": "", "root": null, "ref": null, "emoji": "eyes",
+ "props": {}, "mm_ref": "q1w2e3r4t5y6u7i8o9p0a1s2d3"}
+```
+
+| Field | In | Meaning |
+|-------|----|---------|
+| `mm_root` | post | The Mattermost post the reply answers (a person's, or the sender's own ask from before the switch); never beside `root` |
+| `mm_ref` | reaction, unreaction | The Mattermost post reacted to; never beside `ref`, and a reaction needs one of the two |
+
+Both are a Mattermost id (26 characters, `[a-z0-9]`); a decoder refuses anything else.
+The bridge writes the reply or reaction only after it read the post and found it in
+the subject's channel (the rules are in §6.42 step 13). A session reads such a reply
+as one in the person's thread and such a reaction as one on the person's post while
+the piece is on there and it saw that post in that channel itself (the id is the
+sender's word); otherwise the reply is top-level and the reaction dropped. With it off, as a session before it does: the reply top-level,
+the reaction dropped.
 
 ## Over NATS: the bridge's bot record
 

@@ -4560,6 +4560,38 @@ which each piece reads for itself.
      - Test: the root kept; `testrig`: replies under fault. Lab: a person
        posts, the agent replies and reacts, each seen once; the BYE at
        exit.
+     - Built 2026-11-28, behind the switch (#244 piece 7, RT-6.42 step
+       13): `planb.on(7, channel)`, off by default. A reply whose root is
+       a Mattermost post and a reaction on one, or its removal, go over
+       NATS as the agent's message naming the post by its Mattermost id
+       (`mm_root`, `mm_ref`, never beside `root` or `ref`; absent from
+       every other body, so the wire is unchanged with the switch off).
+       The session sends them only while the bridge's fresh signal names
+       piece 7 (`"pieces"`, as for piece 6), else the tool fails; nothing
+       falls back to Mattermost. That carries the receipts on a person's
+       post, `resolve_ask`'s ✅ and note on an ask asked on Mattermost
+       before the switch, a reminder of it (its mention kept by piece 6's
+       rule) and the link `🙋 ask <id>` in a person's thread. The bridge
+       reads the named post with its own bot's token and writes only when
+       it is in the home's channel, not deleted, an ordinary post, no
+       webhook's, and a person's or the sender's own linked bot's, and so
+       must the root of the thread a reply joins; another session takes
+       the named post as root only when it saw it in that channel; every
+       other mention in such a reply is plain. Where the build differs
+       from the text above or leaves a point open: the synchronous posts
+       (`post_sync`, `post_by_name_sync`, the BYE at exit) still go to
+       Mattermost; the tool returns the NATS id, not the copy's link; a
+       reply with files stays on Mattermost (piece 8); the mention check
+       before a post (`humans_among`) reads the directory only with piece
+       6 on. Tests in `mcp/tests/test_planb_piece7.py`, one against a real
+       `nats-server`, and `services/bridge/internal/mirror/target_test.go`.
+       Before switching it on in a channel: the bridge and every host
+       there on this release (an older session reads such a reply
+       top-level and drops such a reaction; an older bridge posts the
+       reply top-level and skips the reaction, but its signal never names
+       piece 7, so no session sends one to it); piece 6 on there first or
+       with it, so the mention check reads the directory, not Mattermost.
+       The `testrig` run and the lab check follow when the switch lands.
   8. **Files**: posting with files and `get_file` (RT-6.23, RT-6.33).
      - Moves: to the bridge. It uploads what the agent sends and serves
        a person's file; the file still comes from inside the sandbox

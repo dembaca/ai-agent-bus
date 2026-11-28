@@ -55,10 +55,10 @@ type fakeStore struct {
 	own       map[string]bool
 }
 
-func (f *fakeStore) OwnReaction(_ context.Context, home string, seq uint64, emoji, sender string) (bool, error) {
+func (f *fakeStore) OwnReaction(_ context.Context, home, seq, emoji, sender string) (bool, error) {
 	return f.own[fmt.Sprint(home, seq, emoji, sender)], nil
 }
-func (f *fakeStore) SetOwnReaction(_ context.Context, home string, seq uint64, emoji, sender string, on bool) error {
+func (f *fakeStore) SetOwnReaction(_ context.Context, home, seq, emoji, sender string, on bool) error {
 	if on {
 		f.own[fmt.Sprint(home, seq, emoji, sender)] = true
 	} else {
@@ -80,7 +80,7 @@ func (f *fakeStore) Save(_ context.Context, _ string, seq uint64, p Post) error 
 	return nil
 }
 
-func (f *fakeStore) Reaction(_ context.Context, home string, seq uint64, emoji, sender string, add bool) (int, error) {
+func (f *fakeStore) Reaction(_ context.Context, home, seq, emoji, sender string, add bool) (int, error) {
 	k := home + "/" + emoji
 	set := f.reactions[k]
 	if add {

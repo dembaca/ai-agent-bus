@@ -107,8 +107,9 @@ type Bridge struct {
 	}
 	// Switches are plan B's per channel (presence.Switches): in which homes
 	// piece 4 is on (nil: in none, and every home carries by the account record
-	// alone, as before #266), and which pieces the signal names, so far piece 6
-	// (asks, RT-6.11 step 7, the mirror's ask.go; nil names none).
+	// alone, as before #266), and which pieces the signal names: piece 6
+	// (asks, RT-6.11 step 7, ask.go) and piece 7 (replies and reactions to a
+	// person's post, RT-6.42 step 13, target.go); nil names none.
 	Switches Switches
 	NATS     Publisher
 	Store    Store
@@ -306,13 +307,20 @@ func (b *Bridge) signal(ctx context.Context, h *home) {
 	}
 }
 
-// pieces are the plan B pieces whose bridge half runs for the home: piece 6
-// (asks) while its switch is on there.
+// pieces are the plan B pieces whose bridge half runs for the home, each
+// while its switch is on there: piece 6 (asks, RT-6.11 step 7) and piece 7
+// (replies and reactions to a person's post, RT-6.42 step 13).
 func (b *Bridge) pieces(home string) []int {
-	if b.Switches != nil && b.Switches.On(6, home) {
-		return []int{6}
+	if b.Switches == nil {
+		return nil
 	}
-	return nil
+	var on []int
+	for _, n := range []int{6, 7} { // asks; replies and reactions to a person's post
+		if b.Switches.On(n, home) {
+			on = append(on, n)
+		}
+	}
+	return on
 }
 
 // liveSlack is how far behind Mattermost's clock a connected home's watermark

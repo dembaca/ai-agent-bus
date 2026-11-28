@@ -46,3 +46,31 @@ func TestSenderIsTheLastToken(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// RT-6.42 step 13, plan B piece 7: a post may name a Mattermost post as its
+// root and a reaction the Mattermost post it reacts to, never beside a
+// sequence, and only by a Mattermost id.
+func TestDecodeAMattermostPostNamedByItsId(t *testing.T) {
+	const id = "qqqqqqqqqqqqqqqqqqqqqqqqqq"
+	m, err := Decode([]byte(`{"v":1,"kind":"post","text":"on it","root":null,"mm_root":"`+id+`"}`), "a2a.")
+	if err != nil || m.MMRoot != id || m.Root != nil {
+		t.Fatalf("%+v %v", m, err)
+	}
+	m, err = Decode([]byte(`{"v":1,"kind":"unreaction","ref":null,"emoji":"eyes","mm_ref":"`+id+`"}`), "a2a.")
+	if err != nil || m.MMRef != id || m.Ref != nil || m.Kind != Unreaction {
+		t.Fatalf("%+v %v", m, err)
+	}
+	for _, body := range []string{
+		`{"v":1,"kind":"post","text":"x","root":3,"mm_root":"` + id + `"}`,
+		`{"v":1,"kind":"post","text":"x","mm_root":"n1:home:3"}`,
+		`{"v":1,"kind":"post","text":"x","mm_root":"QQQQQQQQQQQQQQQQQQQQQQQQQQ"}`,
+		`{"v":1,"kind":"post","text":"x","mm_ref":"` + id + `"}`,
+		`{"v":1,"kind":"reaction","emoji":"x","ref":3,"mm_ref":"` + id + `"}`,
+		`{"v":1,"kind":"reaction","emoji":"x","mm_root":"` + id + `"}`,
+		`{"v":1,"kind":"reaction","emoji":"x","mm_ref":""}`,
+	} {
+		if _, err := Decode([]byte(body), "a2a."); err == nil {
+			t.Errorf("accepted %s", body)
+		}
+	}
+}
