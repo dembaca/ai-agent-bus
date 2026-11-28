@@ -568,6 +568,10 @@ class Attestation:
     trusted: tuple[tuple[str, str], ...]  # (anchor, name)
     cut: bool
     exp: float
+    # The hello's home as the login service granted it (RT-6.41, #255): a channel token, or ''
+    # when the hello named none or the human is no member of it. None when the record states
+    # none at all (an older login service): no word, which a reader must not read as ''.
+    home: str | None = None
 
 
 def _person(obj: Any, what: str) -> tuple[str, str]:
@@ -600,10 +604,15 @@ def decode_attestation(data: bytes, agent: str) -> Attestation:
     cut = obj.get("cut")
     if not isinstance(cut, bool):
         raise MessageError("cut is not a boolean")
+    home: str | None = None
+    if "home" in obj:  # absent: an older login service states none, which is not "no home"
+        home = obj["home"]
+        if not isinstance(home, str) or (home and not CHANNEL_RE.fullmatch(home)):
+            raise MessageError("home is no channel name")
     _int(obj, "iat")
     return Attestation(owner_anchor=owner[0], owner_name=owner[1],
                        trusted=tuple(_person(t, "a trusted entry") for t in trusted),
-                       cut=cut, exp=float(_int(obj, "exp")))
+                       cut=cut, exp=float(_int(obj, "exp")), home=home)
 
 
 def decode_notice(data: bytes) -> Notice:
@@ -2209,6 +2218,18 @@ class NatsBus:
         if seen is None or seen[2].exp <= self._server_now:
             return None
         return seen[2]
+
+    def home_of(self, agent: str) -> str | None:
+        """The home the agent's attestation states (RT-6.41, #255): a channel token, '' when the
+        record states no home (a hello that named none), None when the record states none at all
+        (an older login service) or there is no record this agent's presence backs - fresh and
+        naming the anchor of the presence subject, the same gate as the circle. So a reader tells
+        "the service says this is no home agent" from "no word yet". It grants nothing."""
+        anchor = self._owners.get(agent, "")
+        att = self.attestation_of(agent)
+        if att is None or not anchor or att.owner_anchor != anchor:
+            return None
+        return att.home
 
     def presence_of(self, agent: str) -> str:
         """online or away while the agent's last presence is younger than

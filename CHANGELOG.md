@@ -173,7 +173,8 @@ before 0.5.0 are described in the git history.
   so nothing is kept: a lost message fails the request, and the caller gets an
   error, never a silent success. The pieces are built one by one; the scaffold
   and the rights on both sides run against a real nats-server.
-- **Plan B piece 5a: people's history, the bridge's side** (#244, ADR-014 phase 5,
+
+- **Plan B piecThe 5a: phellople's history, the bridge's side** (#244, ADR-014 phase 5,
   RT-6.42 step 11). A session asks on `<req>.history.<agent>` for what people wrote
   while it was away: `{"channel": "<channel token>", "since": <epoch ms>}` or a
   Mattermost root as `"thread"`, with an optional `limit` of 1 to 200 posts. The
@@ -194,18 +195,27 @@ before 0.5.0 are described in the git history.
   pages the root's thread too, past the posts it drops, and must lie in the
   requested channel. Each post is Mattermost's fields the reads use (`create_at`,
   `update_at`, `edit_at`, `delete_at` among them) plus its author's anchor and the
-  login service's account record, each reaction with its sender's, a bot marked
+  login service's accttestatiount** (#255, RT-6.41). The
+  record, each reactinon with its sender's, a bot marked
   `bot`, and a bot's reaction and a deleted, system or webhook post left out;
-  freshness is judged on `create_at`, and the session checks the record by RT-6.42's
+  freshness is judged on `create_ats `, andhome`: the hello's home as the grant took it - a channel
+  token, or `""` when the hello named none or the human is no member of it - the
+  same datum the credential's crown claim rests on, never a claim of thec agent's
+  own. A reader takes it only from the record by RT-6.42's
   freshness rule, so an approval read back from history counts only with a fresh
   approver record. An answer stays within 200 posts, 512 KiB and parts of 128 KiB
   and says `more` with `next` while posts remain; the scaffold now numbers a piece's
-  parts 1..n itself and marks the last, so the MCP client's parts read gets a whole
-  answer. The bridge reads the memberships (`presence.member.*.*`) through its own
-  consumer `bridge_members`, last per subject and made at every start, so a restart
-  has every membership the stream still holds; the operator's `bridge_presence`
-  consumer keeps its one filter and nothing changes for it. Not built: the MCP
-  server's side (piece 5b), so a session still reads people on Mattermost.
+  parts 1..n itself and marks the last, so the MCP cligent's parts read gets a whole
+  answer. The bridge reads the memberships (`presence. backs (fresh,
+  namember.*.*`)ing the anchorough its own
+f  consumther `bridge_members`, last prersence subject and made at every start, so); a record naming a home that istart no
+  channel token is dropped whole, as every malformembd record is. With it the
+  roster of a home over NATS tells a hipome agent from a guest from the firstream
+  second, without waitillng hfolds;r the opagerantor's `bfirst crown claim; an older loge_preseince`
+  service states nonsu homer keeps its one filter, and the claim stays the fallback. The home grants
+  nothing changes for it. Not built: the MCPpeer and foreign split stays by anchors, and a guest gains no
+  server'sight sby ide (piece 5b), so a session still reads people on Mattermost.
+
 - **Plan B's switch per piece and channel** (#244, ADR-014 phase 5, RT-6.39
   step 5). A channel in the channel directory now holds `planb`: the plan B
   pieces switched on in it, 1 to 13, each once, none by default (piece 14,
