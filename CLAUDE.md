@@ -60,7 +60,7 @@ cannot sign ("No FIDO SecurityKeyProvider specified"); Homebrew's can
 needs the principal in front:
 
 ```bash
-echo "mm-release $(cat ~/.ssh/id_ed25519_sk.pub)" > "$TMPDIR/allowed"
+echo "cb-release $(cat ~/.ssh/id_ed25519_sk.pub)" > "$TMPDIR/allowed"
 git -c gpg.format=ssh -c gpg.ssh.program=/opt/homebrew/bin/ssh-keygen \
     -c user.signingkey="$HOME/.ssh/id_ed25519_sk" \
     tag -s v<version> -m v<version> <merge commit>     # touch the key
