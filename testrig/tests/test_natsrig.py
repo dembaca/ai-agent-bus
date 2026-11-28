@@ -542,6 +542,34 @@ async def test_a_restart_never_moves_to_another_port():
         await server.stop()
 
 
+@pytest.mark.bus
+async def test_the_proxy_accepts_right_after_a_refused_reconnect():
+    """#221: the proxy refuses only while the nats-server is down, and the first knock
+    after the restart is passed on at once - its INFO within a second. The ~40 s after
+    a refused reconnect was the bus's (a client nats-py closed without its callbacks,
+    mcp test_a_connection_closed_without_its_callbacks_still_reconnects), not the rig's."""
+    if natsrig.server_binary() is None:
+        pytest.skip("no nats-server: set CB_NATS_SERVER to run the NATS transport live")
+    server = natsrig.NatsServer([])
+    try:
+        await server.start()
+        async with ByteProxy("127.0.0.1", server.port) as relay:
+            server.kill()
+            reader, _writer = await asyncio.open_connection("127.0.0.1", relay.port)
+            assert await asyncio.wait_for(reader.read(10), 1.0) == b""
+            assert relay.refused == 1
+            await server.start()
+            started = time.monotonic()
+            reader, writer = await asyncio.open_connection("127.0.0.1", relay.port)
+            line = await asyncio.wait_for(reader.readline(), 1.0)
+            assert line.startswith(b"INFO "), line
+            assert time.monotonic() - started < 1.0
+            assert relay.refused == 1 and relay.connections == 2
+            writer.close()
+    finally:
+        await server.stop()
+
+
 def test_the_error_tail_masks_a_secret_however_it_is_written():
     """#218: a key after `token:`, `token =`, in JSON or bare never reaches the log."""
     tail = natsrig._nats_tail([
