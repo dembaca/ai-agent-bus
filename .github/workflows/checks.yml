@@ -301,6 +301,8 @@ jobs:
           else
             while IFS= read -r f; do
               [ -n "$f" ] || continue
+              # an MCP test reads every tracked shell script, wherever it lies
+              case "$f" in *.sh|*.sh.example) py=true ;; esac
               case "$f" in
                 .github/workflows/checks.yml) all ;;
                 .github/actions/*) py=true; con=true ;;
