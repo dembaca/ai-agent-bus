@@ -551,6 +551,14 @@ before 0.5.0 are described in the git history.
   recommendation and "where" are not on the bus the console reads either, so they are
   not shown.
 
+- **Decided, not built: permission prompts in the console** (ADR-015, addition of
+  2026-11-28; the owner's decision, ask `s184ounnnpghpgsfas1dpxnxia`). A session's open
+  tool permission prompts are to show in the console's Asks view as a kind of ask, read
+  only ("answer in the DM or the terminal") and only for the session's responsible
+  human: a record of their own on `<presence>.prompt.<anchor>.<name>`, which only that
+  person's consumer reads, holding no more of the input than the DM shows. Built after
+  plan B (#244); the record's exposure is a new risk (RISK-38).
+
 ### Fixed
 
 - **The sweep removes state keyed by a NATS name** (#244 plan B piece 14 gate 8, #253,
