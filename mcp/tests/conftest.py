@@ -93,6 +93,9 @@ def _isolate_bus_env(monkeypatch, tmp_path, request):
     monkeypatch.setattr(_lease, "_nats_why", "")
     monkeypatch.setattr(_lease, "_nats_warned", set())
     monkeypatch.setattr(_lease, "_nats_yielded", False)
+    # Plan B piece 9: the status the presence states, and the warning about piece 2.
+    monkeypatch.setattr(_lease, "_shown", None)
+    monkeypatch.setattr(_lease, "_mirror_warned", set())
     # What the attestation code remembers per process (RT-6.24).
     from mattermost_ai_agent_bus import askroute, attest, debug, lease, life, mandate, owners, receipt, usage
 

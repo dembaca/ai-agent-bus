@@ -300,6 +300,8 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 				"$JS.API.STREAM.MSG.GET.KV_BUS_BRIDGE",
 				// people onto NATS (RT-6.42)
 				"bus.hu.home.*", "presence.bridge.home.v1", "presence.bot.*.v1",
+				// the crown claims, its own consumer (plan B piece 9, RT-6.38)
+				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_crown.presence.crown.*.*",
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>",
 				// plan B's switches per channel, its own consumer (RT-6.39 step 5)
 				"$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1",
@@ -342,6 +344,7 @@ func TestTheExampleServerConfiguration(t *testing.T) {
 			// one consumer create, its filter fixed in the subject (RT-6.42)
 			for _, subject := range u.Permissions.Publish.Allow {
 				if strings.HasPrefix(subject, "$JS.API.CONSUMER.CREATE") &&
+					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_crown.presence.crown.*.*" &&
 					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_accounts.presence.account.mattermost.>" &&
 					subject != "$JS.API.CONSUMER.CREATE.PRESENCE.bridge_planb.presence.planb.*.v1" {
 					t.Errorf("the bridge may create consumers by %s", subject)

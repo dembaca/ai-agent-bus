@@ -24,6 +24,9 @@ type Reader struct {
 	Deliver string // deliver.bridge.presence
 	Into    *Snapshot
 	Ready   chan struct{} // closed once the subscription is active (tests wait on it)
+	// Shown takes the status each presence states for the bridge to show (plan
+	// B piece 9, shown.go); nil reads none.
+	Shown *ShownStore
 }
 
 // Run consumes until ctx ends.
@@ -67,4 +70,11 @@ func (r *Reader) one(m *nats.Msg) {
 		at = md.Timestamp
 	}
 	r.Into.Observed(name, owner, bot, status, at)
+	if r.Shown != nil {
+		shown, err := DecodeShown(m.Data)
+		if err != nil && r.Shown.Warn(name) {
+			r.Log.Warn("presence: a shown status out of bounds, none shown", "agent", name, "error", err)
+		}
+		r.Shown.Observed(name, shown, at)
+	}
 }
