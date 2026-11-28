@@ -122,7 +122,13 @@ before 0.5.0 are described in the git history.
   nothing, as a live event's would. An answer's `bot` posts are the Mattermost
   ones (an ask), its reactions carry their senders' anchors and records, and
   `more`/`next` pages the read forward (at most five pages), with the posts
-  deduped by id. A failed request reads nothing and never falls back to
+  deduped by id; a read still `more` at the cap logs that it carries the oldest
+  window, and a cursor older than the bridge's 14 days is clamped to its bound.
+  Only a bot post whose author check passes is a copy, so a forged
+  `<prefix>nats_id` re-roots nothing, and a copy's reactions count on the NATS
+  post. History only adds to `unapproved`, never lifts a live judgement; the
+  unread copy pass and a person's file read make no Mattermost call for a
+  switched channel. A failed request reads nothing and never falls back to
   Mattermost; off, nothing changes. The NATS memory is merged as before.
 
 - **The NATS crown says why `take` waits, and a `crown` debug category** (#243, RT-6.38, RT-6.31).

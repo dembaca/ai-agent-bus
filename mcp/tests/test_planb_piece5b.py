@@ -14,7 +14,9 @@ login service's rights for a home (the rig of test_natsbus.py).
 """
 
 import asyncio
+import inspect
 import json
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -25,7 +27,7 @@ from test_natsbus import Rig, _login_service
 
 from mattermost_ai_agent_bus import a2a, planb
 from mattermost_ai_agent_bus.client import post_of
-from mattermost_ai_agent_bus.model import Post
+from mattermost_ai_agent_bus.model import ChannelUser, Post
 from mattermost_ai_agent_bus.nats_port import NatsPort
 from mattermost_ai_agent_bus.natsbus import NatsSettings
 
@@ -117,6 +119,8 @@ class Bridge:
             body = json.loads(msg.data)
             self.asked.append(body["payload"])
             out = self.handler(body["payload"])
+            if inspect.isawaitable(out):
+                out = await out
             envelope: dict[str, Any] = {"v": 1, "request": body["request"], "kind": "history"}
             if isinstance(out, str):  # an error, in the bridge's words
                 envelope["error"] = out
@@ -133,7 +137,8 @@ class Bridge:
             await self.sub.unsubscribe()
 
 
-async def _setup(rig: Rig, monkeypatch: pytest.MonkeyPatch, pieces: list[int]) -> tuple[NatsPort, Watched]:
+async def _setup(rig: Rig, monkeypatch: pytest.MonkeyPatch, pieces: list[int], *,
+                 bridge_bot: str = "") -> tuple[NatsPort, Watched]:
     monkeypatch.delenv("CB_PLANB_TEST", raising=False)
     await rig.admin.publish(f"presence.planb.{HOME}.v1",
                             json.dumps({"v": 1, "channel": HOME, "pieces": pieces}).encode())
@@ -143,7 +148,10 @@ async def _setup(rig: Rig, monkeypatch: pytest.MonkeyPatch, pieces: list[int]) -
     inner = Watched(FakeRegistrar())
     inner.registrar.session = inner.registrar.info
     inner.work_channel_name = HOME
+    if bridge_bot:
+        inner.bots[bridge_bot] = ChannelUser(id=BOT, username=bridge_bot)
     port = NatsPort(inner, NatsSettings(servers=(rig.url,), home=HOME), (HOME,),
+                    bridge_bot=bridge_bot,
                     bus_options={"heartbeat_sec": 0.2})  # type: ignore[arg-type]
     await asyncio.wait_for(port.start(rig.logins["alice"], owner="alice"), 15)
     return port, inner
@@ -228,6 +236,10 @@ async def test_a_stale_record_still_names_the_person_and_approves_nothing(
     def bridge(_payload: dict[str, Any]) -> Any:
         return _result([ask, p_fresh, p_stale, p_old, p_none])
 
+    # Judged live as not approving: history may only add to _unapproved, never lift this.
+    port._judge(("post", P1), "trusted", False)
+    port._judge(("reaction", P1, "✅", "trusted"), "trusted", False)
+
     async with Bridge(rig, bridge):
         try:
             posts = await port.channel_posts(WORK)
@@ -236,9 +248,9 @@ async def test_a_stale_record_still_names_the_person_and_approves_nothing(
             assert by_id[P2].user_id == "hu:stale"  # a stale record still names the person
             assert by_id[P4].user_id == "hu:norec"  # no record, still the bridge's anchor
             bad = await port.unapproved(posts)
-            assert ("post", P1) not in bad and ("post", ASK) not in bad
+            assert ("post", P1) in bad and ("post", ASK) not in bad  # the live key stays
             assert ("post", P2) in bad and ("post", P3) in bad and ("post", P4) in bad
-            assert ("reaction", P1, "✅", "hu:trusted") not in bad
+            assert ("reaction", P1, "✅", "hu:trusted") in bad  # the live key stays
             assert ("reaction", P2, "✅", "hu:stale") in bad
             assert ("reaction", P3, "✅", "hu:old") in bad
         finally:
@@ -246,18 +258,23 @@ async def test_a_stale_record_still_names_the_person_and_approves_nothing(
 
 
 async def test_a_channel_read_walks_next_while_more_and_dedupes(
-        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    """RT-6.42 step 11: the first request asks with the caller's per_page as `limit`, later
-    ones with the full page while `more`, from `next` (exclusive); a post in two pages is
-    read once, and a page whose cursor does not advance ends the read."""
+        rig: Rig, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture) -> None:
+    """RT-6.42 step 11: the first request asks with the caller's per_page as `limit` once,
+    later ones with the full page while `more`, from `next` (exclusive); a post in two pages is
+    read once, a page whose cursor does not advance ends the read, and a read still holding
+    `more` at the page cap says so (it carries the oldest window, not the newest)."""
     port, _inner = await _setup(rig, monkeypatch, [5])
-    p1 = _post(P1, anchor="", create_at=10)
-    p2 = _post(P2, anchor="", create_at=20)
-    p3 = _post(P3, anchor="", create_at=30)
+    base = _now() * 1000
+    since = base - 1000
+    p1 = _post(P1, anchor="", create_at=base)
+    p2 = _post(P2, anchor="", create_at=base + 1000)
+    p3 = _post(P3, anchor="", create_at=base + 2000)
+    next_ms = p2["create_at"] + 1
 
     def pages(payload: dict[str, Any]) -> Any:
-        if payload.get("since") == 10:
-            return _result([p1, p2], more=True, next_ms=21)
+        if payload.get("since") == since:
+            return _result([p1, p2], more=True, next_ms=next_ms)
         return _result([p2, p3])  # p2 again: the boundary of an exclusive cursor
 
     def endless(payload: dict[str, Any]) -> Any:
@@ -266,14 +283,16 @@ async def test_a_channel_read_walks_next_while_more_and_dedupes(
 
     try:
         async with Bridge(rig, pages) as fake:
-            got = await port.channel_posts(WORK, per_page=3, since_ms=10)
+            got = await port.channel_posts(WORK, per_page=3, since_ms=since)
             assert [p.id for p in got] == [P3, P2, P1]
-            assert [(q["since"], q["limit"]) for q in fake.asked] == [(10, 3), (21, 200)]
+            assert [(q["since"], q["limit"]) for q in fake.asked] == [(since, 3), (next_ms, 200)]
 
         async with Bridge(rig, endless) as fake:
-            got = await port.posts_after(10, channel_id=WORK)
+            with caplog.at_level(logging.WARNING, logger="mattermost_ai_agent_bus.nats_port"):
+                got = await port.posts_after(10, channel_id=WORK)
             assert [p.id for p in got] == [P1]  # deduped across the five pages
             assert len(fake.asked) == 5
+            assert "oldest window, not the newest" in caplog.text and "~home" in caplog.text
 
         async with Bridge(rig, lambda _p: _result([p1, p2, p3])) as fake:
             newest = await port.list_recent(channel_id=WORK, per_page=2)
@@ -344,5 +363,137 @@ async def test_with_the_switch_off_the_reads_are_mattermost_as_before(
             assert await port.reactions(mine.id) == []
             assert set(inner.log) == set(TRACKED)
             assert asked == []  # no history request
+        finally:
+            await port.stop()
+
+
+async def test_a_cursor_older_than_the_bridge_bound_is_clamped(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: a caller's `since` older than the bridge's 14 days (tasks.since_ms()
+    is exactly that) is clamped to the bound the bridge accepts, not refused."""
+    port, _inner = await _setup(rig, monkeypatch, [5])
+    asked: list[dict[str, Any]] = []
+
+    def bridge(payload: dict[str, Any]) -> Any:
+        asked.append(payload)
+        return _result([])
+
+    async with Bridge(rig, bridge):
+        try:
+            now = _now() * 1000
+            floor = now - 14 * 24 * 60 * 60 * 1000
+            await port.posts_after(floor, channel_id=WORK)
+            assert asked and asked[0]["since"] > floor
+            assert asked[0]["since"] <= now
+            await port.list_recent(channel_id=WORK, since_ms=floor)
+            assert asked[-1]["since"] > floor
+        finally:
+            await port.stop()
+
+
+async def test_a_forged_copy_is_no_copy_and_a_copys_reactions_count(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: a copy must be the bridge's (`bot` and the live author check), so a
+    member's forged `<prefix>nats_id` re-roots no approver's reply onto the NATS post it names.
+    The checked copy's reactions are the NATS post's, as the live path maps them."""
+    port, inner = await _setup(rig, monkeypatch, [5], bridge_bot="bridgebot")
+    base = _now() * 1000
+    alice = _account("alice-anchor", ALICE, name="alice")
+    mine = await port.post("an agent's post", channel_id=WORK)
+    prefix = port._s.props_prefix
+    copy = _post("k" * 26, message="an agent's post", bot=True, create_at=base - 3000,
+                 props={f"{prefix}nats_id": mine.id},
+                 reactions=[_reaction(alice, create_at=base - 2500)])
+    forged = _post(P4, message="a forged copy", anchor="mallory",
+                   account=_account("mallory", "f" * 26), create_at=base - 2000,
+                   props={f"{prefix}nats_id": mine.id})
+    to_copy = _post(P5, message="reply to the copy", anchor="alice-anchor", account=alice,
+                    create_at=base - 1000, root="k" * 26)
+    to_forged = _post("w" * 26, message="reply to the forged", anchor="alice-anchor",
+                      account=alice, create_at=base - 500, root=P4)
+
+    def bridge(_payload: dict[str, Any]) -> Any:
+        return _result([copy, forged, to_copy, to_forged])
+
+    async with Bridge(rig, bridge):
+        try:
+            posts = await port.channel_posts(WORK)
+            by_id = {p.id: p for p in posts}
+            assert "k" * 26 not in by_id  # the bridge's checked copy is dropped, NATS has it
+            assert by_id[P4].user_id == "hu:mallory"  # a person's post with a forged prop is kept
+            assert by_id[P5].root_id == mine.id  # a reply to the checked copy: the NATS post
+            assert by_id["w" * 26].root_id == P4  # a forged prop re-roots nothing
+            nat = by_id[mine.id]
+            assert [r.user_id for r in nat.reactions] == ["hu:alice-anchor"]
+            assert [r.post_id for r in nat.reactions] == [mine.id]
+            assert inner.log == []  # no Mattermost read for the channel
+        finally:
+            await port.stop()
+
+
+async def test_the_switch_gates_the_other_mattermost_reads(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: with the switch on, the unread watermark's copy pass and a person's
+    file read make no Mattermost read for the channel (the file count stays in the raw post)."""
+    port, inner = await _setup(rig, monkeypatch, [5], bridge_bot="bridgebot")
+    person = Post(id=P1, channel_id=WORK, user_id="hu:alice-anchor", message="with files")
+    port._note_mm(P1, HOME)  # as a live person's event does
+    try:
+        assert await port._with_files(person) is person
+        assert await port.copies_through(WORK, 0) == 0
+        assert "thread" not in inner.log and "channel_posts" not in inner.log
+    finally:
+        await port.stop()
+
+
+async def test_two_history_reads_do_not_overlap(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: one history request runs at a time (the bridge answers `busy` to a
+    second), so a port serializes its reads instead of provoking that answer."""
+    port, _inner = await _setup(rig, monkeypatch, [5])
+    active = 0
+    peak = 0
+
+    async def bridge(_payload: dict[str, Any]) -> Any:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        return _result([])
+
+    async with Bridge(rig, bridge):
+        try:
+            await asyncio.gather(port.posts_after(1, channel_id=WORK),
+                                 port.posts_after(1, channel_id=WORK))
+            assert peak == 1
+        finally:
+            await port.stop()
+
+
+async def test_a_malformed_answer_drops_what_does_not_hold_together(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: a post without a Mattermost channel id or a time is dropped, never
+    raised; a thread answer whose root is no id of its posts is an empty thread, never
+    Mattermost's."""
+    port, _inner = await _setup(rig, monkeypatch, [5])
+    base = _now() * 1000
+    good = _post(P1, anchor="", create_at=base - 2000)
+    bad_time = _post(P2, anchor="", create_at=base - 1000)
+    bad_time["create_at"] = "soon"
+    bad_channel = _post(P3, anchor="", create_at=base - 500)
+    bad_channel["channel_id"] = "nope"
+
+    def bridge(payload: dict[str, Any]) -> Any:
+        if "thread" in payload:
+            return {"v": 1, "channel": HOME, "channel_id": WORK, "thread": "nope", "posts": [good]}
+        return _result([good, bad_time, bad_channel])
+
+    async with Bridge(rig, bridge):
+        try:
+            posts = await port.channel_posts(WORK)
+            assert [p.id for p in posts] == [P1]
+            thread = await port.thread(P1)
+            assert thread.root_id == P1 and thread.posts == ()
         finally:
             await port.stop()

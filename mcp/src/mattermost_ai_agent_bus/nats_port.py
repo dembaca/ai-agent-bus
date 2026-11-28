@@ -550,6 +550,7 @@ class NatsPort:
         self._closed_read: frozenset[str] = frozenset()
         self._closed_ids: set[str] = set()
         self._resolving = asyncio.Lock()
+        self._history_lock = asyncio.Lock()  # one history request at a time: the bridge answers busy to two
         self._posts: dict[str, OrderedDict[int, Post]] = {}  # channel -> seq -> post
         self._where: dict[int, str] = {}  # seq -> channel (stream sequences are global)
         self._reacts: dict[int, dict[tuple[str, str], int]] = {}  # seq -> (emoji, sender) -> ms
@@ -1317,13 +1318,17 @@ class NatsPort:
             return None
         if home is None or got[0] != home:
             return None
+        return got[1] if await self._bridge_author(home, got[1], post.user_id) else None
+
+    async def _bridge_author(self, home: str, seq: int, user_id: str) -> bool:
+        """Whether `user_id` is the author the bridge copies a NATS post of `home` under: the
+        bridge bot, or the bot `<bot prefix><sender>` of that post's own NATS sender (one the
+        session has). The one author check the live path uses (`_copy_of`), shared by history."""
         bridge = await self._bridge()
-        if bridge and post.user_id == bridge:
-            return got[1]
-        sender = self._sender_of(home, got[1]) if self._bot_prefix(home) else None
-        if sender is not None and await self._agent_bot(post.user_id, home, {sender}):
-            return got[1]
-        return None
+        if bridge and user_id == bridge:
+            return True
+        sender = self._sender_of(home, seq) if self._bot_prefix(home) else None
+        return sender is not None and await self._agent_bot(user_id, home, {sender})
 
     async def mirrored(self, post: Post) -> bool:
         """The bridge's copy of a NATS post of this session's NATS home (_copy_of): the
@@ -1390,8 +1395,8 @@ class NatsPort:
         this host's clock is not passed (a replica may still lack a post before it). A post
         in neither read can still be passed."""
         home = await self.nats_name(channel_id)
-        if home is None or not await self._copiers(home):
-            return 0
+        if home is None or self._piece5(home) or not await self._copiers(home):
+            return 0  # piece 5: a switched channel is read through the bridge, never on Mattermost
         raw = await self._people_read(home, lambda: self.inner.channel_posts(channel_id, since_ms=since_ms))
         if len(raw) >= COPY_READ_CAP:
             return 0
@@ -2016,15 +2021,21 @@ class NatsPort:
         own = bool(self.inner.bot_id) and post.user_id == self.inner.bot_id
         return own and abs(post.create_at / 1000 - ask.asked) <= ASK_AT_SLACK_SEC
 
-    def _judge(self, key: tuple[str, ...], anchor: str, approved: bool | None = None) -> None:
+    def _judge(self, key: tuple[str, ...], anchor: str, approved: bool | None = None, *,
+               lift: bool = True) -> None:
         """Remember how an event was judged as it came (RT-6.42 step 9): when `anchor` does not
         approve (_person_approves; or, when given, not `approved`) for the reads; when it does
-        too, which plan B piece 4 reads (`unapproved`)."""
+        too, which plan B piece 4 reads (`unapproved`). `lift=False` is the history read's: it
+        may only add a key to `_unapproved`, never lift a live event's judgement by today's
+        record (a forged or replayed answer would otherwise approve an answer held back)."""
         bus = self._live()
         if bus is None:
-            self._unapproved.pop(key, None)
+            if lift:
+                self._unapproved.pop(key, None)
             return
         if self._person_approves(anchor) if approved is None else approved:
+            if not lift:
+                return
             self._unapproved.pop(key, None)
             _remember(self._approved, key)
         else:
@@ -2069,7 +2080,11 @@ class NatsPort:
 
     async def _with_files(self, post: Post) -> Post:
         """A person's files stay on Mattermost (point 18): read by the post's Mattermost id,
-        so get_file fetches them; without them on a failed read (logged)."""
+        so get_file fetches them; without them on a failed read (logged). With piece 5 on for
+        the post's channel, no Mattermost read: the count in the raw post stays."""
+        channel = self._mm_channel.get(post.id)
+        if channel is not None and self._piece5(channel):
+            return post
         try:
             thread = await self.inner.thread(post.id)
             found = next((p for p in thread.posts if p.id == post.id), None)
@@ -2175,22 +2190,30 @@ class NatsPort:
         return [self._shown(ch, seq) for seq in sorted(self._posts.get(ch, {}))]
 
     # --- people's history through the bridge (plan B piece 5b, RT-6.42 step 11) ---------------
-    def _history_since(self, since_ms: int | None) -> int:
-        """The `since` a channel read asks with: the caller's cursor, or the bridge's 14-day
-        bound when there is none (a 0 cursor means all the bridge may read)."""
-        if since_ms is not None and since_ms > 0:
-            return int(since_ms)
+    def _history_bound(self) -> int:
+        """The oldest `since` the bridge reads: 14 days back, a minute inside its floor so its
+        own clock never refuses the first read."""
         bus = self._live()
         now = max(time.time(), bus.server_now if bus is not None else 0.0)
         return max(0, int(now * 1000) - HISTORY_MAX_AGE_MS + HISTORY_MARGIN_MS)
+
+    def _history_since(self, since_ms: int | None) -> int:
+        """The `since` a channel read asks with: the caller's cursor, but never older than the
+        bridge's 14-day bound (`tasks.since_ms()` is exactly 14 days, which the bridge refuses);
+        the bound itself without a cursor."""
+        bound = self._history_bound()
+        if since_ms is not None and since_ms > 0:
+            return max(int(since_ms), bound)
+        return bound
 
     async def _history(self, channel: str, *, since: int | None = None, thread: str = "",
                        limit: int = HISTORY_LIMIT) -> tuple[Mapping[str, Any] | None, list[Any]]:
         """One history request, its parts collected: the last result and every part's posts.
 
         `since` is a channel read's lower bound, `thread` a Mattermost post id's thread; the
-        bridge refuses both together. A failed or malformed answer raises, which the reads turn
-        into nothing: never Mattermost for a channel whose people are on the bus.
+        bridge refuses both together. One request runs at a time (the bridge answers `busy` to
+        a second read). A failed or malformed answer raises, which the reads turn into nothing:
+        never Mattermost for a channel whose people are on the bus.
         """
         bus = self._live()
         if bus is None or getattr(bus, "_nc", None) is None:
@@ -2201,7 +2224,8 @@ class NatsPort:
         else:
             payload["since"] = int(since or 0)
         payload["limit"] = max(1, min(int(limit), HISTORY_LIMIT))
-        answer = await bridge_requests.request(cast(NatsBus, bus), "history", payload)
+        async with self._history_lock:
+            answer = await bridge_requests.request(cast(NatsBus, bus), "history", payload)
         parts: Any = answer.get("parts") if isinstance(answer, Mapping) and "parts" in answer else [answer]
         if not isinstance(parts, list) or not parts:
             raise _HistoryError("the bridge's history answer has no parts")
@@ -2219,21 +2243,29 @@ class NatsPort:
             last = result
         return last, posts
 
-    def _history_copies(self, channel: str, raws: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    async def _history_copies(self, channel: str,
+                              raws: Sequence[Mapping[str, Any]]) -> dict[str, str]:
         """The bridge's copies in an answer that mirror a NATS post this session has: the
-        copy's Mattermost id -> the NATS post id. A person's reply to such a copy is threaded
-        under the NATS post, as a live person's event is (its `root`)."""
+        copy's Mattermost id -> the NATS post id. A copy must be the bridge's: the answer marks
+        its author a bot (`bot`) and the author check of the live path (`_bridge_author`)
+        passes; a member's post with a forged `<prefix>nats_id` is no copy, so a reply to it
+        is not re-rooted onto the NATS post it names."""
         out: dict[str, str] = {}
         for raw in raws:
+            if raw.get("bot") is not True:
+                continue
             props = raw.get("props")
             if not isinstance(props, Mapping):
                 continue
             got = parse_post_id(str(props.get(f"{self._s.props_prefix}{_NATS_ID}", "")))
             if got is None or got[0] != channel or not self._on_nats(channel, got[1]):
                 continue
-            pid = raw.get("id")
-            if isinstance(pid, str) and pid:
-                out[pid] = post_id(channel, got[1])
+            raw_id = _text(raw, "id")
+            if not raw_id:
+                continue
+            if not await self._bridge_author(channel, got[1], _text(raw, "user_id")):
+                continue
+            out[raw_id] = post_id(channel, got[1])
         return out
 
     @staticmethod
@@ -2284,17 +2316,18 @@ class NatsPort:
             if not isinstance(row, Mapping):
                 continue
             emoji = _text(row, "emoji_name")
-            if not emoji:
-                continue
+            create_at = row.get("create_at")
+            if not emoji or isinstance(create_at, bool) or not isinstance(create_at, int):
+                continue  # a reaction without its emoji or time is no reaction (strictness)
             anchor = _text(row, "anchor") or natsbus.UNBOUND
             record = self._history_record(row, anchor, str(row.get("user_id") or ""))
             uid = person_id(anchor)
             name = record.get("name") if record is not None else None
             self._person_names.setdefault(uid, str(name or anchor))
             self._judge(("reaction", post_id, emoji, anchor), anchor,
-                        self._history_approves(record, anchor))
+                        self._history_approves(record, anchor), lift=False)
             out.append(Reaction(user_id=uid, post_id=post_id, emoji_name=emoji,
-                                create_at=int(row.get("create_at") or 0)))
+                                create_at=create_at))
         return out
 
     def _history_post(self, channel: str, raw: Mapping[str, Any],
@@ -2311,22 +2344,29 @@ class NatsPort:
         if not isinstance(pid, str) or not pid:
             return None
         channel_id = _text(raw, "channel_id")
+        expected = (self._ids or {}).get(channel, "")
+        if not _ID.fullmatch(channel_id) or (expected and channel_id != expected):
+            return None  # no Mattermost id, or another channel's: no post of this read
+        create_at = raw.get("create_at")
+        if isinstance(create_at, bool) or not isinstance(create_at, int):
+            return None  # a post without a time is no post of the history
         anchor = _text(raw, "anchor")
         record = self._history_record(raw, anchor, str(raw.get("user_id") or ""))
-        reactions = tuple(self._history_reaction_list(channel, pid, raw))
+        target = copies.get(pid, pid)  # a copy's reactions are the NATS post's
+        reactions = tuple(self._history_reaction_list(channel, target, raw))
         if anchor and not raw.get("bot"):
             # A person's post: the live path's shape, Mattermost's props dropped.
             uid = person_id(anchor)
             name = record.get("name") if record is not None else None
             self._person_names.setdefault(uid, str(name or anchor))
-            self._judge(("post", pid), anchor, self._history_approves(record, anchor))
+            self._judge(("post", pid), anchor, self._history_approves(record, anchor), lift=False)
             root = _text(raw, "root_id")
             body: dict[str, Any] = {"id": pid, "channel_id": channel_id,
                                     "root_id": copies.get(root, root), "user_id": uid,
-                                    "create_at": int(raw.get("create_at") or 0),
+                                    "create_at": create_at,
                                     "message": str(raw.get("message") or ""), "props": {}}
-            if raw.get("edit_at"):
-                body["edit_at"] = int(raw["edit_at"])
+            if isinstance(raw.get("edit_at"), int) and not isinstance(raw.get("edit_at"), bool):
+                body["edit_at"] = raw["edit_at"]
             if isinstance(raw.get("file_count"), int) and not isinstance(raw.get("file_count"), bool):
                 body["file_count"] = raw["file_count"]
         elif raw.get("bot"):
@@ -2335,23 +2375,25 @@ class NatsPort:
         else:
             # An account bound to nobody: a person over NATS under `-`, as the live path has it.
             uid = person_id(natsbus.UNBOUND)
-            self._judge(("post", pid), natsbus.UNBOUND, False)
+            self._judge(("post", pid), natsbus.UNBOUND, False, lift=False)
             root = _text(raw, "root_id")
             body = {"id": pid, "channel_id": channel_id, "root_id": copies.get(root, root),
-                    "user_id": uid, "create_at": int(raw.get("create_at") or 0),
+                    "user_id": uid, "create_at": create_at,
                     "message": str(raw.get("message") or ""), "props": {}}
-            if raw.get("edit_at"):
-                body["edit_at"] = int(raw["edit_at"])
+            if isinstance(raw.get("edit_at"), int) and not isinstance(raw.get("edit_at"), bool):
+                body["edit_at"] = raw["edit_at"]
             if isinstance(raw.get("file_count"), int) and not isinstance(raw.get("file_count"), bool):
                 body["file_count"] = raw["file_count"]
         base = Post(id=pid, channel_id=channel_id, root_id=str(body.get("root_id") or ""),
-                    user_id=str(body.get("user_id") or ""), create_at=int(body.get("create_at") or 0),
+                    user_id=str(body.get("user_id") or ""), create_at=create_at,
                     message=str(body.get("message") or ""), raw=MappingProxyType(dict(body)))
         post = self.inner.with_links(base)  # the adapter's one mapping of Mattermost's JSON
         if is_person(post.user_id):
             post = dataclasses.replace(post, title="")  # a person's post is no ask of ours
         self._note_mm(pid, channel)
         post = dataclasses.replace(post, reactions=reactions)
+        if pid in copies:
+            self._add_history_reactions(copies[pid], reactions)  # a copy's are the NATS post's
         if is_person(post.user_id) and parse_post_id(post.root_id) and self._piece6(channel):
             # Plan B piece 6 (RT-6.11): a person's reply in the thread of a NATS post is read
             # with that thread, as a live one is (Mattermost has it under the copy's id).
@@ -2359,6 +2401,22 @@ class NatsPort:
             while len(self._person_replies) > self._memory:
                 self._person_replies.popitem(last=False)
         return post
+
+    def _add_history_reactions(self, target: str, reactions: Sequence[Reaction]) -> None:
+        """The reactions of a checked copy are the NATS post's, as a live person's reaction on
+        one is (`_on_person`): keep them in the memory's reaction bucket, so the post's read
+        shows them after `_unmirrored` drops the copy."""
+        got = parse_post_id(target)
+        if got is None:
+            return
+        ch, seq = got
+        if ch not in self._posts or seq not in self._posts[ch]:
+            return  # the NATS post is not in the memory: nothing to show them on
+        bucket = self._reacts.setdefault(seq, {})
+        for reaction in reactions:
+            key = (reaction.emoji_name, reaction.user_id)
+            if key in bucket or len(bucket) < MAX_REACTIONS:
+                bucket[key] = reaction.create_at
 
     async def _history_posts(self, channel: str, *, since_ms: int | None, per_page: int | None,
                              pages: int = HISTORY_PAGES) -> list[Post]:
@@ -2372,12 +2430,15 @@ class NatsPort:
         if per_page is not None and per_page <= 0:
             return []
         since = self._history_since(since_ms)
+        # The first request asks with the caller's per_page once; later pages ask the full page,
+        # since the bridge answers the OLDEST window from `since` on.
         limit = HISTORY_LIMIT if per_page is None else min(max(1, per_page), HISTORY_LIMIT)
         raws: list[Mapping[str, Any]] = []
         seen: set[str] = set()
         cursor = since
+        more_left = False
         try:
-            for _ in range(max(0, pages)):
+            for page in range(max(0, pages)):
                 last, got = await self._history(channel, since=cursor, limit=limit)
                 if last is None:
                     break
@@ -2390,41 +2451,56 @@ class NatsPort:
                     seen.add(pid)
                     raws.append(raw)
                 more = last.get("more") is True
-                nxt = last.get("next")
-                if not isinstance(nxt, int) or isinstance(nxt, bool) or nxt <= cursor:
-                    if more:
-                        log.warning("nats: the history read of ~%s says more but names no cursor", channel)
-                    break
                 if not more:
                     break
+                nxt = last.get("next")
+                if not isinstance(nxt, int) or isinstance(nxt, bool) or nxt <= cursor:
+                    log.warning("nats: the history read of ~%s says more but names no cursor", channel)
+                    break
                 cursor = nxt
+                if page + 1 >= max(0, pages):
+                    more_left = True  # the page cap, with posts still past it
+                    break
                 limit = HISTORY_LIMIT  # reach the newest side of the oldest-first answer
         except Exception as exc:  # noqa: BLE001 — the read is empty, never Mattermost
             log.warning("nats: the history read of ~%s failed (%s): nothing read",
-                        channel, type(exc).__name__)
+                        channel, str(exc)[:200])
             return []
-        copies = self._history_copies(channel, raws)
-        posts = [post for post in (self._history_post(channel, raw, copies) for raw in raws)
-                 if post is not None]
+        if more_left:
+            log.warning("nats: the history read of ~%s stopped at %d pages (cursor %d) with more "
+                        "remaining: this is the oldest window, not the newest",
+                        channel, pages, cursor)
+        try:
+            copies = await self._history_copies(channel, raws)
+            posts = [post for post in (self._history_post(channel, raw, copies) for raw in raws)
+                     if post is not None]
+        except Exception as exc:  # noqa: BLE001 — a malformed answer maps to nothing
+            log.warning("nats: the history read of ~%s did not map (%s): nothing read",
+                        channel, str(exc)[:200])
+            return []
         if since_ms is not None and since_ms > 0:
             posts = [post for post in posts if post.create_at >= since_ms]  # since, as Mattermost's
         return posts
 
     async def _history_thread(self, channel: str, post_id: str) -> Thread:
         """A person's thread from the bridge: the answer's root and posts in Mattermost's
-        order. A failed or malformed answer is an empty thread, never Mattermost's."""
+        order. A failed or malformed answer (a root that is no Mattermost id of its posts) is
+        an empty thread, never Mattermost's."""
         try:
             last, got = await self._history(channel, thread=post_id, limit=HISTORY_LIMIT)
             raws = [raw for raw in got if isinstance(raw, Mapping)]
-            copies = self._history_copies(channel, raws)
+            copies = await self._history_copies(channel, raws)
             posts = [post for post in (self._history_post(channel, raw, copies) for raw in raws)
                      if post is not None]
         except Exception as exc:  # noqa: BLE001 — nothing read, never Mattermost
             log.warning("nats: the history read of thread %s in ~%s failed (%s): nothing read",
-                        post_id, channel, type(exc).__name__)
+                        post_id, channel, str(exc)[:200])
             return Thread(post_id)
-        root = last.get("thread") if last is not None else ""
-        root = root if isinstance(root, str) and root else post_id
+        root = _text(last, "thread") if last is not None else ""
+        if not _ID.fullmatch(root) or not any(p.id == root for p in posts):
+            log.warning("nats: the history thread of %s in ~%s names no root of its posts: "
+                        "nothing read", post_id, channel)
+            return Thread(post_id)
         self._note_mm(root, channel)
         return Thread(root, order=tuple(p.id for p in posts), posts=tuple(posts))
 
@@ -2435,7 +2511,7 @@ class NatsPort:
             _, got = await self._history(channel, thread=post_id, limit=HISTORY_LIMIT)
         except Exception as exc:  # noqa: BLE001 — nothing read, never Mattermost
             log.warning("nats: the history read of reactions on %s in ~%s failed (%s): nothing read",
-                        post_id, channel, type(exc).__name__)
+                        post_id, channel, str(exc)[:200])
             return []
         raw = next((row for row in got if isinstance(row, Mapping) and row.get("id") == post_id), None)
         return self._history_reaction_list(channel, post_id, raw) if raw is not None else []
@@ -2446,6 +2522,9 @@ class NatsPort:
             channel = self._mm_channel.get(post_id)
             if channel is not None and self._piece5(channel):
                 return await self._history_thread(channel, post_id)
+            # The id names no channel (the bridge's request needs one) or its people are not
+            # on the bridge: Mattermost's read, as before. Only a switched channel's post the
+            # session never read can still be read here.
             found = await self.inner.thread(post_id)
             if self._closed12 and any([await self._closed_channel(p.channel_id) for p in found.posts]):
                 return Thread(post_id)  # a closed channel's thread reads empty (piece 12)
@@ -2546,6 +2625,8 @@ class NatsPort:
                 return await self._history_reactions(channel, post_id)
             if self._closed12 and await self._closed_channel(await self.inner.post_channel_id(post_id)):
                 return []  # a post of a closed channel has no reactions to read (piece 12)
+            # No cached channel, or no switch there: the bridge's request needs a channel, so
+            # an id the session never read (a switched channel's included) stays Mattermost's.
             return await self.inner.reactions(post_id)
         ch, seq = got
         self._home(ch)
