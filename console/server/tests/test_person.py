@@ -447,7 +447,7 @@ async def test_no_reader_before_a_login_and_one_per_login(console: Console) -> N
     # the fleet the session shows is its own reader's
     cb = dialer.conns[0].subs[view.reader.deliver_presence]
     await cb(online("agent-a", ack("svc-own-name", 2)))
-    status, _h, body = await get(console, "/v1/graph", cookie=cookie)
+    status, _h, body = await get(console, "/v1/groups?by=none&scope=everyone", cookie=cookie)
     assert status == 200 and "agent-a" in json.dumps(json.loads(body))
     assert console.fleet.cards() == []             # the stand-in stays empty
     status, _h, body = await get(console, "/v1/me", cookie=cookie)

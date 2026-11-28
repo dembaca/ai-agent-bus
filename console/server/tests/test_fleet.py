@@ -111,11 +111,6 @@ def test_crown_minimum_by_itself() -> None:
     (card,) = f.cards()
     assert card["crown"] is True
     assert card["home"] == "dev"
-    graph = f.graph()
-    kinds = {n["id"]: n["kind"] for n in graph["nodes"]}
-    assert kinds == {"person:dembaca": "person", "dev": "channel", "b": "agent"}
-    edges = {(e["from"], e["to"], e["kind"]) for e in graph["edges"]}
-    assert ("b", "dev", "coordinates") in edges
 
 
 def test_attested_owner_names_the_agent() -> None:
@@ -266,26 +261,6 @@ def test_the_attestation_expires_by_the_floored_clock() -> None:
     f.last_server_now_wall = (staged[0], staged[1] - 10000)
     (card,) = f.cards()
     assert card["for"] == "dembaca"  # fell back to the presence owner
-    graph = f.graph()
-    b_node = next(n for n in graph["nodes"] if n["id"] == "b")
-    assert "crown" not in b_node or b_node.get("crown") is False
-    # the graph carries the attestation's owner while it is live: before
-    # the aging, the edge from b to somebody-else exists; after, only the
-    # presence owner's remains
-    expired_edges = {e["to"] for e in graph["edges"]
-                     if e["from"] == "b" and e["kind"] == "trusts"}
-    assert "somebody-else" not in expired_edges
-    # the pre-expiry form: a fresh fleet's graph has the attested owner
-    g2 = Fleet()
-    feed(g2, (presence("c", "dembaca", "online")[0],
-              presence("c", "dembaca", "online")[1],
-              ack("PRESENCE", "console", 1, 1, 1000.0)))
-    feed(g2, (atestation("c", "somebody-else", [], exp=99000.0)[0],
-              atestation("c", "somebody-else", [], exp=99000.0)[1],
-              ack("PRESENCE", "console", 2, 2, 1001.0)))
-    live_edges = {e["to"] for e in g2.graph()["edges"]
-                  if e["from"] == "c" and e["kind"] == "trusts"}
-    assert "person:somebody-else" in live_edges
 
 
 def test_cards_show_the_bot_name_the_presence_states_not_the_bus_id() -> None:
@@ -310,8 +285,6 @@ def test_cards_show_the_bot_name_the_presence_states_not_the_bus_id() -> None:
     # not on the wire the console reads: shown as unknown, never guessed
     assert cards[one]["harness"] is None and cards[one]["model"] == ""
     assert cards[one]["task"] == "" and cards[one]["openAsks"] is None
-    graph = {n["id"]: n for n in f.graph()["nodes"]}
-    assert graph[two]["label"] == "agent-himalia-nats-pilo-772844"
 
 
 def name_presence(agent: str, status: str, label: str, seq: int,
@@ -512,7 +485,7 @@ def test_the_last_post_shows_only_on_own_or_trusted_cards() -> None:
     assert strip == [{k: v for k, v in c.items() if k != "lastPostAt"} for c in f.cards()]
 
 
-# --- the graph's person nodes and the card's home (#147, 716d72's review) -------------
+# --- the card's home (#147, 716d72's review) -------------
 
 AGENT_A = "a" * 25
 AGENT_B = "b" * 25
@@ -525,50 +498,6 @@ def attestation_of(agent: str, anchor: str, name: str, exp: float = 1e12) -> tup
     body = {"v": 1, "agent": agent, "owner": {"anchor": anchor, "name": name},
             "trusted": [], "cut": False, "iat": 1, "exp": int(exp)}
     return f"presence.attest.{agent}.v1", json.dumps(body).encode()
-
-
-def test_the_operators_node_is_marked_by_its_anchor_in_subject_form() -> None:
-    """716d72's finding 1: the login record's anchor is already subject-formed ("." as
-    "~"), so it is compared as it is — a dotted anchor marks its node, and no owner-less
-    token is ever collected to match one."""
-    from mattermost_ai_agent_bus.natsbus import encode_claim, owner_token
-
-    f = Fleet()
-    feed(f,
-         (*presence(AGENT_A, "first~last"), ack("PRESENCE", "console", 1, 1, 1000.0)),
-         # the attestation carries the name form, the login's own record the subject form
-         (*attestation_of(AGENT_A, "first.last", "first.last"), ack("PRESENCE", "console", 2, 2, 1001.0)),
-         (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 3, 3, 1002.0)))
-    marked = [n for n in f.graph("first~last")["nodes"] if n.get("you")]
-    assert marked == [{"id": "person:first~last", "kind": "person", "label": "first.last",
-                       "you": True}]
-    # no anchor, the no-owner token and another anchor mark nothing
-    assert owner_token("first~last") == "-"  # the subject form is not to be re-tokenised
-    for anchor in (None, "", "-", "first.last"):
-        assert not any(n.get("you") for n in f.graph(anchor)["nodes"])
-
-
-def test_two_people_of_one_name_stay_two_nodes() -> None:
-    """716d72's finding 2: the node id and the trusts edge are the anchor token, the name
-    only labels — two owners of one name are two nodes, and only the operator's is `you`."""
-    from mattermost_ai_agent_bus.natsbus import encode_claim
-
-    f = Fleet()
-    feed(f,
-         (*presence(AGENT_A, "sub-alice"), ack("PRESENCE", "console", 1, 1, 1000.0)),
-         (*presence(AGENT_B, "sub-bob"), ack("PRESENCE", "console", 2, 2, 1001.0)),
-         # the directory's anchors differ, the name both carry is "alice"
-         (*attestation_of(AGENT_A, "sub-alice", "alice"), ack("PRESENCE", "console", 3, 3, 1002.0)),
-         (*attestation_of(AGENT_B, "sub-bob", "alice"), ack("PRESENCE", "console", 4, 4, 1003.0)),
-         (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 5, 5, 1004.0)),
-         (f"presence.member.dev.{AGENT_B}", encode_claim(), ack("PRESENCE", "console", 6, 6, 1005.0)))
-    graph = f.graph("sub-alice")
-    people = [n for n in graph["nodes"] if n["kind"] == "person"]
-    assert [(n["id"], n["label"], n.get("you")) for n in people] == [
-        ("person:sub-alice", "alice", True), ("person:sub-bob", "alice", None)]
-    assert len([n for n in people if n.get("you")]) == 1
-    targets = {e["to"] for e in graph["edges"] if e["kind"] == "trusts"}
-    assert targets == {"person:sub-alice", "person:sub-bob"}
 
 
 def test_the_home_is_a_claim_of_its_own_not_only_the_holders() -> None:
@@ -628,28 +557,3 @@ def test_a_claim_of_a_channel_it_left_is_no_home() -> None:
          (f"presence.crown.gone.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 2, 2, 1001.0)),
          (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 3, 3, 1002.0)))
     assert (f.home_of(AGENT_A), f.guests_of(AGENT_A)) == ("dev", [])
-    graph = f.graph()
-    assert {e["to"] for e in graph["edges"] if e["kind"] == "coordinates"} == {"dev"}
-
-
-def test_an_owner_named_like_a_channel_gets_its_own_node() -> None:
-    """716d72's delta review: the person's id carries `person:`, the channel's its name,
-    so an owner `dev` beside a channel `dev` is two nodes with two ids and the trusts
-    edge points at the person's."""
-    from mattermost_ai_agent_bus.natsbus import encode_claim
-
-    f = Fleet()
-    feed(f,
-         (*presence(AGENT_A, "dev"), ack("PRESENCE", "console", 1, 1, 1000.0)),
-         (*attestation_of(AGENT_A, "dev", "dev"), ack("PRESENCE", "console", 2, 2, 1001.0)),
-         (f"presence.member.dev.{AGENT_A}", encode_claim(), ack("PRESENCE", "console", 3, 3, 1002.0)))
-    graph = f.graph("dev")
-    nodes = {n["id"]: n for n in graph["nodes"]}
-    assert (nodes["person:dev"]["kind"], nodes["person:dev"]["label"]) == ("person", "dev")
-    assert nodes["person:dev"].get("you") is True
-    assert (nodes["dev"]["kind"], nodes["dev"]["label"]) == ("channel", "dev")
-    assert len(graph["nodes"]) == len(nodes)  # two nodes, and no id stands twice
-    assert (AGENT_A, "person:dev", "trusts") in {
-        (e["from"], e["to"], e["kind"]) for e in graph["edges"]}
-    assert (AGENT_A, "dev", "coordinates") in {
-        (e["from"], e["to"], e["kind"]) for e in graph["edges"]}
