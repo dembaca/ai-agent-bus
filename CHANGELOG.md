@@ -15,7 +15,8 @@ its pieces 1 to 13, each behind its switch per home or channel and off by defaul
 the decision whether a session needs a Mattermost bot (piece 14a), which registers
 every bot as before until piece 14c; the update notice from the bridge's signed
 release record (piece 14b), read only with `CB_RECORDS_URL` set; and the kept state
-keyed by the NATS name (piece 14c-1), only with piece 2 on. With the switches off
+keyed by the NATS name (piece 14c-1) with its follow-up, the hardened takeover (piece
+14c-1b), both only with piece 2 on. Every switch is off. With the switches off
 every session still registers its Mattermost bot. The old setting names of 0.103.0
 still work in this release, with their deprecation warning; they go in 0.106.0, the
 cutover release (the owner's decision of 2026-11-28, which moved them from 0.105.0;
@@ -55,7 +56,7 @@ What changes for everyone, with every switch off:
 - `CB_NATS_HOMES` and `MM_NATS_HOMES` set to different values refuse the bus in the
   start hook too, as they did in the MCP server already (#313).
 - Before plan B piece 2 or piece 14c goes on anywhere later, every host runs 0.105.0
-  or newer, its hooks and MCP server of one version: a server before this release
+  or newer, its hooks and MCP server of one version (#337): a server before this release
   writes no `CB_STATE_KEY` (#323, #328).
 
 ### Added
@@ -96,6 +97,27 @@ What changes for everyone, with every switch off:
   Switch off: every file name is as before. What differs: pi's server is passed
   `PI_SESSION_ID` (blank without one), and the scripts take a state key in the same two forms
   as the server (a bot id of 26 `[a-z0-9]`, or a NATS name of 25 `[a-z2-7]`).
+
+- **The takeover hardened: plan B piece 14c-1b** (#244, RT-6.2 step 9, RT-6.1 step 7),
+  behind piece 2's switch as before. The sweep probes `key-<name>.lock` with a shared lock
+  instead of the exclusive one, and the server tries `key-<name>.lock` and a predecessor's
+  lock again three times 50 ms apart, so a probe or another start's claim no longer costs a
+  start its name or its predecessor. The counter move claims on the source side
+  (`<source>.moving-<pid>`), the new name's marker gets its `CB_TIE`, bot id and the intent
+  `CB_TAKING=<source>` before the copy, an append into an existing file is journaled first
+  (`CB_APPENDING=<claim>:<size>`), and the next start finishes a takeover a kill interrupted
+  under the names' locks: a SIGKILL at any step loses no counter line and doubles none.
+  Without a bot on the workspace tie only the server holding `tie-<16 hex>.lock` takes a
+  name over; a second one in the same workspace starts fresh under its own name, ties
+  nothing, and `bus_info` says so. A predecessor without a lock file is gone once its marker
+  is an hour old (was a day) or none of its bots has a session file left. `mm_state_key`
+  ignores the `CB_STATE_KEY` of an endpoint file whose server is gone (`CB_BUS_PID`, no such
+  process). A kept file that is not UTF-8 is skipped with a warning instead of stopping the
+  latch. The way back (piece 2 switched off after the counters moved to the name) leaves
+  those counters unpublished until piece 2 is on again and a takeover moves them, or the
+  sweep's day rule removes them. Switch off: nothing differs but the sweep's shared probe,
+  its sweeping of a bot's `stats-<bot id>.jsonl.moving-<pid>`, and `mm_state_key`'s check of
+  the server's pid.
 
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads

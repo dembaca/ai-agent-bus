@@ -370,7 +370,7 @@ most names of the table above; those are renamed there.
 | `MM_REL_GIT_DIR` | `CB_REL_GIT_DIR` | no | `bin/mm-agent-host-install.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-release-check.sh` | internal; exported by `bin/mm-agent-release-check.sh` |
 | `MM_REL_TMP` | `CB_REL_TMP` | no | `bin/mm-agent-host-install.sh`, `bin/mm-agent-lib.sh`, `bin/mm-agent-release-check.sh` | internal; exported by `bin/mm-agent-release-check.sh` |
 
-#### Keys in the session files (14)
+#### Keys in the session files (16)
 
 These are keys in the files the bus writes into the host's state directory
 (`KEY=value` lines), not variables a person sets. A kept session file lives
@@ -385,6 +385,8 @@ either (see [Values the bus writes for itself](#values-the-bus-writes-for-itself
 | `MM_BUS_PID` | `CB_BUS_PID` | no | `hookapi.py`; `bin/mm-agent-sweep.sh` | |
 | `MM_CLAUDE_SID` | `CB_CLAUDE_SID` | no | `hosted.py`; `adapters/corral/90-mm-session-stop.sh` | in `claude-sid.env` |
 | `CB_COPIED_FROM` | `CB_COPIED_FROM` | no | `session_file.py`; `bin/mm-agent-sweep.sh` | new with plan B piece 2b: no old spelling, in `copied-<name>.env`, one line per bot id copied from (RT-6.2 step 9); the sweep ties a NATS name to its bots by it (RT-6.1 step 7) |
+| `CB_APPENDING` | `CB_APPENDING` | no | `session_file.py` | new with plan B piece 14c-1b: no old spelling, in `copied-<name>.env`, `<claim file>:<size>`: an append of a counter claim into the name's `stats-` file, journaled before it, so the next start tells a done append from one a kill cut short (RT-6.2 step 9) |
+| `CB_TAKING` | `CB_TAKING` | no | `session_file.py` | new with plan B piece 14c-1b: no old spelling, in `copied-<name>.env`, the key whose state the name is taking over; written before the copy, removed after it, so a start finds a takeover a kill interrupted and finishes it (RT-6.2 step 9) |
 | `CB_TAKEN_BY` | `CB_TAKEN_BY` | no | `session_file.py`; `bin/mm-agent-sweep.sh` | new with plan B piece 14c-1: no old spelling, in `copied-<name>.env`, the name of the later start of the session that took the name's state over (RT-6.2 step 9); the sweep ties such a name to no bot (RT-6.1 step 7) |
 | `CB_TIE` | `CB_TIE` | no | `session_file.py` | new with plan B piece 14c-1: no old spelling, in `copied-<name>.env`, `<harness>:<16 hex>` (`claude`, `opencode`, `pi` or `workspace`, then sha1 of the session id or the workspace, as `keyed_path` hashes it): which session the name served, for the takeover at its next start (RT-6.2 step 9) |
 | `MM_KEPT_CLAUDE_SID` | `CB_KEPT_CLAUDE_SID` | no | `adapters/corral/10-mm-session-start.sh`, `bin/mm-agent-lib.sh` | |
