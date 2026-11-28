@@ -2931,6 +2931,7 @@ async def test_an_answer_over_the_part_or_byte_cap_is_an_error(
         await sub.unsubscribe()
 
     monkeypatch.setattr(requests, "MAX_TOTAL", 40)
+    monkeypatch.setattr(requests, "FILE_TOTAL", 40)  # plan B piece 8: the kind "file" has its own cap
 
     async def too_big(msg: Any) -> None:
         body = json.loads(msg.data)
@@ -2943,7 +2944,7 @@ async def test_an_answer_over_the_part_or_byte_cap_is_an_error(
 
     sub = await rig.admin.subscribe("req.>", cb=too_big)
     try:
-        with pytest.raises(requests.RequestError, match="larger than 40 bytes"):
+        with pytest.raises(requests.RequestError, match="file answer is larger than its kind may be"):
             await requests.request(bus, "file", timeout=5)
     finally:
         await sub.unsubscribe()

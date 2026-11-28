@@ -460,7 +460,7 @@ async def test_upload_and_fetch_over_a_real_nats(rig: Any) -> None:
     bus, _ = await rig.agent("alice")
     data = b"\x89PNG\r\n\x1a\n" + os.urandom(PART) + os.urandom(10)  # two parts
     digest = hashlib.sha256(data).hexdigest()
-    uploaded = {"id": FILE_ID, "name": "chart.png", "size": len(data)}
+    uploaded = {"file_id": FILE_ID, "name": "chart.png", "size": len(data)}
 
     async def bridge(msg: Any) -> None:
         body = json.loads(msg.data)
@@ -472,10 +472,12 @@ async def test_upload_and_fetch_over_a_real_nats(rig: Any) -> None:
                                     json.dumps(answer).encode())
             return
         # the get flow: the metadata part, then one last part of bytes
-        first = dict(head, result=_meta(length=len(data), sha256=digest), last=False)
+        first = dict(head, result=_meta(length=len(data), sha256=digest, size=len(data)),
+                 part=1, last=False)
         await rig.admin.publish(f"deliver.{bus.name}.req.{body['request']}",
                                 json.dumps(first).encode())
-        second = dict(head, result={"data": base64.b64encode(data).decode("ascii")}, last=True)
+        second = dict(head, result={"data": base64.b64encode(data).decode("ascii")}, part=2,
+                      last=True)
         await rig.admin.publish(f"deliver.{bus.name}.req.{body['request']}",
                                 json.dumps(second).encode())
 
@@ -484,7 +486,7 @@ async def test_upload_and_fetch_over_a_real_nats(rig: Any) -> None:
         info = await natsfiles.upload(bus, "home", "chart.png", data)
         assert info.id == FILE_ID and info.size == len(data)
         got = await natsfiles.fetch(bus, FILE_ID, "home")
-        assert got.meta["author"] == "u-carol" and got.meta["size"] == len(data)
+        assert got.meta["author"] == "carol" and got.meta["size"] == len(data)
     finally:
         await sub.unsubscribe()
 
