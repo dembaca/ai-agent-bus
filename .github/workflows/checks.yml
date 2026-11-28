@@ -40,6 +40,8 @@ jobs:
           python3 scripts/doc-check.py "${args[@]}"
 
   tests:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.py != 'false' }}
     runs-on: ubuntu-latest
     # The suite takes 7-8 min in CI. This bounds a hang (a stuck test once held
     # the runner to GitHub's 6 h default), with room for a slow runner.
@@ -56,6 +58,8 @@ jobs:
 
   mcp-python-311:
     name: MCP server on Python 3.11
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.py != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15   # the suite without the live NATS tests, ~2 min
     steps:
@@ -77,6 +81,8 @@ jobs:
 
   opencode-plugin:
     name: OpenCode plugin (node, API ${{ matrix.api }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.opencode != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # ~20 s each
     strategy:
@@ -105,6 +111,8 @@ jobs:
 
   pi-extension:
     name: pi extension (node)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.pi != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # ~10 s
     steps:
@@ -118,6 +126,8 @@ jobs:
 
   site:
     name: promo site builds (site/)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.site != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # ~20 s
     steps:
@@ -137,6 +147,8 @@ jobs:
 
   console:
     name: operator console builds (console/web)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.console != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # like the site job
     steps:
@@ -158,6 +170,8 @@ jobs:
 
   console-server:
     name: operator console server (console/server, real nats-server)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.console != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -229,41 +243,108 @@ jobs:
           docker rm -f console-test
           exit $status
 
-  # Whether this push touched console/ at all. A job of its own so the publish
-  # job below can be skipped whole: GitHub runs every job of a workflow, and
-  # checks.yml has no paths filter (it covers the repository).
-  console-changed:
-    name: did this push touch console/?
-    # Only main, a push or a manual run: a dispatch from a feature branch must
-    # not reach the publish job below, which moves :main.
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+  # Which areas this run touches, so a job runs only when something it reads
+  # changed. A job of its own, with `if:` on the others (not a `paths:` filter on
+  # the workflow): a skipped job counts as passed for a required check, and the
+  # publish job below needs one answer for a push. `docs` and `lint` always run.
+  #
+  # A pull request is diffed against its base; a push to main and a manual run
+  # run everything, as before. A changed file no area claims, and that is not
+  # pure documentation, makes every job run. Runtime texts (skills/, the hooks,
+  # the MCP server's instructions) are code.
+  changes:
+    name: which areas changed?
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      run: ${{ steps.changed.outputs.run }}
+      py: ${{ steps.areas.outputs.py }}             # tests, MCP server on Python 3.11
+      opencode: ${{ steps.areas.outputs.opencode }} # OpenCode plugin
+      pi: ${{ steps.areas.outputs.pi }}             # pi extension
+      site: ${{ steps.areas.outputs.site }}         # promo site
+      console: ${{ steps.areas.outputs.console }}   # console web and console server
+      publish: ${{ steps.areas.outputs.publish }}   # the console image (main only)
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
-          fetch-depth: 2   # the push's previous head, for the diff
-      - name: git diff against the previous head
-        id: changed
+          fetch-depth: 0   # the PR's base and a push's previous head, for the diff
+      - name: git diff against the base or the previous head
+        id: areas
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # a manual run of main publishes on purpose, as bridge.yml's does
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          py=false oc=false pi=false site=false con=false publish=false
+          all() { py=true oc=true pi=true site=true con=true; }
+          base=""
+          [ "$EVENT" = "pull_request" ] && base="$PR_BASE"
+          [ "$EVENT" = "push" ] && base="$PUSH_BEFORE"
+          have_base=false
+          if [ -n "$base" ] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            have_base=true
           fi
-          before="${{ github.event.before }}"
-          # mcp/ too: the image carries the package as console/server's path
-          # dependency, so a change there makes a new image as well.
-          if git cat-file -e "${before}^{commit}" 2>/dev/null &&
-             git diff --quiet "$before" HEAD -- console mcp .github/workflows/checks.yml; then
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "nothing under console/, mcp/ or this workflow changed; the image is not built again"
+          files=""
+          [ "$have_base" = true ] && files="$(git diff --no-renames --name-only "$base" HEAD)"
+          # A deleted file may be one a test or the doc map names: everything runs.
+          deleted=""
+          [ "$have_base" = true ] && deleted="$(git diff --no-renames --name-only --diff-filter=D "$base" HEAD)"
+          # the console image: console/ and mcp/ (its path dependency) or this file.
+          # A manual run of main publishes on purpose, as bridge.yml's does; so does
+          # a push whose previous head is gone.
+          if [ "$EVENT" = "workflow_dispatch" ] || [ "$have_base" != true ] ||
+             printf '%s\n' "$files" | grep -qE '^(console/|mcp/|\.github/workflows/checks\.yml$)'; then
+            publish=true
+          fi
+          if [ "$EVENT" != "pull_request" ] || [ "$have_base" != true ] || [ -n "$deleted" ]; then
+            all   # a push to main, a manual run, no base to diff, or a deleted file: everything
           else
-            echo "run=true" >> "$GITHUB_OUTPUT"
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              # an MCP test reads every tracked shell script, wherever it lies
+              case "$f" in *.sh|*.sh.example) py=true ;; esac
+              case "$f" in
+                .github/workflows/checks.yml) all ;;
+                .github/actions/*) py=true; con=true ;;
+                mcp/*) py=true; oc=true; pi=true; con=true ;;
+                # the plugin's test reads bin/mm-agent-lib.sh; pi imports the plugin
+                bin/*) py=true; oc=true; pi=true ;;
+                # the Python tests hash the plugins' sentences, scan opencode/**/*.ts and
+                # copy both directories; pi imports the OpenCode plugin
+                opencode/*) py=true; oc=true; pi=true ;;
+                pi/*) py=true; pi=true ;;
+                # the console image reads the version from plugin.json
+                .claude-plugin/*) py=true; con=true ;;
+                # the OpenCode and pi tests read SKILL.md
+                skills/*) py=true; oc=true; pi=true ;;
+                hooks/*|adapters/*|tests/*|scripts/*|pyproject*|uv.lock) py=true ;;
+                # tests read these as text (Go sources, the NATS configuration example)
+                services/*) py=true ;;
+                site/*) site=true ;;
+                # an MCP test reads the console's type file
+                console/web/src/api/types.ts) py=true; con=true ;;
+                console/*) con=true ;;
+                # read by the hook tests and the spec tests
+                docs/doc-map.toml|docs/env-names.md|docs/protocol.md|docs/arc42/06-*|docs/arc42/11-*) py=true ;;
+                # the console server's test quotes both word for word
+                docs/arc42/09-*) py=true; con=true ;;
+                CHANGELOG.md) con=true ;;
+                # pure documentation: the docs job is its check
+                docs/*) ;;
+                # no other path with a slash is claimed: it makes everything run
+                */*) all ;;
+                .gitignore) py=true ;;   # the installer test copies it
+                *.md) ;;
+                # lint's own configuration
+                ruff.toml|.shellcheckrc|LICENSE) ;;
+                *) all ;;
+              esac
+            done <<< "$files"
           fi
+          {
+            echo "py=$py"; echo "opencode=$oc"; echo "pi=$pi"; echo "site=$site"
+            echo "console=$con"; echo "publish=$publish"
+          } | tee -a "${GITHUB_OUTPUT:-/dev/stdout}"
 
   # The console image for the lab pilot (ADR-015): built from the repository
   # root, because its Dockerfile copies console/web and console/fixtures. The
@@ -274,8 +355,8 @@ jobs:
   # runs for a pull request.
   publish-console:
     name: publish the console image to GHCR
-    needs: [console, console-server, console-changed]
-    if: github.ref == 'refs/heads/main' && needs.console-changed.outputs.run == 'true'
+    needs: [console, console-server, changes]
+    if: github.ref == 'refs/heads/main' && needs.changes.outputs.publish == 'true'
     # One publish at a time: an older run must not move :main back after a
     # newer one.
     concurrency:
