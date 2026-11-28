@@ -121,6 +121,28 @@ before 0.5.0 are described in the git history.
   record that carries `crown` (`attest.py`), and `/agent-debug on full` now signs one, so update the hosts first) logs the view at each tick: claimants in order,
   members, standing, holder and why nobody stands.
 
+- **Plan B piece 12: guest channels and the lobby over NATS, behind a switch
+  that is off** (#244, ADR-014 phase 5, RT-6.22 step 7). An owner opts a guest
+  channel or the lobby in by listing it in `CB_NATS_HOMES` beside the home:
+  a session whose home runs over NATS then asks the login service for that
+  guest (`CB_MM_PROJECT_CHANNEL` after the home, at most 16) or the lobby
+  (`CB_MM_CHANNEL` when it is not the home) as well, since only a channel the
+  credential grants brings its plan B switch. With `CB_NATS_HOMES` naming the
+  home alone the hello is unchanged. With the channel's switch
+  `planb.on(12, channel)` on, read once the bus is up and latched with the
+  channel ids, that guest or the lobby runs like a home: its id comes from the
+  credential's channel record, `post_message(channel=…)` joins nothing in
+  Mattermost, posts, reads and reactions go over NATS, the membership is
+  announced there, and the wake rules of guest channels and the lobby apply to
+  the posts that come over NATS; no Mattermost call names the channel. A
+  channel switched on that the record names no id for is not reachable: it is
+  refused and its events are dropped, never sent to Mattermost instead. A guest
+  that stays on Mattermost stays as it is. For a channel asked for whose
+  switch is off the session drops what the login service delivers there and
+  behaves as before. Not moved with it: the join at the session start (the host hook and
+  `session_start` run before the switch is read), people's history there
+  (piece 5) and replies and reactions to a person's post (piece 7).
+
 - **Plan B piece 4: every check of a trusted human and of an agent's owner
   from the login service** (#244, ADR-014 phase 5, RT-6.41 step 6). With the
   piece's switch on for a home over NATS, the MCP server's trusted humans

@@ -10,7 +10,7 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -409,6 +409,9 @@ class MattermostAdapter:
     _guests: tuple[float, frozenset[str]] | None = field(default=None, repr=False, init=False)
     # Guest entries the session start could not join: name -> why (RT-6.22).
     guest_join_failures: dict[str, str] = field(default_factory=dict, repr=False, init=False)
+    # The lobby's id as the port around this adapter knows it (a NatsPort: the channel
+    # directory's for a lobby over NATS, plan B piece 12, RT-6.22 step 7); None: lobby_channel_id.
+    lobby_lookup: Callable[[], Awaitable[str]] | None = field(default=None, repr=False, init=False)
     _me: Me | None = field(default=None, repr=False, init=False)
     # Bumped whenever the identity changes (_take, session_end): a get_me that
     # started before must not cache the old bot's answer.
@@ -1775,7 +1778,7 @@ class MattermostAdapter:
                 and (c.name not in TEAM_DEFAULT_CHANNELS or c.name in named)}
         if team:
             team.discard(await self.work_channel_id())
-            for other in (self.lobby_channel_id, self._stats_channel_id):
+            for other in (self.lobby_lookup or self.lobby_channel_id, self._stats_channel_id):
                 try:
                     team.discard(await other())
                 except Exception as exc:  # noqa: BLE001 — not there: nothing to leave out
