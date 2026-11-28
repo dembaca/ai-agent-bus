@@ -726,13 +726,15 @@ def _release() -> dict[str, Any]:
     file, and no self-update line). Before the first check, the self-update
     line alone (RT-6.32), named by the version it names.
     older: the newest is older than this server's version, decided where the
-    line is, so the hook names no installer for it (RT-6.30 step 6)."""
+    line is, so the hook names no installer for it (RT-6.30 step 6).
+    source: "record" when the bridge's record gave the line, so the hook names
+    the marketplace rather than the host's installer (RT-6.30 step 8)."""
     if release.records_configured():
         state, _why = release.cached_record()
         text = release.record_line(state=state)
         if not (state and text):
             return {}
-        return {"release": {"newest": state.newest, "line": text,
+        return {"release": {"newest": state.newest, "line": text, "source": "record",
                             **({"older": True} if release.older(state) else {})}}
     state = release.read_state()
     text = release.line(state=state)
