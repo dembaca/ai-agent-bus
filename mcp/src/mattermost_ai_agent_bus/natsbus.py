@@ -1438,6 +1438,21 @@ FatalCallback = Callable[[NatsBusError], Awaitable[None] | None]
 DM_SINCE = "@dm"  # the key of `since` for direct messages (no channel name can look like it)
 
 
+def _drop_subscriptions(nc: Any) -> None:
+    """Cancel the message tasks of a closed client's subscriptions (#221): a client nats-py
+    closed without its own cleanup (the silent close of `_watch_read_loop`, or a flush that
+    timed out) keeps one pending `_wait_for_msgs` task per subscription, and its `close()`
+    returns at once for a closed client, so nothing else ends them."""
+    subs = getattr(nc, "_subs", None)
+    if not isinstance(subs, dict):
+        return
+    for sub in list(subs.values()):
+        task = getattr(sub, "_wait_for_msgs_task", None)
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+    subs.clear()
+
+
 class NatsBus:
     def __init__(self, settings: NatsSettings, login: LoginLike, owner: str, on_event: EventCallback,
                  *, heartbeat_sec: float = HEARTBEAT_SEC, gap_reconnect_sec: float = GAP_RECONNECT_SEC,
@@ -1957,6 +1972,8 @@ class NatsBus:
                 await asyncio.wait_for(old.close(), timeout=CLOSE_SEC)
             except (asyncio.TimeoutError, Exception):
                 pass
+            if getattr(old, "is_closed", False):
+                _drop_subscriptions(old)
 
     async def _notify_fatal(self, exc: NatsBusError) -> None:
         if self._on_fatal is None:

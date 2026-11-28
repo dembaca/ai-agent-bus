@@ -1957,8 +1957,50 @@ async def test_a_connection_closed_without_its_callbacks_still_reconnects() -> N
             await until(lambda: nc.is_closed, timeout=2, what="nats-py saw the reset")
             await until(lambda: len(srv.writers) == 2 and bus._connected and bus._nc is not nc,
                         timeout=4, what="no reconnect after a close without callbacks")
+            # nats-py skipped its cleanup: the bus ends the old client's subscription tasks.
+            assert nc._subs == {}
         finally:
             await bus.stop()
+
+
+async def test_a_closed_clients_subscription_tasks_end_with_it() -> None:
+    """#221: `_close_old` on a client already closed (nats-py's `close()` returns at once)
+    cancels each subscription's pending message task and clears `_subs`; a live client's
+    are left to its own close."""
+    bus, _ = _unit_bus()
+    waits = [asyncio.create_task(asyncio.sleep(3600)) for _ in range(4)]
+
+    class Sub:
+        def __init__(self, task: asyncio.Task[None]) -> None:
+            self._wait_for_msgs_task = task
+
+    class Closed:
+        is_closed = True
+
+        def __init__(self) -> None:
+            self._subs = {i: Sub(t) for i, t in enumerate(waits)}
+
+        async def close(self) -> None:
+            return None
+
+    old = Closed()
+    bus._nc, bus._connected = old, True  # type: ignore[assignment]
+    await bus._close_old()
+    await asyncio.sleep(0)
+    assert old._subs == {} and all(t.cancelled() for t in waits)
+    live = asyncio.create_task(asyncio.sleep(3600))
+
+    class Live(Closed):
+        is_closed = False
+
+        def __init__(self) -> None:
+            self._subs = {0: Sub(live)}
+
+    other = Live()
+    bus._nc, bus._connected = other, True  # type: ignore[assignment]
+    await bus._close_old()
+    assert not live.cancelled() and len(other._subs) == 1
+    live.cancel()
 
 
 # --- a planned renewal waits for a send under way ---------------------------------------------
