@@ -1438,6 +1438,21 @@ FatalCallback = Callable[[NatsBusError], Awaitable[None] | None]
 DM_SINCE = "@dm"  # the key of `since` for direct messages (no channel name can look like it)
 
 
+def _drop_subscriptions(nc: Any) -> None:
+    """Cancel the message tasks of a closed client's subscriptions (#221): a client nats-py
+    closed without its own cleanup (the silent close of `_watch_read_loop`, or a flush that
+    timed out) keeps one pending `_wait_for_msgs` task per subscription, and its `close()`
+    returns at once for a closed client, so nothing else ends them."""
+    subs = getattr(nc, "_subs", None)
+    if not isinstance(subs, dict):
+        return
+    for sub in list(subs.values()):
+        task = getattr(sub, "_wait_for_msgs_task", None)
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+    subs.clear()
+
+
 class NatsBus:
     def __init__(self, settings: NatsSettings, login: LoginLike, owner: str, on_event: EventCallback,
                  *, heartbeat_sec: float = HEARTBEAT_SEC, gap_reconnect_sec: float = GAP_RECONNECT_SEC,
@@ -1793,6 +1808,7 @@ class NatsBus:
             raise
         del hello
         self._nc = nc
+        self._watch_read_loop(nc)
         self._gaps.reset()
         self._stale.clear()
         self._cancel_gap_timer()  # this connection starts from `since`: the held-back gap is covered
@@ -1834,6 +1850,29 @@ class NatsBus:
             self._wake.set()
         else:
             self._schedule_renew()
+
+    def _watch_read_loop(self, nc: NatsClient) -> None:
+        """Wake the supervisor when `nc`'s read loop ends with the client closed, also
+        when nats-py skipped its callbacks (RT-6.36 step 2, #221): nats-py 2.16 writes a
+        publish still pending at a reset to the dead socket inside `_close`, and that
+        write's error ends `_close` before `disconnected_cb`/`closed_cb`. The client is
+        closed all the same; without this the bus stayed on it until a flush timed out
+        or the credential was renewed. A loop that ends while the client lives (a
+        reconnect of nats-py's own, which this bus turns off) wakes nobody."""
+        task = getattr(nc, "_reading_task", None)
+        if not isinstance(task, asyncio.Task):
+            return
+
+        def ended(done: asyncio.Task[Any]) -> None:
+            if not done.cancelled() and done.exception() is not None:
+                # That write's error, which the loop let escape: retrieved here, so
+                # asyncio does not print it as "never retrieved"; the reconnect is the answer.
+                log.debug("nats bus: the read loop ended: %s", type(done.exception()).__name__)
+            if self._nc is nc and not self._stopping and nc.is_closed:
+                self._connected = False
+                self._wake.set()
+
+        task.add_done_callback(ended)
 
     @staticmethod
     async def _sync(nc: NatsClient, timeout: int = SYNC_SEC) -> None:
@@ -1933,6 +1972,8 @@ class NatsBus:
                 await asyncio.wait_for(old.close(), timeout=CLOSE_SEC)
             except (asyncio.TimeoutError, Exception):
                 pass
+            if getattr(old, "is_closed", False):
+                _drop_subscriptions(old)
 
     async def _notify_fatal(self, exc: NatsBusError) -> None:
         if self._on_fatal is None:

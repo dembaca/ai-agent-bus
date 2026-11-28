@@ -79,6 +79,30 @@ versions and words only, the new names go into the entry's text
 ([docs/env-names.md](docs/env-names.md#the-needs-rule)). A release with a known bad predecessor says
 `Withdrawn: v<x.y.z>[, v<x.y.z>]`. doc-check enforces both forms.
 
+## Small changes
+
+A change of at most about 50 lines, in one area, with no new behaviour and nothing
+in login, tokens, rights, hook trust, NATS permissions or release and signing, may
+skip an ADR and repeated review rounds. Changes in login, tokens, rights, hook trust,
+NATS permissions or release and signing always take the full way. It keeps:
+
+- **One review** by a model with the overview of the whole (Opus or Fable, never a
+  cheaper one because the diff looks small), which reads the change against its
+  callers, the runtime texts and the docs, for corner cases.
+- **Green CI for the areas it touches** (`checks.yml` runs each job only for the
+  areas a PR changes; a file no area claims runs all of them).
+- **The merge go** as usual.
+
+**Basis rule.** A PR whose CI went green on a base that `main` has since passed only
+by commits for which `checks.yml` runs just `docs` and `lint` (files no test reads)
+may merge without a new run, if GitHub
+says mergeable and clean and its CHANGELOG lines read clean against `main`. The
+~chat-next coordinator granted this once on 2026-11-28; it is up to the merge approver.
+
+**Conflicts.** Resolve a conflict in text by taking whole sides or writing it by
+hand, never with a character- or word-level merge script (one garbled the CHANGELOG
+in #295 and #305), and read a merge's CHANGELOG and doc hunks as text.
+
 ## Before you push
 
 ```bash

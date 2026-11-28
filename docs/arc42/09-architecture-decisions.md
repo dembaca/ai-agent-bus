@@ -6138,9 +6138,9 @@ kept 30 days.
   (RISK-22). A flood of one agent evicts old history only through its cap
   of 500 and the stream's discard of the oldest. Open for the owner: the
   365 days (or 180), the size (1 GiB) and the cap of 500.
-- **Not yet.** A reader of the imported lines (the console's time range
-  beyond 7 days, `stats_report` reading NATS), and a fill the console can
-  show.
+- **Not yet.** A reader of the imported lines (`stats_report` reading NATS),
+  and a fill the console can show. The console's time range beyond 7 days is
+  built (ADR-015, addition of 2026-11-28 on the Stats page, #284).
 
 **Addition, 2026-11-28: the own posts by hour** (issue #290, for the
 console's "24 h" bars, #284). A part covers up to a day, so its
@@ -6194,6 +6194,37 @@ point 7 (the graph) are withdrawn: the endpoint is removed from the server.
 Still open, the owner's decision: who sees which homes (today every logged-in
 person sees every card with task and branch) and the cost in money beside
 tokens (no agent reports it); the console builds without both.
+
+**Addition, 2026-11-28: Stats has a time range and an activity chart**
+(issue #284; the owner decided every point in the design thread). The page
+and its menu item are called "Stats" (formerly Reports). One time range at
+the top right, 24 h, 7 days, 30 days, 90 days or 12 months, applies to every
+card, the per-version card included, and the line under the heading names it:
+`GET /v1/stats?range=24h|7d|30d|90d|12m` (7 days without it, another value a
+400) computes each card over the range, and "Asks to humans" shows the range
+and the range of the same length before it; that card never goes away: when the
+stream does not hold the range before (12 months: 24 months back) or it starts
+before the oldest line held, every figure is n/a with a short reason, never 0.
+The range is remembered per person in the browser, like the panel preferences
+(7 days by default). The new first card, "Activity ·
+what the agents posted", draws stacked bars of the agents' own posts by bus
+word, one bar per day (7 and 30 days), week (90 days) or month (12 months),
+in four groups named in plain words: working on it (`ACK`, `PROGRESS`),
+finished something (`RESULT`, `DONE`), asking a human (`ask`) and organising
+(`TASK`, `HELLO`, `IDLE`, `BYE`, plain posts); the exact words show on
+hovering a bar, and people's posts are not in it. **The console reads the
+whole STATS history**: the login service's per-login stats consumer starts
+365 days back (the stream's age, RT-6.45) instead of 7 days; the unattended
+page's consumer stays at a week. **"24 h"**: the hourly bars come from the
+hourly buckets by bus word in the agents' STATS lines (`post_hours`, #290,
+`stats.hours_of`), 24 bars up to the current hour. Since a running session's
+hours arrive only with its next daily part, "24 h" must not look complete: the
+card says under the chart how many of the lines held carried hours (`lines` of
+`of`) and that running sessions are still to come; when no line carries hours
+it is n/a with its reason ("no hourly data yet", `unavailable`), never 0 and
+never an empty chart (answer of the design contact). A part counts in the bucket it was received in. Rejected:
+a slider or free date range, and figures by agent, home or owner on this
+page (point 15). In the wording, many agents are a flock, never a fleet.
 
 ## ADR-016: The bus without a chat as its source
 
