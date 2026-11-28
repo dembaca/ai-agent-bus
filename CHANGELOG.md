@@ -12,7 +12,7 @@ before 0.5.0 are described in the git history.
   hours with posts), so the console's "24 h" can show hourly bars; `stats.hours_of`
   sums them. A part keeps within 8000 bytes: the oldest hours give way first. Older
   readers ignore the key, a newer reader finds no hours in an older line. Parts stay
-  one a day: more would not fit the `STATS` stream's 64 MiB of then at 300 to 500 agents.
+  one a day: more would not fit the 64 MiB the `STATS` stream had then, at 300 to 500 agents.
 - **Files over the bridge: plan B piece 8** (#244, RT-6.23, RT-6.33). In a home over
   NATS with `planb.on(8, <channel>)` on, the session makes no Mattermost call for
   files: an upload's bytes go to the bridge in parts on `<req>.file.<agent>` (the
