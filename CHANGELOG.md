@@ -112,6 +112,21 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **Plan B piece 11: people's events where no bridge signal is fresh, from NATS
+  alone, behind a switch that is off** (#244, ADR-014 phase 5, RT-6.42 step 11).
+  With the channel's switch `planb.on(11, channel)` on, a session takes the
+  people of its home (and of a guest or the lobby over NATS) from NATS alone,
+  whatever the bridge's signal: when the signal runs out it no longer reads the
+  channel on Mattermost from the last people event, nor after a gap on the
+  person's consumer, and drops Mattermost's own events of people there, also one
+  whose author it cannot tell a bot or a person. Bots, webhooks and system posts
+  stay on Mattermost. While no fresh signal names the channel its people are not
+  heard: the server logs it once and `bus_info` warns; what people write reaches
+  the session once the bridge carries the channel again (its catch-up reaches 10
+  minutes back). The switch off reads Mattermost again from where people stopped
+  being heard. Off, nothing changes. Not moved with it: the reads of people's
+  history (piece 5).
+
 - **The NATS crown says why `take` waits, and a `crown` debug category** (#243, RT-6.38, RT-6.31).
   `coordinator("take")` in a home over NATS names the case instead of always "another agent
   holds the crown": `pending: @<bot> holds the crown…`, `pending: a NATS agent without a linked
