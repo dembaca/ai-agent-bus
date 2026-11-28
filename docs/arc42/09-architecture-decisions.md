@@ -6319,8 +6319,9 @@ agent's owner in its subject form (`.` written as `~`, as in the ask record's
 `human`), `<name>` the agent's NATS name. The owner alone: on NATS the host's
 login requires the token's person to be the responsible human (RT-6.34 step 5),
 so the attested owner is the responsible human, and a prompt whose responsible
-human is another person is not on the record (over the bridge the DM may also
-go to a trusted human; the record does not follow it there). The login service
+human is another person is not on the record (when no responsible human is set,
+the DM goes to the first trusted human instead; the record does not follow it
+there). The login service
 grants each agent exactly that one subject, for its own name and its attested
 owner (RT-6.41), and none when the owner's subject token is `-` (an anchor
 outside the token's characters, `ownerToken` in the login service), so no two
