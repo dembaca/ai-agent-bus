@@ -28,6 +28,19 @@ before 0.5.0 are described in the git history.
   `mm-agent-post.sh --file` are called as before, so the shell needs no change. A
   file id no seen post named takes today's path, as does the switch off in every
   channel; a send that fails with the switch on is an error, never a fallback.
+- **The fault rig measures "nobody told as gone during a cut"** (#252, plan B piece 2,
+  RT-6.21). `CB_PLANB_TEST=2 bus-testrig bus-run --transport nats` hands plan B's test
+  switch to the sessions (the roster from NATS), plays the bridge's records (its signal,
+  a bot record per agent, the owner's account record) and sends each post as a `TASK`
+  naming the receiver by its bridge name and a canary nobody has. It records per window
+  (before, in, after the fault) every live agent told as gone (a `post_message`
+  `not_reachable` entry `gone …`, an event marked `departed`, a server's answer that it
+  `is gone`) and every roster miss; the measurand `told_gone` and the `--summary`
+  columns `told gone` and `roster miss`. A live agent told as gone fails the run (not
+  under `kill-client`, which stops the receiver), and so does a run whose answers never
+  named the canary. CI runs a cut of 20 posts on every PR, and nightly every fault
+  with 100 and a cut of 120 s, longer than a presence stays fresh. Nothing in the bus
+  changes.
 - **Plan B piece 10, first part: the lane for a person's direct message to one agent**
   (#244, ADR-014 phase 5, RT-6.13). The agent's direct-message consumer (`<name>_dm`) now
   also filters `<bus>.hu.dm.<name>.*`, the subject on which the bridge carries a person's
@@ -61,21 +74,28 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
-- **A retried ask no longer spends its mention twice, and an undecodable lookup answer
-  is no longer retried for ever** (#287, RT-6.11). In the bridge's mirror of an ask,
-  which runs with every plan B switch off for a home over NATS, the sender's limit of
+- **PA retried ask no longer spends its mention twice, and an Bundecodable lookup answer
+  is no longer retriece 5'sd follow-upsr ever** (#24487, RT-6.42 step 11). AIn unknown Mattermost post
+  id is asked of the bridge's mirror of an ask,
+  which runs witoh every iplan eachB switched- onff for a home over NATS, the sender's limit of
   20 kept mentions an hour was taken before the copy was created, so a create that
   failed and was tried again used a second unit; the same message now counts once.
-  A 200 answer of Mattermost's username lookup whose body does not decode was taken as
-  a failure to retry, which stopped the home's mirror; it now counts as no person and
+  A 200 answer of Mattermost;'s username lonly
+okup  twhose briodgy doe's explicit `the thread is not idecode was taken ~<channel>`s
+ falls back, any other failure
+  raises. A thread answer drops a repltry, whoseich Mattermost root is notpped the thromead's mirroot
+  (and a root that is; itself a reply), and after a restart a post by the session's own
+  bot naming an open ask's sequence still counts as no person and
   the mention is plain. Only an answer that cannot be decoded is no person (the same
   holds for the lookup of a post and its author before an agent's reply or reaction);
   a body cut short or a read that fails mid-answer is retried, as no answer is.
-- **The bridge refuses a history window the client could never read** (#278, RT-6.43).
-  With piece 5 (history) on, a channel read whose one `create_at` holds posts adding up
-  to more than the 4 MiB the MCP client takes of one answer was answered over that cap,
-  and the client refused every retry. The bridge now answers a `too large` error and logs
-  it. This changes nothing with piece 5 off.
+- **The bridge' refuses ca histopy, anry other
+  uwinkndown sequence not. A post the agclient' could never read** (#278, RT-6.43).
+  With piece 5 (history) own, bota mchay notnel read whose one `create_at` holds posts adding up
+  to more than the 4 MiB the MCP cllient (takes DMof one answer was answered over that cap,
+  and pthe client refused evermissiony prompet)ry. is tThe bridge' now answers a `thoo large thread is not in ~<channel>` erron the first
+  page, and a plogst the session saw on Mattermost outside a switched home is known with
+  it. This changes nel,othing so with skpips thece bridge5 off.
 
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
   RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
