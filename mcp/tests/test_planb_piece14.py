@@ -229,6 +229,29 @@ async def test_decide_without_a_nats_side_registers() -> None:
     assert await nobot.decide(_inner(), 0) == "no channel runs over NATS"
 
 
+async def test_until_14c_decide_registers_at_once_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.10 step 8, RT-6.18 step 13: while nobot.CROWN_NEEDS_BOT is set, decide answers the
+    crown's reason at once: no NATS side looked up, no record read, no wait, nothing held."""
+    monkeypatch.setattr(nobot, "CROWN_NEEDS_BOT", True)
+    port, inner, _ = _port(Bus(synced=False))  # the replay never comes: a wait would last 60 s
+    touched: list[str] = []
+    monkeypatch.setattr(nobot, "_port", lambda client: touched.append("port"))
+    monkeypatch.setattr(port, "bot_needed", lambda: touched.append("read") or NatsPort.NOT_READ)
+    why = await asyncio.wait_for(nobot.decide(port, 60), timeout=0.05)
+    assert why == nobot.CROWN_REASON and not nobot.held()
+    assert touched == [] and inner.registrar.calls == []
+
+
+async def test_with_the_crown_off_decide_still_waits_for_the_records() -> None:
+    """The constant off (the module's fixture, as after piece 14c): the wait is unchanged."""
+    assert nobot.CROWN_NEEDS_BOT is False
+    port, _, _ = _port(Bus(synced=False))
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    assert await nobot.decide(port, 0.3) == NatsPort.NOT_READ
+    assert loop.time() - start >= 0.3
+
+
 # --- the host process (RT-6.18 step 13) -------------------------------------------------------
 
 async def test_the_host_process_registers_nothing_when_all_is_on() -> None:

@@ -47,8 +47,9 @@ POLL_SEC = 0.1
 # claim carries the bot's user id - so a session without a bot would publish no crown claim and
 # a fully switched home would have no coordinator. While this is True, `NatsPort.bot_needed`
 # names CROWN_REASON even when every channel and piece runs over NATS: the decision logic is
-# built and tested, but every session still registers. Piece 14c (the identity on the NATS name)
-# deletes this constant and its check.
+# built and tested, but every session still registers, and `decide` answers CROWN_REASON at once
+# instead of waiting up to DECIDE_SEC for a read whose answer is known. Piece 14c (the identity on
+# the NATS name) deletes this constant and its checks.
 CROWN_NEEDS_BOT = True
 CROWN_REASON = "the crown needs the bot's identity until piece 14c"
 
@@ -160,7 +161,10 @@ def deferrable(client: Any, environ: Any = None) -> bool:
 async def decide(client: Any, timeout: float | None = None) -> str:
     """'' when this session needs no Mattermost bot, else why it does (it then registers as
     before). Waits up to `timeout` for the NATS bus to be up and to have read the plan B records;
-    never raises. Keeps a decision without a bot (`hold`)."""
+    never raises. Keeps a decision without a bot (`hold`). Until piece 14c it answers
+    CROWN_REASON at once: nothing waits for a read that could only end in a registration."""
+    if CROWN_NEEDS_BOT:  # piece 14c deletes this check with the constant
+        return CROWN_REASON
     if _held:
         return ""
     port = _port(client)
