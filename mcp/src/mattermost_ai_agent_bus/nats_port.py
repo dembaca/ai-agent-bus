@@ -175,6 +175,7 @@ PEOPLE_KEYS_MAX = 100_000  # keys held at most; the oldest go first
 PEOPLE_CHECK_SEC = 10.0  # how often the bridge's signals are looked at (RT-6.42 step 9)
 UNAPPROVED_SEC = 86400.0  # how long the reads remember an event without approver: an ask's 24 h
 PEOPLE_MARGIN_MS = 60_000  # the catch-up on Mattermost reads this much before the last people event
+PERMISSION_PIECE = 10  # plan B's piece of permission prompts by DM over the bridge (RT-6.13 step 7)
 PEOPLE_PIECE = 11  # plan B's piece of people's events where no bridge signal is fresh (RT-6.42 step 12)
 # People's history through the bridge (plan B piece 5b, RT-6.42 step 11): the bridge answers
 # the oldest `limit` posts from `since` on, so a read of the newest posts asks for a full page
@@ -620,6 +621,10 @@ class NatsPort:
         # Plan B piece 6: the server's mention check (text -> text), run with the Mattermost
         # adapter on a post that goes to Mattermost while asks go over NATS (_for_mattermost).
         self.unmention: Callable[[Any, str], Awaitable[str]] | None = None
+        # Plan B piece 10 (RT-6.13 step 7): a person's direct message carried by the bridge,
+        # (anchor, message), for the permission relay's verdict; nothing else reads the lane.
+        self.on_permission: Callable[[str, natsbus.PersonMessage], Awaitable[None]] | None = None
+        self._piece10_seen = False  # piece 10 read on once in this session (permission_undecided)
         # The adapter's guest list leaves the lobby out by this port's id of it (piece 12).
         if hasattr(inner, "lobby_lookup"):
             inner.lobby_lookup = self.lobby_channel_id
@@ -696,6 +701,7 @@ class NatsPort:
                               session=self._session, since=since, **self._bus_options)
                 self._bus = bus
                 bus.on_person_gap = self._person_gap
+                bus.on_person_dm = self._on_person_dm  # plan B piece 10 (RT-6.13 step 7)
                 bus.card_source = self._card
                 bus.dm_source = self._dm_on  # plan B piece 3: stated in every presence
                 bus.shown_source = lease.presence_shown  # plan B piece 9: None while it is off
@@ -3527,6 +3533,113 @@ class NatsPort:
             if bus.claim_info(home).get(bus.name) != before:
                 return
             await asyncio.sleep(0.05)
+
+    # --- plan B piece 10: permission prompts by DM over the bridge (RT-6.13 step 7) -------
+    def piece10(self) -> bool:
+        """Whether this home relays tool permission prompts over the bridge (plan B piece 10,
+        RT-6.13 step 7): `planb.on(10, home)`. A switch that cannot be read counts as off: the
+        old path, the Mattermost DM."""
+        try:
+            on = bool(self._s.home) and bool(planb.on(PERMISSION_PIECE, self._s.home))
+        except Exception as exc:  # noqa: BLE001 — in doubt off; permission_undecided says so
+            log.info("nats: the permission switch was not read (%s)", type(exc).__name__)
+            return False
+        if on:
+            self._piece10_seen = True
+        return on
+
+    def permission_undecided(self) -> bool:
+        """Piece 10 reads off, but the session cannot tell it is off (RT-6.13 step 7): the plan B
+        records are not read yet (planb.known), or the switch read on earlier in this session
+        (a record that went stale, or was switched off since), or the bus holds a record for the
+        home naming piece 10 that went stale (2 h) before this session read it on. Then a prompt
+        stays in the terminal: never the Mattermost DM for want of a reading."""
+        try:
+            if self._piece10_seen or not planb.known():
+                return True
+            bus = self._bus
+            held = getattr(bus, "planb_held", None) if bus is not None else None
+            return bool(self._s.home) and held is not None and PERMISSION_PIECE in held(self._s.home)
+        except Exception:  # noqa: BLE001 — in doubt undecided: the terminal
+            return True
+
+    def permission_bridge(self) -> bool:
+        """Whether a fresh signal of the bridge says it DMs permission prompts in this home and
+        carries their answers (its `pieces` name 10, RT-6.42 step 7). Without one no prompt goes
+        out: it stays in the terminal."""
+        bus = self._live()
+        return bus is not None and bus.connected and PERMISSION_PIECE in bus.bridge_pieces(self._s.home)
+
+    def permission_unrelayed(self) -> bool:
+        """Piece 10 on and no bridge for it: the prompts stay in the terminal (bus_info)."""
+        return self.piece10() and not self.permission_bridge()
+
+    def permission_target(self, responsible: str) -> tuple[str, str] | None:
+        """The responsible human (RT-6.8) as (anchor, attested name), from this session's own
+        fresh attestation alone (RT-6.41): the trusted human named `responsible`, or the first
+        attested one when it is empty. None without a fresh attestation, a trusted human of that
+        name, or for an account bound to nobody: nobody to ask, the terminal stays."""
+        att = self._own_attestation()
+        if att is None:
+            return None
+        want = responsible.strip().lstrip("@").lower()
+        for anchor, name in att.trusted:
+            if anchor != natsbus.UNBOUND and (not want or name.lower() == want):
+                return anchor, name
+        return None
+
+    def permission_approves(self, anchor: str) -> bool:
+        """Whether the person `anchor`, the sender of a direct message the bridge carried, may
+        answer a permission prompt (RT-6.13 step 7): one of this session's own attested trusted
+        anchors who approves by RT-6.42 step 9's rule (_person_approves: piece 4's attestation,
+        else a fresh approver record). The caller also checks it is the very person the prompt
+        went to. Never for UNBOUND, nobody without a bus or a fresh own attestation."""
+        att = self._own_attestation()
+        if att is None or anchor == natsbus.UNBOUND or not any(a == anchor for a, _ in att.trusted):
+            return False
+        return self._person_approves(anchor)
+
+    async def permission_prompt(self, request_id: str, anchor: str, name: str, text: str) -> str:
+        """The prompt as a request to the bridge, `<req>.permission.<agent>` (op `prompt`): it
+        DMs `text` to the Mattermost account the login service's record binds to `anchor`
+        (named `name`), under this agent's own bot or the bridge bot, and answers the
+        prompt post's Mattermost id. No Mattermost call here; raises NatsPortError without a
+        bridge for piece 10, RequestError when it refused or did not answer."""
+        from . import requests
+
+        if not self.permission_bridge():
+            raise NatsPortError("no fresh signal of the bridge says it relays permission prompts "
+                                f"in ~{self._s.home} (plan B piece 10): the prompt stays in the terminal")
+        result = await requests.request(self._require(), "permission",  # type: ignore[arg-type]
+                                        {"op": "prompt", "channel": self._s.home, "id": request_id,
+                                         "to": anchor, "name": name, "text": text})
+        post = result.get("post") if isinstance(result, dict) else None
+        if not isinstance(post, str) or not _ID.fullmatch(post):
+            raise NatsPortError("the bridge's answer to a permission prompt names no Mattermost post")
+        return post
+
+    async def permission_note(self, request_id: str, text: str, *, close: bool) -> None:
+        """A line under the prompt `request_id` (op `note`): the verdict, the terminal's answer,
+        an id that is not open; `close` makes the bridge forget the prompt. Raises as
+        permission_prompt does."""
+        from . import requests
+
+        await requests.request(self._require(), "permission",  # type: ignore[arg-type]
+                               {"op": "note", "channel": self._s.home, "id": request_id,
+                                "text": text, "close": close})
+
+    async def _on_person_dm(self, ev: natsbus.PersonEvent) -> None:
+        """A person's direct message the bridge carried to this agent (plan B piece 10, RT-6.13
+        step 7): to the permission relay while the switch is on, else dropped (the lane is read
+        by nothing else)."""
+        if not self.piece10():
+            log.debug("nats: dropped a person's direct message: plan B piece 10 is off")
+            return
+        callback = self.on_permission
+        if callback is None:
+            log.debug("nats: dropped a person's direct message: no permission relay")
+            return
+        await callback(ev.anchor, ev.message)
 
     # --- plan B piece 9: the status and the header line by the bridge ----------------------
     def presence_soon(self) -> None:

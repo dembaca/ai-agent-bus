@@ -302,8 +302,12 @@ func (m *Manager) desired(agent, anchor string, channels []string) []spec {
 	// the agent's own channel record: the chat's ids of its channels (RT-6.39 step 6)
 	filters = append(filters, m.cfg.Presence+".directory."+agent+".v1")
 	out = append(out,
+		// The direct-message lane carries the agents' DMs and, since plan B piece 10 (RT-6.13),
+		// a person's direct message to this very agent: the bridge publishes that one on a
+		// subject naming the agent, so only this agent's consumer sees it and the sender is the
+		// person's anchor.
 		spec{stream: BusStream, name: agent + "_dm", dm: true, deliver: DeliverPrefix + "." + agent + ".dm",
-			filters: []string{m.cfg.Bus + ".dm." + agent + ".*"}},
+			filters: []string{m.cfg.Bus + ".dm." + agent + ".*", m.cfg.Bus + ".hu.dm." + agent + ".*"}},
 		spec{stream: PresenceStream, name: agent + "_presence", presence: true,
 			deliver: DeliverPrefix + "." + agent + ".presence", filters: filters})
 	return out

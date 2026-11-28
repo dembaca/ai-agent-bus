@@ -28,7 +28,7 @@ from .natsbus import MAX_BODY, NatsBus, NatsBusError
 
 REQUEST_SEC = 5.0  # how long a request waits for the bridge's answer, in all
 HISTORY_SEC = 35.0  # a history read may take the bridge up to 30 s: give it headroom
-KINDS = ("history", "file", "header")
+KINDS = ("history", "file", "header", "permission")  # permission: plan B piece 10, RT-6.13
 MAX_PARTS = 64  # an answer's parts: a file's chunks or a history read's pages
 MAX_TOTAL = 4 * 1024 * 1024  # the bytes an answer's parts may add up to
 FILE_BODY = 1 << 20  # the kind "file" alone: a part carries bytes, and the bridge's own

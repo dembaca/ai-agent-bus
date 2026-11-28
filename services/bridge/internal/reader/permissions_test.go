@@ -469,6 +469,7 @@ func documentedBridgeRights(t *testing.T, home string) (publish, subscribe []str
 			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+inbound.AccountsConsumer+"."+inbound.AccountsFilter &&
 			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+presence.PlanBConsumer+"."+presence.PlanBFilter &&
 			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+presence.MembersConsumer+"."+presence.MembersFilter &&
+			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+presence.AttestConsumer+"."+presence.AttestFilter &&
 			subject != "$JS.API.CONSUMER.CREATE.PRESENCE."+presence.ClaimsConsumer+"."+presence.ClaimsFilter {
 			t.Errorf("the bridge may create consumers by %s", subject)
 		}
