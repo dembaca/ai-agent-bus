@@ -215,6 +215,14 @@ func (c *Client) Person(ctx context.Context, username string) (string, error) {
 		DeleteAt int64  `json:"delete_at"`
 	}
 	if err := c.do(ctx, "POST", "/api/v4/users/usernames", []string{username}, &raw); err != nil {
+		// A refusal keeps its status and a request that got no answer is retried;
+		// an answer that does not decode counts as no person (404), not as a
+		// failure to retry for ever (#287).
+		var st *StatusError
+		var ue *url.Error
+		if !errors.As(err, &st) && !errors.As(err, &ue) {
+			err = &StatusError{Status: http.StatusNotFound, Err: err}
+		}
 		return "", fmt.Errorf("mattermost: username %q: %w", username, err)
 	}
 	for _, u := range raw {

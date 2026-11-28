@@ -459,6 +459,17 @@ func TestPerson(t *testing.T) {
 	}
 }
 
+// An answer that does not decode is no person (404), not a failure to retry
+// for ever (#287).
+func TestPersonAnswerThatDoesNotDecodeIsNoPerson(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("<html>not json")) })
+	_, err := c.Person(context.Background(), "dembaca")
+	var st *StatusError
+	if !errors.As(err, &st) || st.Status != http.StatusNotFound {
+		t.Fatalf("got %v, want a 404 StatusError", err)
+	}
+}
+
 func TestMember(t *testing.T) {
 	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

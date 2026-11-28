@@ -25,6 +25,14 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **A retried ask no longer spends its mention twice, and an undecodable lookup answer
+  is no longer retried for ever** (#287, RT-6.11). In the bridge's mirror of an ask,
+  which runs with every plan B switch off for a home over NATS, the sender's limit of
+  20 kept mentions an hour was taken before the copy was created, so a create that
+  failed and was tried again used a second unit; the same message now counts once.
+  A 200 answer of Mattermost's username lookup whose body does not decode was taken as
+  a failure to retry, which stopped the home's mirror; it now counts as no person and
+  the mention is plain.
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
   RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
   the reaction's stream sequence over the copy's entry in the map from Mattermost posts

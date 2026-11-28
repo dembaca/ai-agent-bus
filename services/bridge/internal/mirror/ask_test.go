@@ -253,6 +253,38 @@ func TestASendersKeptMentionsAreLimitedPerHour(t *testing.T) {
 	}
 }
 
+// A create that fails is tried again with the same message: the retry spends
+// no second unit of the sender's mention limit (#287).
+func TestARetriedAskSpendsItsMentionOnlyOnce(t *testing.T) {
+	m, sink, _ := askMirror(t, true)
+	for i := 0; i < MentionsPerHour-1; i++ {
+		if err := m.Handle(context.Background(), channel, "agent-a", uint64(10+i), askMsg("❓ @dembaca", nil)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sink.err = errors.New("create failed")
+	for i := 0; i < 3; i++ {
+		if err := m.Handle(context.Background(), channel, "agent-a", 500, askMsg("❓ @dembaca", nil)); err == nil {
+			t.Fatal("the create failed: want an error to retry")
+		}
+	}
+	sink.err = nil
+	before := len(sink.posts)
+	if err := m.Handle(context.Background(), channel, "agent-a", 500, askMsg("❓ @dembaca", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Handle(context.Background(), channel, "agent-a", 501, askMsg("❓ @dembaca", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sink.posts[before].text, "@\u200b") {
+		t.Fatalf("the retried ask lost its mention: %q", sink.posts[before].text)
+	}
+	// the limit's last unit went to the retried ask once: the next ask is plain
+	if !strings.Contains(sink.posts[before+1].text, "@\u200b") {
+		t.Fatalf("the limit was not spent once: %q", sink.posts[before+1].text)
+	}
+}
+
 func TestACardThatBreaksARuleIsLeftOut(t *testing.T) {
 	for _, bad := range []string{
 		`not json`,
