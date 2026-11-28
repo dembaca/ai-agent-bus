@@ -27,9 +27,10 @@ from test_natsbus import Rig, _login_service
 
 from mattermost_ai_agent_bus import a2a, planb
 from mattermost_ai_agent_bus.client import post_of
-from mattermost_ai_agent_bus.model import ChannelUser, Post
+from mattermost_ai_agent_bus.model import ChannelUser, Post, Reaction
 from mattermost_ai_agent_bus.nats_port import NatsPort
-from mattermost_ai_agent_bus.natsbus import NatsSettings
+from mattermost_ai_agent_bus.natsbus import NatsSettings, OpenAsk
+from mattermost_ai_agent_bus.requests import RequestError
 
 HOME = "home"
 P1 = "p" * 26  # people's posts keep their Mattermost ids
@@ -589,3 +590,149 @@ async def test_a_narrow_window_with_too_few_posts_widens(
             assert asked == [now - 3 * day]  # the caller's cursor is authoritative
     finally:
         await port.stop()
+
+
+async def test_an_unknown_post_id_asks_the_bridge_before_mattermost(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: a post id the session never read is tried on each piece-5 home first,
+    because its channel is unknown and the bridge's request needs one; a thread and its
+    reactions come from there and no Mattermost read is made."""
+    port, inner = await _setup(rig, monkeypatch, [5])
+    unknown, react_unknown = "y" * 26, "z" * 26
+    base = _now() * 1000
+    alice = _account("alice-anchor", ALICE, name="alice")
+    bob = _account("bob-anchor", BOB, approver=False, name="bob")
+    found = _post(unknown, message="the post", anchor="alice-anchor", account=alice,
+                  create_at=base - 1000)
+    reacted = _post(react_unknown, message="the reacted post", anchor="alice-anchor",
+                    account=alice, create_at=base - 500,
+                    reactions=[_reaction(bob, create_at=base - 250)])
+
+    def bridge(payload: dict[str, Any]) -> Any:
+        post = found if payload["thread"] == unknown else reacted
+        return _result([post], thread=payload["thread"])
+
+    async with Bridge(rig, bridge) as fake:
+        try:
+            thread = await port.thread(unknown)
+            assert thread.root_id == unknown and [p.id for p in thread.posts] == [unknown]
+            reactions = await port.reactions(react_unknown)
+            assert [r.user_id for r in reactions] == ["hu:bob-anchor"]
+            assert inner.log == []  # never Mattermost
+            assert fake.asked and all(p["channel"] == HOME for p in fake.asked)
+            assert {p["thread"] for p in fake.asked} == {unknown, react_unknown}
+        finally:
+            await port.stop()
+
+
+async def test_an_unknown_post_id_falls_back_only_on_the_not_in_answer(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: only the bridge's explicit "the thread is not in ~<channel>" sends an
+    unknown id to Mattermost, once every piece-5 home has said so."""
+    port, inner = await _setup(rig, monkeypatch, [5])
+    unknown = "x" * 26
+    base = _now() * 1000
+    mine = post_of({"id": unknown, "channel_id": WORK, "user_id": UNBOUND,
+                    "message": "on Mattermost", "create_at": base - 1000})
+    inner.posts = [mine]
+    inner.reacts = {unknown: [Reaction(user_id=UNBOUND, post_id=unknown, emoji_name="+1")]}
+
+    def bridge(_payload: dict[str, Any]) -> Any:
+        return "the thread is not in ~home"
+
+    async with Bridge(rig, bridge):
+        try:
+            thread = await port.thread(unknown)
+            assert [p.id for p in thread.posts] == [unknown]
+            reactions = await port.reactions(unknown)
+            assert [r.emoji_name for r in reactions] == ["+1"]
+            assert "thread" in inner.log and "reactions" in inner.log
+        finally:
+            await port.stop()
+
+
+async def test_an_unknown_post_id_raises_on_another_bridge_failure(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: any bridge failure other than "the thread is not in" raises; an
+    unknown id is never quietly read on Mattermost instead."""
+    port, inner = await _setup(rig, monkeypatch, [5])
+    unknown = "w" * 26
+
+    def bridge(_payload: dict[str, Any]) -> Any:
+        return "not built"
+
+    async with Bridge(rig, bridge):
+        try:
+            with pytest.raises(RequestError, match="not built"):
+                await port.thread(unknown)
+            with pytest.raises(RequestError, match="not built"):
+                await port.reactions(unknown)
+            assert inner.log == []  # never Mattermost
+        finally:
+            await port.stop()
+
+
+async def test_a_thread_drops_replies_of_another_root(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: a reply whose Mattermost root is not the thread's root, or a top-level
+    post that is not the root, is dropped as a live event's root check would; a root that is
+    itself a reply is no root (the thread reads empty)."""
+    port, _inner = await _setup(rig, monkeypatch, [5])
+    base = _now() * 1000
+    alice = _account("alice-anchor", ALICE, name="alice")
+    root = _post(P1, anchor="alice-anchor", account=alice, create_at=base - 4000)
+    good = _post(P2, anchor="alice-anchor", account=alice, create_at=base - 3000, root=P1)
+    nested = _post(P3, anchor="alice-anchor", account=alice, create_at=base - 2000, root=P2)
+    top = _post(P4, anchor="alice-anchor", account=alice, create_at=base - 1000, root="")
+    good2 = _post(P5, anchor="alice-anchor", account=alice, create_at=base - 500, root=P1)
+
+    def bridge(_payload: dict[str, Any]) -> Any:
+        return _result([root, good, nested, top, good2], thread=P1)
+
+    def broken(_payload: dict[str, Any]) -> Any:
+        return _result([_post(P1, anchor="alice-anchor", account=alice, create_at=base, root=P2)],
+                       thread=P1)
+
+    port._note_mm(P1, HOME)  # as a read of the root would
+    try:
+        async with Bridge(rig, bridge):
+            thread = await port.thread(P1)
+            assert [p.id for p in thread.posts] == [P1, P2, P5]
+        async with Bridge(rig, broken):
+            assert (await port.thread(P1)).posts == ()
+    finally:
+        await port.stop()
+
+
+async def test_after_a_restart_the_sessions_own_bot_copy_of_an_open_ask_counts(
+        rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.42 step 11: after a restart the memory may lack the copy's NATS sender; a post by
+    this session's own bot naming an open ask's sequence is still a copy, any other unknown
+    sequence is not."""
+    port, inner = await _setup(rig, monkeypatch, [5, 6])
+    base = _now() * 1000
+    alice = _account("alice-anchor", ALICE, name="alice")
+    name = rig.names["alice"]
+    prefix = port._s.props_prefix
+    monkeypatch.setattr(port, "_bot_prefix", lambda _home: "bb")
+    inner.bots["bb" + name] = ChannelUser(id=BOT, username="bb" + name)
+    port.ask_source = lambda: [OpenAsk(mm="n1:home:7", kind="ask", human="-", title="t", asked=1)]
+    own = _post("k" * 26, message="an ask", bot=True, create_at=base - 3000,
+                props={f"{prefix}nats_id": "n1:home:7"})
+    reply = _post(P1, anchor="alice-anchor", account=alice, create_at=base - 2000,
+                  root="k" * 26)
+    other = _post("m" * 26, message="not an ask", bot=True, create_at=base - 1500,
+                  props={f"{prefix}nats_id": "n1:home:8"})
+    other_reply = _post(P2, anchor="alice-anchor", account=alice, create_at=base - 1000,
+                        root="m" * 26)
+
+    def bridge(_payload: dict[str, Any]) -> Any:
+        return _result([own, reply, other, other_reply])
+
+    async with Bridge(rig, bridge):
+        try:
+            by_id = {p.id: p for p in await port.channel_posts(WORK)}
+            assert by_id[P1].root_id == "n1:home:7"  # the own bot's copy of an open ask
+            assert by_id[P2].root_id == "m" * 26  # any other unknown sequence is no copy
+        finally:
+            await port.stop()

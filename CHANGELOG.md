@@ -25,6 +25,14 @@ before 0.5.0 are described in the git history.
 
 ### Fixed
 
+- **Plan B piece 5's follow-ups** (#244, RT-6.42 step 11). An unknown Mattermost post
+  id is asked of the bridge's history in each switched-on home before Mattermost; only
+  the bridge's explicit `the thread is not in ~<channel>` falls back, any other failure
+  raises. A thread answer drops a reply whose Mattermost root is not the thread's root
+  (and a root that is itself a reply), and after a restart a post by the session's own
+  bot naming an open ask's sequence still counts as the bridge's copy, any other
+  unknown sequence not.
+
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
   RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
   the reaction's stream sequence over the copy's entry in the map from Mattermost posts
