@@ -480,6 +480,56 @@ func TestMember(t *testing.T) {
 	}
 }
 
+// RT-6.42 step 13, plan B piece 7: Target reads a post and its author for
+// the mirror's check; a refusal keeps its status, an answer without a post
+// counts as none (404), so the mirror skips it instead of retrying.
+func TestTarget(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/posts/p1":
+			_, _ = w.Write([]byte(`{"id":"p1","user_id":"u1","channel_id":"c1","root_id":"r1","type":"",` +
+				`"props":{"from_webhook":"true"},"delete_at":0}`))
+		case "/api/v4/posts/p2":
+			_, _ = w.Write([]byte(`{"id":"p2","user_id":"b1","channel_id":"c1"}`))
+		case "/api/v4/posts/junk":
+			_, _ = w.Write([]byte(`not json`))
+		case "/api/v4/users/u1":
+			_, _ = w.Write([]byte(`{"id":"u1","username":"dembaca","is_bot":false}`))
+		case "/api/v4/users/b1":
+			_, _ = w.Write([]byte(`{"id":"b1","username":"agent-a-bot","is_bot":true}`))
+		case "/api/v4/posts/p3":
+			_, _ = w.Write([]byte(`{"id":"p3","user_id":"u-junk","channel_id":"c1"}`))
+		case "/api/v4/posts/p4":
+			_, _ = w.Write([]byte(`{"id":"p4","user_id":"u-none","channel_id":"c1"}`))
+		case "/api/v4/users/u-junk":
+			_, _ = w.Write([]byte(`{"id":`))
+		case "/api/v4/users/u-none":
+			_, _ = w.Write([]byte(`{}`))
+		case "/api/v4/posts/hidden":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	})
+	got, err := c.Target(context.Background(), "p1")
+	if err != nil || got != (mirror.Target{ID: "p1", ChannelID: "c1", RootID: "r1", Webhook: true, AuthorName: "dembaca"}) {
+		t.Fatalf("p1: %+v %v", got, err)
+	}
+	got, err = c.Target(context.Background(), "p2")
+	if err != nil || !got.AuthorBot || got.AuthorName != "agent-a-bot" || got.Webhook {
+		t.Fatalf("p2: %+v %v", got, err)
+	}
+	// an author that does not decode or is none counts as no such post, never
+	// as a failure to retry for ever
+	for id, want := range map[string]int{"junk": 404, "hidden": 403, "down": 502, "p3": 404, "p4": 404} {
+		_, err := c.Target(context.Background(), id)
+		var st *StatusError
+		if !errors.As(err, &st) || st.Status != want {
+			t.Errorf("%s: %v, want status %d", id, err, want)
+		}
+	}
+}
+
 // RT-6.33 step 4: an upload posts the channel and the file as multipart to
 // /api/v4/files, and the answer's file_infos entry — the shape the
 // create-post answer carries in a post's metadata too — comes back.

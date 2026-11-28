@@ -232,6 +232,18 @@ class Message:
     ref: int | None = None  # reaction: stream sequence of the post
     emoji: str | None = None
     props: dict[str, Prop] = field(default_factory=dict)
+    # Plan B piece 7 (RT-6.42 step 13): a Mattermost post named by its id instead of a sequence,
+    # a person's or the sender's own from before the switch. Sent only while the piece is on,
+    # never beside `root` or `ref`; absent from the body otherwise.
+    mm_root: str | None = None  # post: the Mattermost id of the post it replies to
+    mm_ref: str | None = None  # reaction: the Mattermost id of the post it reacts to
+
+
+_MM_POST = re.compile(r"[a-z0-9]{26}")  # a Mattermost post id
+
+
+def _mm_post(v: object) -> bool:
+    return isinstance(v, str) and bool(_MM_POST.fullmatch(v))
 
 
 def _seq(v: object) -> bool:
@@ -263,11 +275,15 @@ def _check(m: Message, props_prefix: str = a2a.DEFAULT_PREFIX) -> None:
             raise MessageError("props keys start with the bus's props prefix (CB_PROPS_PREFIX)")
         if not _wellformed(k) or (isinstance(v, str) and not _wellformed(v)):
             raise MessageError("props are not valid Unicode")
+    if m.mm_root is not None and (m.kind != "post" or m.root is not None or not _mm_post(m.mm_root)):
+        raise MessageError("mm_root is a Mattermost post id, on a post without root")
+    if m.mm_ref is not None and (m.kind == "post" or m.ref is not None or not _mm_post(m.mm_ref)):
+        raise MessageError("mm_ref is a Mattermost post id, on a reaction without ref")
     if m.kind == "post":
         if m.ref is not None or m.emoji is not None:
             raise MessageError("a post has no ref or emoji")
     else:
-        if not _seq(m.ref):
+        if not _seq(m.ref) and m.mm_ref is None:
             raise MessageError("a reaction needs ref")
         if not isinstance(m.emoji, str) or not m.emoji:
             raise MessageError("a reaction needs an emoji")
@@ -289,8 +305,13 @@ def _dumps(obj: object, ensure_ascii: bool = True) -> str:
 
 def encode(m: Message, props_prefix: str = a2a.DEFAULT_PREFIX) -> bytes:
     _check(m, props_prefix)
-    body = _dumps({"v": 1, "kind": m.kind, "text": m.text, "root": m.root, "ref": m.ref,
-                   "emoji": m.emoji, "props": m.props}, ensure_ascii=False).encode()
+    obj: dict[str, Any] = {"v": 1, "kind": m.kind, "text": m.text, "root": m.root, "ref": m.ref,
+                           "emoji": m.emoji, "props": m.props}
+    if m.mm_root is not None:  # plan B piece 7 only: without it the body is as before
+        obj["mm_root"] = m.mm_root
+    if m.mm_ref is not None:
+        obj["mm_ref"] = m.mm_ref
+    body = _dumps(obj, ensure_ascii=False).encode()
     if len(body) > MAX_BODY:
         raise MessageError(f"message is {len(body)} bytes, more than {MAX_BODY}")
     return body
@@ -345,7 +366,8 @@ def decode(data: bytes, props_prefix: str = a2a.DEFAULT_PREFIX) -> Message:
     if not isinstance(props, dict):
         raise MessageError("props is not an object")
     m = Message(kind=obj.get("kind"), text=obj.get("text", ""), root=obj.get("root"),  # type: ignore[arg-type]
-                ref=obj.get("ref"), emoji=obj.get("emoji"), props=props)
+                ref=obj.get("ref"), emoji=obj.get("emoji"), props=props,
+                mm_root=obj.get("mm_root"), mm_ref=obj.get("mm_ref"))
     _check(m, props_prefix)
     return m
 
@@ -2052,6 +2074,20 @@ class NatsBus:
 
     async def unreact(self, channel: str, ref: int, emoji: str) -> None:
         body = encode(Message("unreaction", ref=ref, emoji=emoji), self._s.props_prefix)
+        await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
+
+    async def post_mm(self, channel: str, text: str, mm_root: str,
+                      props: dict[str, Prop] | None = None) -> None:
+        """Plan B piece 7 (RT-6.42 step 13): a reply in the thread of the Mattermost post
+        `mm_root` (a person's), which the bridge posts there once it checked the post is in
+        `channel`."""
+        body = encode(Message("post", text, props=props or {}, mm_root=mm_root), self._s.props_prefix)
+        await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
+
+    async def react_mm(self, channel: str, mm_ref: str, emoji: str, remove: bool = False) -> None:
+        """Plan B piece 7: a reaction, or its removal, on the Mattermost post `mm_ref`."""
+        body = encode(Message("unreaction" if remove else "reaction", emoji=emoji, mm_ref=mm_ref),
+                      self._s.props_prefix)
         await self._publish(f"{self._s.bus}.ch.{self._asked(channel)}.{self.name}", body)
 
     def _dm_subject(self, recipient: str) -> str:
