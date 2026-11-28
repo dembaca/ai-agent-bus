@@ -1326,7 +1326,7 @@ async def _elected(client: ChatPort, uid: str, rows: list[dict[str, Any]]) -> bo
 
 async def _command(client: ChatPort, action: str, passed: list[bool] | None = None) -> str:
     uid = await _user_id(client)
-    if not session_file.key_ok(uid):  # a bot id or, without a bot, the NATS name (piece 14c-2a)
+    if not session_file.identity_ok(uid):  # a bot id or, without a bot, the NATS name (piece 14c-2a)
         return ""
     now, lease = int(time.time()), lease_sec()
     state = _coord(uid)
@@ -1520,7 +1520,7 @@ async def nats_beat(client: ChatPort) -> None:
             uid = await _user_id(client)
             state = nats_state()
             source = _nats_source
-            if not session_file.key_ok(uid) or state.kind != "ok" or state.view is None or source is None:
+            if not session_file.identity_ok(uid) or state.kind != "ok" or state.view is None or source is None:
                 return
             view = state.view
             _nats_hold_track(view)

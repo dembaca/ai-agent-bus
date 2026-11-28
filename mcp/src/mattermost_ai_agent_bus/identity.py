@@ -40,7 +40,7 @@ def nats_name(client: Any) -> str:
         name = port.own_name()
     except Exception:  # noqa: BLE001 — no bus: no name
         return ""
-    return name if name and session_file.key_ok(name) else ""
+    return name if name and session_file.identity_ok(name) else ""
 
 
 def _shown(client: Any, name: str) -> str:

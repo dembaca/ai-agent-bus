@@ -149,7 +149,8 @@ def test_until_14c_the_crown_still_needs_the_bot() -> None:
 
 async def test_the_crown_command_takes_a_nats_name_and_refuses_junk(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """RT-6.6 step 13: lease._command's gate is session_file.key_ok, not 26 characters."""
+    """RT-6.6 step 13: lease._command's gate is session_file.identity_ok: exactly a bot id (26
+    `[a-z0-9]`) or a NATS name (25 `[a-z2-7]`), not 26 characters only and not any short name."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     session_file.state_dir().mkdir(parents=True)
 
@@ -164,7 +165,10 @@ async def test_the_crown_command_takes_a_nats_name_and_refuses_junk(
         monkeypatch.setattr(lease, "_user_id", lambda c, u=uid: _const(u))
         with pytest.raises(Past):
             await lease._command(object(), "tick")  # type: ignore[arg-type]
-    for junk in ("", NAME.upper(), "../" + NAME, "a.b", "-" + NAME, "x" * 129):
+    for junk in ("", NAME.upper(), "../" + NAME, "a.b", "-" + NAME, "x" * 129, NAME[:24], NAME + "aa",  # 24 and 27 characters; 26 of [a-z0-9] is a bot id's shape
+                
+                 BOT[:24], BOT + "a", "xxxxx", NAME[:-1] + "1", NAME[:-1] + ".", NAME[:-1] + "/",
+                 NAME[:-1] + "-"):
         monkeypatch.setattr(lease, "_user_id", lambda c, u=junk: _const(u))
         assert await lease._command(object(), "tick") == ""  # type: ignore[arg-type]
 

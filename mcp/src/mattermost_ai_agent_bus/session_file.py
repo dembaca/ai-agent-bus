@@ -401,6 +401,17 @@ def key_ok(key: str) -> bool:
     return isinstance(key, str) and bool(_STATE_KEY_RE.fullmatch(key))
 
 
+_NATS_NAME_RE = re.compile(r"[a-z2-7]{25}")  # natsbus.agent_name: 25 base32 characters (#274)
+
+
+def identity_ok(key: str) -> bool:
+    """Whether `key` is the session's identity: exactly a Mattermost bot id (26 `[a-z0-9]`) or
+    a NATS name (25 `[a-z2-7]`), nothing looser. The gates that decide "me" (the crown's command
+    and beat, plan B piece 14c-2a) use this, not `key_ok`, which only keeps a key from being a path
+    and so accepts any lower-case agent name."""
+    return bool(_BOT_ID_RE.fullmatch(key) or _NATS_NAME_RE.fullmatch(key))
+
+
 def state_key(uid: str, nats_name: str | None = None, home: str | None = None) -> str:
     """The key of the session's kept state (RT-6.2 step 9): the NATS name when use_nats_name
     latched it (plan B piece 2 was on at the start), else `uid`, the bot's Mattermost id.
