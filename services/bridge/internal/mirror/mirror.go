@@ -37,6 +37,10 @@ const MaxPost = 16000
 type Post struct {
 	ID     string `json:"id"`             // the Mattermost post id
 	RootID string `json:"root,omitempty"` // the Mattermost root, when it answers one
+	// Reaction marks the entry of a reaction or an unreaction: it holds the
+	// reacted post's id so the map still answers for the reaction's sequence,
+	// but it is no way back, which stays the post's own (the Store's Save).
+	Reaction bool `json:"reaction,omitempty"`
 }
 
 // Refused is Mattermost refusing a message for good (4xx, but not 429: a rate
@@ -67,7 +71,10 @@ type Sink interface {
 type Store interface {
 	Position(ctx context.Context, home string) (uint64, bool, error)
 	Post(ctx context.Context, home string, seq uint64) (Post, bool, error)
-	// Save remembers a mirror and moves the home's position.
+	// Save remembers a mirror and moves the home's position. A message that
+	// became a post also gets the way back from the post to its sequence; a
+	// Post with Reaction set gets none, so a reaction never replaces the way
+	// back of the post it reacted to.
 	Save(ctx context.Context, home string, seq uint64, p Post) error
 	// Reaction adds or removes one sender's reaction of a home's message and
 	// emoji, and returns how many senders reacted; the bridge's bot reacts on
@@ -248,8 +255,10 @@ func (m *Mirror) Handle(ctx context.Context, channelID func(context.Context) (st
 			return err
 		}
 		// A reaction makes no post of its own; keep the target so the map
-		// still answers for the sequence, and move on.
-		p = target
+		// still answers for the sequence, and move on. The way back from the
+		// post to its sequence stays the post's: Reaction keeps it from being
+		// overwritten with this reaction's (#297).
+		p = Post{ID: target.ID, RootID: target.RootID, Reaction: true}
 	default:
 		return errors.New("bridge: unknown message kind")
 	}

@@ -23,6 +23,22 @@ before 0.5.0 are described in the git history.
   file id no seen post named takes today's path, as does the switch off in every
   channel; a send that fails with the switch on is an error, never a fallback.
 
+### Fixed
+
+- **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
+  RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
+  the reaction's stream sequence over the copy's entry in the map from Mattermost posts
+  to stream sequences. A person's later reply or reaction on that copy was then carried
+  onto NATS naming the reaction, not the post, so an answer to an ask over NATS could
+  be attributed to the wrong post. Now only a mirrored post writes that entry; a
+  reaction's own entry is marked and writes none. This changes behaviour with every plan B
+  switch off, because the mirror runs regardless of them. An entry already overwritten
+  stays wrong for good: the bridge skips a sequence it has saved, so mirroring the
+  post again does not mend it. A person's reply on such a copy goes out with the
+  reaction's sequence as `root`, so it most likely is not attached to the ask, and a
+  person's reaction there is ignored.
+
+
 ### Breaking
 
 - **NATS names lose the `agent-` prefix** (#274, RT-6.36 step 8). An agent's NATS
