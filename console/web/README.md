@@ -78,9 +78,14 @@ image.
     every card, the first card the activity chart (stacked bars of the agents'
     own posts in four groups, the exact bus words on hovering a bar; "24 h"
     says "no hourly data yet", as hourly figures need agents that publish
-    hourly); "asks to humans" keeps the range before, n/a with its reason where
-    the stream does not hold it; counts and seconds only, a missing field shows
-    as `n/a`, never as 0.
+    hourly); below it four cards in one look (a grid of cards, thin bars, no
+    chart libraries): the bus overhead share per version (a bar whose full width
+    is 20 %), "asks to humans" as one table with a row for the range and a muted
+    row for the range before (n/a with its reason where the stream does not hold
+    it), the bus traffic by category (bars relative to the largest) and the
+    tokens by category (stacked bars, an "estimated" chip, a switch between
+    input-token equivalents and raw tokens); counts and seconds only, a missing
+    field shows as `n/a`, never as 0.
   - **The detail** of an agent or an ask is a drawer from the right, about
     half the width (the whole width below 800 px), not modal: the page behind
     stays usable, a click on another agent swaps the content, the cross, Esc or

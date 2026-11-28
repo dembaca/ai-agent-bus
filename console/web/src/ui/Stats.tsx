@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import type { Activity, ConsoleApi, RangeKey, Report, ReportStack, TokenCategory } from "../api/types"
-import { seconds } from "../clock"
 import "./Stats.css"
 
 type Fail = (what: string, error: unknown) => void
@@ -54,60 +53,206 @@ export function Stats({ api, onFail, range, onRange }: {
         ))}
       </div>
     </div>
-    <div className="reports">
-      {reports.map((report) => report.activity ? (
-        <section key={report.id} className="report report--wide">
-          <header>
-            <h2>{report.title}</h2>
-            <span className="report__window">{report.window}</span>
-          </header>
-          <ActivityChart activity={report.activity} />
-        </section>
-      ) : (
-        <ReportCard key={report.id} report={report} />
-      ))}
-    </div>
+    <Cards reports={reports} />
     </>
   )
 }
 
-/** One card of figures (RT-6.9): a card whose range the stream does not hold keeps its
- * place with every figure n/a and says why. */
-export function ReportCard({ report }: { report: Report }) {
+/** The cards of the page, in the order the server sends them. */
+export function Cards({ reports }: { reports: Report[] }) {
   return (
-    <section className="report">
-      <header>
-        <h2>{report.title}</h2>
-        <span className="report__window">{report.window}</span>
-      </header>
-      {report.warn && <p className="report__warn">warn: {report.warn}</p>}
-      {report.note && <p className="report__note">{report.note}</p>}
-      {report.unavailable && <p className="report__note" role="status">n/a: {report.unavailable}</p>}
-      <table className="report__table">
+    <div className="cards">
+      {reports.map((report) => {
+        if (report.activity) {
+          return (
+            <section key={report.id} className="card card--wide" aria-label={report.title}>
+              <h2 className="card__title">{report.title}</h2>
+              <ActivityChart activity={report.activity} />
+            </section>
+          )
+        }
+        if (report.id === "asks-before") return null
+        if (report.id === "asks") {
+          return <AsksCard key={report.id} now={report} before={reports.find((r) => r.id === "asks-before")} />
+        }
+        if (report.id === "share-per-version") return <ShareCard key={report.id} report={report} />
+        if (report.id === "traffic-by-category") return <TrafficCard key={report.id} report={report} />
+        if (report.id === "tokens-by-category") return <TokensCard key={report.id} report={report} />
+        return <FigureCard key={report.id} report={report} />
+      })}
+    </div>
+  )
+}
+
+const value = (report: Report | undefined, label: string): number | null =>
+  report?.fields.find((f) => f.label === label)?.value ?? null
+
+/** A count with thousands separators, or "n/a": a missing value is never 0. */
+export const count = (n: number | null): string => n === null ? "n/a" : n.toLocaleString("en-US")
+export const percent = (n: number | null): string => n === null ? "n/a" : `${n}%`
+
+/** A wait in the unit that reads best: seconds, minutes, or hours and minutes. */
+export function wait(s: number | null): string {
+  if (s === null) return "n/a"
+  if (s < 60) return `${s} s`
+  if (s < 3600) return `${Math.round(s / 60)} min`
+  return `${Math.floor(s / 3600)} h ${String(Math.round((s % 3600) / 60)).padStart(2, "0")} min`
+}
+
+/** A card's n/a reason, when the whole card is n/a (a range the stream does not hold). */
+function Unavailable({ report }: { report: Report }) {
+  return report.unavailable ? <p className="card__note" role="status">n/a: {report.unavailable}</p> : null
+}
+
+/** The small figures a card keeps beside its chart (lines counted, age of the oldest line):
+ * every one shown, n/a where the stream has no value. */
+function Facts({ items }: { items: { label: string; text: string }[] }) {
+  return (
+    <dl className="facts">
+      {items.map((i) => (
+        <div key={i.label}><dt>{i.label}</dt><dd>{i.text}</dd></div>
+      ))}
+    </dl>
+  )
+}
+
+const age = (report: Report): { label: string; text: string } =>
+  ({ label: "oldest line", text: ageText(value(report, "age of the oldest line")) })
+const ageText = (s: number | null): string => s === null ? "n/a" : s >= 86400 ? `${Math.floor(s / 86400)} d` : wait(s)
+
+/** The share of the bus overhead in all tokens, per version (RT-6.9 step 3): a thin bar
+ * whose full width is 20 %. */
+export function ShareCard({ report }: { report: Report }) {
+  const rows = report.fields.filter((f) => f.label.startsWith("version "))
+  return (
+    <section className="card" aria-label={report.title}>
+      <h2 className="card__title">{report.title}</h2>
+      <Unavailable report={report} />
+      <div className="bars bars--share">
+        {rows.map((row) => {
+          const label = row.label.slice("version ".length)
+          const v = row.value
+          return (
+            <Fragment key={row.label}>
+              <span className="bars__label bars__label--mono">{label}</span>
+              <span className="bars__track" role="img"
+                aria-label={v === null ? `${label}: n/a, no token counts` : `${label}: ${v} percent of all tokens`}>
+                {v !== null && <span className="bars__fill bars__fill--share"
+                  style={{ width: `${Math.min(100, (v / 20) * 100)}%` }} />}
+              </span>
+              <span className="bars__value">{percent(v)}</span>
+            </Fragment>
+          )
+        })}
+      </div>
+      {rows.length === 0 && !report.unavailable && <p className="card__note" role="status">n/a: no version sent token counts</p>}
+      <Facts items={[{ label: "lines", text: count(value(report, "lines")) }, age(report)]} />
+      <p className="card__note">
+        The bar's full width is 20%. Sessions that sent no token counts are left out, not counted as zero.
+      </p>
+    </section>
+  )
+}
+
+/** The asks to humans: a row for the chosen range and a muted row for the range before. */
+export function AsksCard({ now, before }: { now: Report; before?: Report }) {
+  const row = (r: Report, muted: boolean) => {
+    const asked = value(r, "asks")
+    const answered = value(r, "answered")
+    const share = value(r, "answered share")
+    return (
+      <tr key={r.id} className={muted ? "asks__row asks__row--before" : "asks__row"}>
+        <th scope="row">{r.window}</th>
+        <td>{count(asked)}</td>
+        <td>{count(answered)}{answered !== null && share !== null ? ` · ${share}%` : ""}</td>
+        <td>{count(value(r, "still open at the part's end"))}</td>
+        <td>{wait(value(r, "mean wait for an answer"))}</td>
+        <td>{wait(value(r, "longest wait for an answer"))}</td>
+      </tr>
+    )
+  }
+  return (
+    <section className="card" aria-label={now.title}>
+      <h2 className="card__title">{now.title}</h2>
+      <Unavailable report={now} />
+      {before?.unavailable && (
+        <p className="card__note" role="status">{before.window}: n/a, {before.unavailable}</p>
+      )}
+      <table className="asks">
+        <thead>
+          <tr>
+            <th scope="col">Window</th><th scope="col">Asked</th><th scope="col">Answered</th>
+            <th scope="col">Open</th><th scope="col">Mean wait</th><th scope="col">Longest wait</th>
+          </tr>
+        </thead>
         <tbody>
-          {report.fields.map((field) => (
-            <tr key={field.label}>
-              <th>{field.label}</th>
-              <td>{seconds(field.value, field.unit)}</td>
-            </tr>
-          ))}
+          {row(now, false)}
+          {before && row(before, true)}
         </tbody>
       </table>
-      {report.bars && (
-        <div className="report__bars">
-          {report.bars.map((bar) => (
-            <div key={bar.label} className="report__bar" title={`${bar.label}: ${bar.value}`}>
-              <span className="report__bar-label">{bar.label}</span>
-              <span className="report__bar-track">
-                <span className="report__bar-fill"
-                  style={{ width: `${Math.min(100, (bar.value / 6) * 100)}%` }} />
-              </span>
-              <span className="report__bar-value">{bar.value}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {report.stacks && <Stacks stacks={report.stacks} />}
+      <p className="card__note">An ask that expired without an answer counts as asked, not as answered.</p>
+    </section>
+  )
+}
+
+/** The bus traffic by category (RT-6.9 step 3): bars relative to the largest of their group. */
+export function TrafficCard({ report }: { report: Report }) {
+  const group = (title: string, rows: { label: string; v: number | null }[]) => {
+    const max = Math.max(0, ...rows.map((r) => r.v ?? 0))
+    return (
+      <div className="bars bars--traffic" role="group" aria-label={title}>
+        {rows.map((r) => (
+          <Fragment key={r.label}>
+            <span className="bars__label">{r.label}</span>
+            <span className="bars__track" role="img"
+              aria-label={r.v === null ? `${title}, ${r.label}: n/a` : `${title}, ${r.label}: ${count(r.v)}`}>
+              {r.v !== null && max > 0 && <span className="bars__fill bars__fill--traffic"
+                style={{ width: `${(r.v / max) * 100}%` }} />}
+            </span>
+            <span className="bars__value">{count(r.v)}</span>
+          </Fragment>
+        ))}
+      </div>
+    )
+  }
+  return (
+    <section className="card" aria-label={report.title}>
+      <h2 className="card__title">{report.title}</h2>
+      <Unavailable report={report} />
+      <h3 className="card__sub">Items</h3>
+      {group("Items", [
+        { label: "bus overhead", v: value(report, "bus overhead, items") },
+        { label: "coordination", v: value(report, "coordination, items") },
+      ])}
+      <h3 className="card__sub">Characters</h3>
+      {group("Characters", [
+        { label: "bus overhead", v: value(report, "bus overhead, characters") },
+        { label: "coordination", v: value(report, "coordination, characters") },
+      ])}
+      <Facts items={[
+        { label: "overhead share of characters", text: percent(value(report, "bus overhead share of characters")) },
+        { label: "polls", text: count(value(report, "polls")) },
+        { label: "empty polls", text: percent(value(report, "empty polls share")) },
+        { label: "lines with these counts", text: count(value(report, "lines with these counts")) },
+        { label: "lines", text: count(value(report, "lines")) },
+        age(report),
+      ]} />
+      <p className="card__note">Counted from the STATS lines every session publishes.</p>
+    </section>
+  )
+}
+
+/** A card the design has no place for: its figures as facts, in the same shell. */
+function FigureCard({ report }: { report: Report }) {
+  return (
+    <section className="card" aria-label={report.title}>
+      <h2 className="card__title">{report.title}</h2>
+      <Unavailable report={report} />
+      <Facts items={report.fields.map((f) => ({
+        label: f.label,
+        text: f.unit === "s" ? wait(f.value) : f.unit === "%" ? percent(f.value) : count(f.value),
+      }))} />
+      {report.note && <p className="card__note">{report.note}</p>}
     </section>
   )
 }
@@ -147,7 +292,7 @@ export function ActivityChart({ activity }: { activity: Activity }) {
       {activity.unavailable ? (
         <>
           <p className="activity__empty" role="status">{activity.unavailable}</p>
-          {activity.reason && <p className="report__note">{activity.reason}</p>}
+          {activity.reason && <p className="card__note">{activity.reason}</p>}
         </>
       ) : peak === 0 ? (
         <p className="activity__empty" role="status">no posts counted in this range</p>
@@ -180,7 +325,7 @@ export function ActivityChart({ activity }: { activity: Activity }) {
             {" "}({GROUP_WORDS[g.id] ?? ""})</li>
         ))}
       </ul>
-      <p className="report__note">
+      <p className="card__note">
         Every post of an agent starts with a bus word. A bar counts the agents' own posts by that word;
         people's posts are not in it. The exact words show on hovering a bar.
       </p>
@@ -194,47 +339,63 @@ const CATEGORY_LABEL: Record<TokenCategory, string> = {
   coordination: "coordination",
 }
 
-/** The tokens by category (RT-6.9 step 3): one stacked bar per row, the
- * percent on each segment; input-token equivalents by default, raw tokens
- * on request. Every bar of an estimate carries the "estimated" mark. */
-function Stacks({ stacks }: { stacks: ReportStack[] }) {
+/** The tokens by category (RT-6.9 step 3): per row one stacked bar; input-token equivalents
+ * by default, raw tokens on request. The split is an estimate, the card says so. */
+export function TokensCard({ report }: { report: Report }) {
   const [raw, setRaw] = useState(false)
+  const stacks: ReportStack[] = report.stacks ?? []
+  const estimated = stacks.some((s) => s.estimated)
   return (
-    <div className="report__stacks">
-      <div className="report__stack-head">
-        <span className="report__legend">
-          {(Object.keys(CATEGORY_LABEL) as TokenCategory[]).map((c) => (
-            <span key={c} className={`report__key report__seg--${c}`}>{CATEGORY_LABEL[c]}</span>
-          ))}
-        </span>
-        <button type="button" className="report__toggle" onClick={() => setRaw(!raw)}>
-          {raw ? "raw tokens" : "input-token equivalents"}
-        </button>
+    <section className="card" aria-label={report.title}>
+      <div className="card__head">
+        <h2 className="card__title">
+          {report.title}
+          {estimated && <span className="chip">estimated</span>}
+        </h2>
+        <div className="range range--small" role="group" aria-label="Unit">
+          <button type="button" className="range__btn" aria-pressed={!raw} onClick={() => setRaw(false)}>
+            Input-token equivalents
+          </button>
+          <button type="button" className="range__btn" aria-pressed={raw} onClick={() => setRaw(true)}>
+            Raw tokens
+          </button>
+        </div>
       </div>
-      {stacks.length === 0 && <p className="report__note">n/a</p>}
-      {stacks.map((stack) => {
-        const segments = raw ? stack.raw : stack.segments
-        return (
-          <div key={stack.label} className="report__stack">
-            <span className="report__bar-label">
-              {stack.label}
-              {stack.estimated && <span className="report__estimated">estimated</span>}
-            </span>
-            <span className="report__stack-track">
-              {segments.map((seg) => {
-                const pct = Math.min(100, Math.max(0, seg.percent ?? 0))
-                return (
-                  <span key={seg.category} className={`report__seg report__seg--${seg.category}`}
-                    style={{ width: `${pct}%` }}
-                    title={`${CATEGORY_LABEL[seg.category]}: ${seg.value} (${seg.percent ?? "n/a"} %)`}>
-                    {pct > 0 && <span className="report__seg-label">{pct} %</span>}
-                  </span>
-                )
-              })}
-            </span>
-          </div>
-        )
-      })}
-    </div>
+      <Unavailable report={report} />
+      {stacks.length === 0 && !report.unavailable && <p className="card__note" role="status">n/a: no token split in this range</p>}
+      <div className="stacks">
+        {stacks.map((stack) => {
+          const segments = raw ? stack.raw : stack.segments
+          const said = segments.map((seg) =>
+            `${seg.percent === null ? "n/a" : `${seg.percent} percent`} ${CATEGORY_LABEL[seg.category]}`).join(", ")
+          return (
+            <Fragment key={stack.label}>
+              <span className="bars__label bars__label--mono">{stack.label}</span>
+              <span className="stack" role="img" aria-label={`${stack.label}: ${said}`}>
+                {segments.map((seg) => (seg.percent ?? 0) > 0 && (
+                  <span key={seg.category} className={`stack__seg stack__seg--${seg.category}`}
+                    style={{ flex: seg.percent ?? 0 }}
+                    title={`${CATEGORY_LABEL[seg.category]}: ${count(seg.value)} (${seg.percent}%)`} />
+                ))}
+              </span>
+            </Fragment>
+          )
+        })}
+      </div>
+      <span className="legend">
+        {(Object.keys(CATEGORY_LABEL) as TokenCategory[]).map((c) => (
+          <span key={c} className={`legend__key stack__seg--${c}`}>{CATEGORY_LABEL[c]}</span>
+        ))}
+      </span>
+      <Facts items={[
+        { label: "lines with the split", text: `${count(value(report, "lines with the split"))} of ${count(value(report, "lines"))}` },
+        { label: "requests driven by the bus alone", text: count(value(report, "requests driven by the bus alone")) },
+        { label: "requests driven by coordination", text: count(value(report, "requests driven by coordination")) },
+        age(report),
+      ]} />
+      <p className="card__note">
+        A request's tokens are split by what its context and output hold, not by what started the turn.
+      </p>
+    </section>
   )
 }
