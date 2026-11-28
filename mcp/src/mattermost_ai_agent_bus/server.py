@@ -27,7 +27,7 @@ from pydantic import ValidationError
 from . import config
 from . import (
     __version__, a2a, askroute, asks, attach, attest, channel, compose, debug, departed, files, gate, hookapi, hosted,
-    lease, life, login, mandate, overhead,
+    lease, life, login, login_notice, mandate, overhead,
     owners, ownpost, permission,
     natsbus, nobot, profile, receipt, release, remind, session_file, slim, stall, stats, tasks, unanswered, unread, usage,
 )
@@ -247,6 +247,9 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
     # The Keycloak login, when CB_LOGIN_* is set; the session never waits
     # for it (RT-6.34). The host process starts it in hosted.services().
     logging_in = login.start()
+    # One release only (piece 14c-3): an ask an earlier version left open for a login approval
+    # is settled with the bot's own mark. TODO: remove in the shutdown release (RT-6.34).
+    settling = asyncio.create_task(login_notice.settle_old_login_asks(_bus_client))
     # A home that runs over NATS (CB_NATS_HOMES, RT-6.36): its bus starts when the login is ready.
     nats = asyncio.create_task(_nats_start())
     api = await _start_hook_api()
@@ -260,6 +263,7 @@ async def _lifespan(_server: Any) -> AsyncIterator[dict[str, Any]]:
         task.cancel()
         attested.cancel()
         checking.cancel()
+        settling.cancel()
         if logging_in is not None:
             login.stop()
         if api is not None:

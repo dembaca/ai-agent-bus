@@ -23,9 +23,11 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Protocol, TextIO
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Protocol, TextIO
 from urllib.parse import urlsplit
+
+from . import a2a, asks
 
 if TYPE_CHECKING:
     from .login import DeviceGrant
@@ -188,3 +190,30 @@ NOTICE_HOST_KEY = (
 def notice_text(agent: str, kind: str) -> str:
     """The theft notice to the responsible human (RT-6.34): what was used and what only they can do."""
     return (NOTICE_HOST_KEY if kind == "host_key" else NOTICE_SESSION).format(agent=agent)
+
+
+# The ask an earlier version posted in the home for a login approval (piece 14c-3 removed it).
+# A session upgraded mid-approval still has it open in its asks file, and the reminders repeat
+# it; this start settles it once. TODO: remove in the shutdown release (RT-6.34).
+OLD_ASK_TITLE = "A login approval waits in your direct messages"
+
+
+async def settle_old_login_asks(get_client: Callable[[], Awaitable[Any]]) -> None:
+    """Settle an open login ask of an earlier version (`OLD_ASK_TITLE`) once per start, with
+    the bot's own ✅; never raises, and nothing without a bot to post with."""
+    try:
+        client = await get_client()
+        if client is None or not getattr(client, "token", None):
+            return
+        me = await client.get_me()
+        heads = asks.titles(me.id)
+        for post_id in asks.open_asks(me.id):
+            if heads.get(post_id) != OLD_ASK_TITLE:
+                continue
+            asks.resolve(me.id, post_id)
+            try:
+                await client.add_reaction(post_id, a2a.done_reaction())
+            except Exception as exc:  # noqa: BLE001 — the ask is resolved, the mark cosmetic
+                log.info("login: an old ask got no mark (%s)", type(exc).__name__)
+    except Exception as exc:  # noqa: BLE001 — a left-over ask is no reason to fail the start
+        log.debug("login: an old ask was not settled (%s)", type(exc).__name__)

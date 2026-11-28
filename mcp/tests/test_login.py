@@ -13,8 +13,9 @@ import nkeys
 import pytest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from fakes import FakeChat
 
-from mattermost_ai_agent_bus import keystore, login, login_notice
+from mattermost_ai_agent_bus import asks, keystore, login, login_notice
 
 ISSUER = "https://kc.example.test/realms/bus"
 SECRETS = ("access-secret", "refresh-secret")
@@ -352,6 +353,34 @@ async def test_run_never_raises_and_the_current_login_is_reachable(monkeypatch, 
     with caplog.at_level(logging.WARNING):
         await lg.run()
     assert "login" in caplog.text
+
+
+# --- the ask an earlier version left (RT-6.34, piece 14c-3, one release only) ---
+
+@pytest.fixture
+def state(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+
+async def test_an_open_login_ask_of_an_earlier_version_is_settled_once(state):
+    """Piece 14c-3: an upgrade leaves "waits in your direct messages" open; the start
+    settles it with the bot's own mark, and only that title."""
+    chat = FakeChat(people={"u1": "alice"})
+    asks.add(chat.me.id, "ask1", "alice", "ask1", title=login_notice.OLD_ASK_TITLE)
+    asks.add(chat.me.id, "other", "alice", "other", title="Something else")
+    await login_notice.settle_old_login_asks(lambda: asyncio.sleep(0, chat))
+    assert not asks.is_open(chat.me.id, "ask1") and asks.is_open(chat.me.id, "other")
+    assert [r.post_id for r in chat.reacts.get("ask1", [])] == ["ask1"]
+    assert "other" not in chat.reacts
+    await login_notice.settle_old_login_asks(lambda: asyncio.sleep(0, chat))  # nothing left
+
+
+async def test_without_a_bot_no_old_ask_is_touched(state):
+    chat = FakeChat(people={"u1": "alice"})
+    chat.token = None
+    asks.add(chat.me.id, "ask1", "alice", "ask1", title=login_notice.OLD_ASK_TITLE)
+    await login_notice.settle_old_login_asks(lambda: asyncio.sleep(0, chat))
+    assert asks.is_open(chat.me.id, "ask1")
 
 
 # --- sessions of one OS user: one lock, one token per (issuer, client, human) ----
