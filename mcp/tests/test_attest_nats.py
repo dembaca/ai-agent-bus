@@ -22,10 +22,10 @@ AGENT = "agent-them"
 
 def body(agent: str = AGENT, owner: tuple[str, str] | None = ("u1", "alice"),
          trusted: tuple[tuple[str, str], ...] | None = (("u1", "alice"),), cut: Any = False,
-         exp: Any = int(T0) + 900, **over: Any) -> bytes:
+         exp: Any = int(T0) + 900, home: Any = None, **over: Any) -> bytes:
     """A record; a parameter given as None is left out."""
     rec: dict[str, Any] = {
-        "v": 1, "agent": agent,
+        "v": 1, "agent": agent, "home": home,
         "owner": None if owner is None else {"anchor": owner[0], "name": owner[1]},
         "trusted": None if trusted is None else [{"anchor": a, "name": n} for a, n in trusted],
         "cut": cut, "iat": int(T0), "exp": exp}
@@ -87,6 +87,7 @@ async def test_a_valid_attestation_is_kept_and_makes_no_warning(caplog: pytest.L
     body(owner=("u1", "Not A Name")), body(trusted=tuple((f"u{i}", f"n{i}") for i in range(33))),
     body(owner=None), body(trusted=None), body(cut=None), body(exp=None), body(iat=None),
     body(cut="no"), body(exp="soon"), body(exp=True), body(trusted=(("U1", "alice"),)),
+    body(home=1), body(home="Home"), body(home="a.b"), body(home=[]), body(home="x" * 65),
     b"not json", b"[]",
 ])
 async def test_a_malformed_attestation_is_dropped_with_a_warning(bad: bytes, caplog: pytest.LogCaptureFixture) -> None:
@@ -97,6 +98,22 @@ async def test_a_malformed_attestation_is_dropped_with_a_warning(bad: bytes, cap
     assert any("malformed" in r.getMessage() for r in caplog.records)
     with pytest.raises(MessageError):
         decode_attestation(bad, AGENT)
+
+
+async def test_the_home_is_read_only_with_the_anchors_owner() -> None:
+    """RT-6.41, #255: the record's home is taken only from the record the presence backs. None
+    means no word (an older service, a record still to come); '' means the service says the agent
+    has no home - so a reader falls back to the claim only on None, never on ''."""
+    bus, _ = _unit_bus()
+    await presence_of_owner(bus, "u1")
+    assert bus.home_of(AGENT) is None  # no record yet
+    await feed(bus, body(home="home"))
+    assert bus.home_of(AGENT) == "home"
+    await feed(bus, body(home=""), seq=2, t=T0 + 1)
+    assert bus.home_of(AGENT) == ""  # stated: no home, and no claim is consulted
+    # the record names another anchor than the presence subject: no word at all
+    await presence_of_owner(bus, "u2", seq=2, t=T0 + 1)
+    assert bus.home_of(AGENT) is None
 
 
 async def test_an_older_attestation_never_overrides_a_newer_one() -> None:
@@ -437,3 +454,15 @@ async def test_a_lone_claimant_without_a_record_does_not_show_as_the_holder(w: W
 async def test_without_any_record_the_name_comparison_stays(w: World) -> None:
     w.fake.owners[NAME_A] = "alice"
     assert await foreign(w, NAME_A) == {}
+
+
+async def test_an_older_record_states_no_home_at_all() -> None:
+    """RT-6.41, #255: a record without `home` is no word - `None`, never '' - so a reader of an
+    older login service falls back to the crown claim instead of taking every agent for a guest."""
+    bus, _ = _unit_bus()
+    await presence_of_owner(bus, "u1")
+    await feed(bus, body())  # the older format: no "home" key
+    assert bus.attestation_of(AGENT) is not None
+    assert bus.home_of(AGENT) is None
+    # and the dataclass keeps the field optional, so older constructions still hold
+    assert Attestation("u1", "alice", (), False, float(int(T0) + 900)).home is None

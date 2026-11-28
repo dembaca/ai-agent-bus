@@ -195,6 +195,8 @@ class BusLike(Protocol):
 
     def dm_of(self, agent: str) -> bool: ...
 
+    def home_of(self, agent: str) -> str | None: ...
+
     dm_source: Callable[[], bool] | None  # plan B piece 3: the home's DM switch, in the presence
 
     def notice_teller(self, agent: str) -> str: ...
@@ -960,7 +962,13 @@ class NatsPort:
             # Membership is announced for homes, guests and the lobby alike; the crown claim
             # only in the hello's home, which the login service grants (perms.go), so a name
             # with a claim here is a home agent and any other member a guest: no home of ours.
-            at_home = bus.claimed(home, name) or name == bus.name
+            # The attestation states the granted home (RT-6.41, #255) and arrives with the
+            # credential, before any claim: it decides home or guest when it states one, also as
+            # "" (a hello that named no home is no home agent). Only a record without one (an
+            # older login service) falls back to the claim.
+            stated = bus.home_of(name)
+            at_home = (stated == home if stated is not None
+                       else bus.claimed(home, name) or name == bus.name)
             rec = self.owned_link(name, home)
             card = bus.card_of(name)
             reachable = presence == "online"
