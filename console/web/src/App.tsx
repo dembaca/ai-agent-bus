@@ -253,7 +253,7 @@ export function App({ api }: { api: ConsoleApi }) {
   // up to where each ask's thread was read, per person (reads.ts): the red count
   const [reads, setReadsState] = useState<Reads>({})
   useEffect(() => { setReadsState(loadReads(person)) }, [person])
-  const onRead = useCallback((ask: string, posts: number) => {
+  const onRead = useCallback((ask: string, posts: number) => { // replies by others seen
     setReadsState((was) => {
       if (was[ask] === posts) return was
       const { [ask]: _old, ...rest } = was
@@ -349,7 +349,7 @@ export function App({ api }: { api: ConsoleApi }) {
                 </div>
               </div>
             )}
-            {view === "asks" && <Asks api={api} asks={asks} cards={cards} reads={reads}
+            {view === "asks" && <Asks api={api} asks={asks} cards={cards} reads={reads} operator={me}
               onThread={(row) => setThreadAsk(row.id)} />}
             {view === "stats" && <Stats api={api} onFail={fail} range={prefs.range} onRange={(range) => setPrefs({ range })} />}
           </div>
@@ -360,7 +360,7 @@ export function App({ api }: { api: ConsoleApi }) {
       {detail && (
         <aside className="drawer" aria-label="Detail">
           {threadRow
-            ? <ThreadDrawer api={api} ask={threadRow} onClose={closeDetail} onRead={onRead} onFail={fail} />
+            ? <ThreadDrawer api={api} ask={threadRow} operator={me} onClose={closeDetail} onRead={onRead} onFail={fail} />
             : <Detail api={api} card={agent} ask={askRow} asks={asks} stats={agentStats}
                 onClose={closeDetail} onFail={fail} />}
         </aside>

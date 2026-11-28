@@ -724,10 +724,15 @@ ASK_BODY_MAX = 3840
 ASK_VALID_SEC = 1800  # `exp` - `iat`: a record not renewed runs out after 30 min
 ASK_RENEW_SEC = 600.0  # renewed this often while an ask is open
 ASK_KINDS = ("approval", "question")
+ASK_ANSWER_MAX = 120  # characters of one answer; an ask offers two to four
 # The asked human's anchor in subject form (owner_token's encoding: "." as "~"); "-": none.
 HUMAN_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9~_-]{0,63}")
 _ASK_RECORD_KEYS = frozenset({"v", "asks", "more", "iat", "exp"})
 _ASK_KEYS = frozenset({"mm", "kind", "human", "title", "asked", "answered"})
+# Optional, sent only when there is something to say (an old reader refuses a record with
+# an unknown key, so an ask without answers keeps the old shape): the ask's own answers in
+# the order it was posted with, and the answer a trusted human picked.
+_ASK_OPTIONAL_KEYS = frozenset({"answers", "chosen"})
 
 
 @dataclass(frozen=True)
@@ -735,7 +740,10 @@ class OpenAsk:
     """One open ask as the record carries it: `mm` the ask's Mattermost post id, `human` the
     asked human's anchor in subject form or NO_OWNER (in what the MCP server hands the bus:
     the asked human's username, which the bus maps through its attestation), `asked` server
-    time in Unix seconds, `answered` a trusted human's first answer was seen."""
+    time in Unix seconds, `answered` a trusted human's first answer was seen. `answers`: the
+    ask's own answers, two to four plain texts in the order it was posted with, () for none
+    (an approval then reads go / no-go); `chosen`: the answer a reaction picked, "" when the
+    answer was a reply or none came."""
 
     mm: str
     kind: str
@@ -743,6 +751,8 @@ class OpenAsk:
     title: str
     asked: int
     answered: bool = False
+    answers: tuple[str, ...] = ()
+    chosen: str = ""
 
 
 @dataclass(frozen=True)
@@ -754,8 +764,23 @@ class AskRecord:
 
 
 def _ask_obj(a: OpenAsk) -> dict[str, Any]:
-    return {"mm": a.mm, "kind": a.kind, "human": a.human, "title": a.title,
-            "asked": a.asked, "answered": a.answered}
+    obj: dict[str, Any] = {"mm": a.mm, "kind": a.kind, "human": a.human, "title": a.title,
+                           "asked": a.asked, "answered": a.answered}
+    if a.answers:
+        obj["answers"] = list(a.answers)
+        if a.chosen:
+            obj["chosen"] = a.chosen
+    return obj
+
+
+def _clean_answers(answers: Iterable[str], chosen: str) -> tuple[tuple[str, ...], str]:
+    """The answers a record may carry: two to four non-empty one-line texts, each cut to
+    ASK_ANSWER_MAX; otherwise none (and then no chosen). `chosen` must be one of them."""
+    cut = tuple(card_text(a, ASK_ANSWER_MAX) or "" for a in answers)
+    if not 2 <= len(cut) <= 4 or not all(cut):
+        return (), ""
+    pick = card_text(chosen, ASK_ANSWER_MAX) or ""
+    return cut, pick if pick in cut else ""
 
 
 def encode_ask_record(asks: Iterable[OpenAsk], iat: int, more: int = 0) -> bytes:
@@ -770,11 +795,12 @@ def encode_ask_record(asks: Iterable[OpenAsk], iat: int, more: int = 0) -> bytes
             more += 1
             continue
         seen.add(a.mm)
+        answers, chosen = _clean_answers(a.answers, a.chosen)
         clean.append(OpenAsk(
             mm=a.mm, kind=a.kind if a.kind in ASK_KINDS else "approval",
             human=a.human if a.human == NO_OWNER or HUMAN_TOKEN_RE.fullmatch(a.human or "") else NO_OWNER,
             title=card_text(a.title, ASK_TITLE_MAX) or "",
-            asked=max(0, int(a.asked)), answered=bool(a.answered)))
+            asked=max(0, int(a.asked)), answered=bool(a.answered), answers=answers, chosen=chosen))
     clean.sort(key=lambda a: a.asked)
     kept, more = clean[:ASK_MAX], more + max(0, len(clean) - ASK_MAX)
     iat = int(iat)
@@ -813,7 +839,7 @@ def decode_ask_record(data: bytes) -> AskRecord:
     out: list[OpenAsk] = []
     seen: set[str] = set()
     for a in raw:
-        if not isinstance(a, dict) or set(a) != _ASK_KEYS:
+        if not isinstance(a, dict) or not _ASK_KEYS <= set(a) <= _ASK_KEYS | _ASK_OPTIONAL_KEYS:
             raise MessageError("ask keys")
         mm, kind, human, title, answered = a["mm"], a["kind"], a["human"], a["title"], a["answered"]
         if not isinstance(mm, str) or not BOT_RE.fullmatch(mm) or mm in seen:
@@ -827,8 +853,17 @@ def decode_ask_record(data: bytes) -> AskRecord:
             raise MessageError("ask title")
         if not isinstance(answered, bool):
             raise MessageError("ask answered")
+        answers = a.get("answers", [])
+        chosen = a.get("chosen", "")
+        if (not isinstance(answers, list) or (answers and not 2 <= len(answers) <= 4)
+                or not all(isinstance(x, str) and x and len(x) <= ASK_ANSWER_MAX and "\n" not in x
+                           for x in answers)):
+            raise MessageError("ask answers")
+        if not isinstance(chosen, str) or (chosen and chosen not in answers):
+            raise MessageError("ask chosen")
         out.append(OpenAsk(mm=mm, kind=kind, human=human, title=title,
-                           asked=_nonneg(a["asked"], "asked"), answered=answered))
+                           asked=_nonneg(a["asked"], "asked"), answered=answered,
+                           answers=tuple(answers), chosen=chosen))
     return AskRecord(asks=tuple(out), more=_nonneg(obj["more"], "more"), iat=iat, exp=exp)
 
 

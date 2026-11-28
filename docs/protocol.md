@@ -430,7 +430,8 @@ two open asks, and the empty one at the agent's bye:
 ```json
 {"v": 1, "asks": [
   {"mm": "8xqk3b1zwtrd5mfy6nqpe4hc1o", "kind": "approval", "human": "dembaca",
-   "title": "Merge PR 118 after the review", "asked": 1764061200, "answered": false},
+   "title": "Merge PR 118 after the review", "asked": 1764061200, "answered": true,
+   "answers": ["go", "no-go"], "chosen": "go"},
   {"mm": "3hq9t1c6pzbuxk8e7wj2r5dn4a", "kind": "question", "human": "-",
    "title": "Which branch holds the fix?", "asked": 1764050000, "answered": true}],
  "more": 0, "iat": 1764061800, "exp": 1764063600}
@@ -447,9 +448,11 @@ two open asks, and the empty one at the agent's bye:
 | `mm` | ask | The ask's Mattermost post id, 26 of `[a-z0-9]`, unique in the list |
 | `kind` | ask | `approval` or `question`, as `ask_human` set it |
 | `human` | ask | The asked human's anchor in its subject form, as the session's record from the login service gives it: the directory's anchor (a lower-case letter or digit, then up to 63 of `[a-z0-9._-]`) with every `.` written as `~`, the encoding of the presence subject's owner token (`ownerToken` in `services/auth/internal/callout/perms.go`, `natsbus.owner_token` in the MCP server), so a lower-case letter or digit, then up to 63 of `[a-z0-9~_-]`; `-` when the record gives none. "For me" compares it, in that form, with the operator's own anchor in the same form, never with a name |
-| `title` | ask | The ask's title line, at most 200 characters, shown as plain text with control and direction characters stripped; never the ask's context, recommendation or answer |
+| `title` | ask | The ask's title line, at most 200 characters, shown as plain text with control and direction characters stripped; never the ask's context or recommendation |
 | `asked` | ask | The ask's server time (Unix seconds); after 24 h a yes approves nothing |
 | `answered` | ask | The asking server saw a first answer by a trusted human |
+| `answers` | ask | Optional, sent only when the ask was posted with answers: two to four plain one-line texts of at most 120 characters, in the order the ask was posted with (the first is the go). Absent for an ask without answers, so a reader before this change still takes the record of such an ask; one that carries them is refused whole by such a reader (unknown key) |
+| `chosen` | ask | Optional, only with `answers`: the answer a trusted human's reaction picked, one of them word for word; absent for a reply or none yet |
 
 The whole record is at most 4 KiB; the MCP server's encoder stops at 3840
 bytes, since the stream's limit counts headers too (it sends none). No

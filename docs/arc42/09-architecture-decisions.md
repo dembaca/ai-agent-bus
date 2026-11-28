@@ -6190,20 +6190,34 @@ page (point 15). In the wording, many agents are a flock, never a fleet.
 owner decided on 2026-11-28 that the view is built now, with everything that
 writes disabled). The Asks view lists one row per ask (the chip "for you" or
 "may answer", the need with agent, home, asked human and kind, the age, the
-state, a thread button with the post count and a red count of posts new since
-the person last opened the thread). A click on the row unfolds it: the answer
-box ("This counts as your approval of: the ask's wording" and the answers as
-buttons) and "Chat with agent", which opens the ask's thread as a drawer from
+state, a thread button with the post count and a red count of replies by others
+since the person last opened the thread). A click on the row unfolds it: the
+answer box ("This counts as your approval of: the ask's wording" and the answers
+as buttons) and "Chat with agent", which opens the ask's thread as a drawer from
 the right with its posts read only. The answer buttons and the drawer's reply
 field are disabled and say "answer in the chat for now": **answering stays
 disabled until the human security review**; no write endpoint, no publish right
 of the console's credential and no answer binding is built or switched on.
-The read position per person and ask (the posts seen when the thread was last
-open) is kept in the browser's `localStorage` under the operator's name, since
-the server has no per-person store and no write path to the bus. Only the need
-is shown of an ask: the API carries no context, recommendation, where, answers
-or letters, and `GET /v1/threads/<id>` returns no posts yet, so nothing there
-is drawn. A restriction to an approval goes into the thread and the agent asks
+The read position per person and ask (the replies by others seen when the
+thread was last open) is kept in the browser's `localStorage` under the
+operator's name, since the server has no per-person store and no write path to
+the bus. Design contact's answers, same day: the console shows exactly the ask's
+own answers in their order and words (an approval posted with none reads go /
+no-go; nothing is invented); exactly two stand side by side without letters,
+more stand as rows with the key caps A to D; an answered ask says "answered: go"
+or "answered: A" in the state column; the red count is the replies by others
+since the operator last opened the thread, never the ask's own post or the
+operator's own posts; the "for you" chip stays in a narrow window, above the
+need; an ask that is not the operator's to answer has no answer box and shows
+the answers as plain text; the thread button is a small speech-bubble SVG with
+the number alone. For this `GET /v1/asks` gained two read-only fields, `answers`
+and `chosen`, from the ask record the agent's MCP server publishes (the next release; the
+record gained the optional keys of the same names, [protocol.md](../protocol.md)):
+the console server reads no ask post, so the card's `Answer` line is not its
+source but the server's own `answers` of the ask. The ask record still holds no
+context, recommendation or "where" (its size and its rule of a title, no body),
+so none is shown and no caption stands over nothing; `GET /v1/threads/<id>`
+returns no posts yet, so nothing there is drawn. A restriction to an approval goes into the thread and the agent asks
 again (RT-6.11); there is no "go with a comment". Rejected: everything in the
 drawer without unfolding in the list, and a free "write to an agent" or a
 channel list. RT-6.43 (the console's runtime) is unchanged: it only reads.

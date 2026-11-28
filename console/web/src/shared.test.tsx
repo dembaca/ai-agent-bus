@@ -29,7 +29,7 @@ async function sharedFleet(): Promise<{ card: AgentCard; cards: AgentCard[]; ask
   const ask: Ask = {
     id: "p-ask", by: NATS, displayName: NATS, home: card.home, kind: "approval", human: "dembaca",
     need: "Merge PR #1?", at: Date.now() - 60_000, end: "open", forMe: true, mayAnswer: false,
-    agentGone: false, threadId: "p-ask",
+    agentGone: false, threadId: "p-ask", answers: [], chosen: null,
   }
   return { card, cards: [card], ask }
 }

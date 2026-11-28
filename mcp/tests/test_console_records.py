@@ -304,8 +304,8 @@ def test_the_asks_file_gives_the_records_open_asks(monkeypatch) -> None:
     asks.answered(UID, _id(1), t0 + 100)
     rows = asks.records(UID)
     assert [r[0] for r in rows] == [_id(1), _id(2)]
-    assert rows[0][1:] == (t0, "dembaca", "Merge PR 118?", "approval", True)
-    assert rows[1][2:] == ("carol", "Which branch?", "question", False)
+    assert rows[0][1:] == (t0, "dembaca", "Merge PR 118?", "approval", True, [], "")
+    assert rows[1][2:] == ("carol", "Which branch?", "question", False, [], "")
     asks.resolve(UID, _id(1))
     assert [r[0] for r in asks.records(UID)] == [_id(2)] and len(changed) == 5
     monkeypatch.setenv("MM_BOT_USER_ID", UID)
@@ -478,6 +478,7 @@ async def test_ask_human_keeps_the_kind_for_the_record(monkeypatch) -> None:
     me = (await c.get_me()).id
     rows = {r[0]: r for r in asks.records(me)}
     assert rows[q["ask"]][4] == "question" and rows[q["ask"]][3] == "Which order?"
+    assert rows[q["ask"]][6] == ["A", "B", "C"]  # the ask's own answers, in order
 
 
 def test_the_protocols_examples_pass_the_real_decoders() -> None:
@@ -544,3 +545,39 @@ def test_the_harness_names_agree_everywhere() -> None:
     union = re.search(r"export type Harness =([^\n]*\n[^\n]*)", ts)
     assert union is not None
     assert set(re.findall(r'"([a-z-]+)"', union.group(1))) == set(stats.RUNTIMES)
+
+
+# --- the ask's own answers and the picked one (RT-6.43 step 5) --------------------
+def test_the_record_carries_the_answers_and_the_chosen_one_only_when_there_are_answers() -> None:
+    """An ask with answers sends them in order, and the one a reaction picked; one without
+    sends neither key, so an old reader still takes its record."""
+    plain = json.loads(encode_ask_record([_ask(1)], 5))["asks"][0]
+    assert set(plain) == {"mm", "kind", "human", "title", "asked", "answered"}
+    with_answers = _ask(2, answers=("Ship", "Hold", "Ask again"), chosen="Hold", answered=True)
+    obj = json.loads(encode_ask_record([with_answers], 5))["asks"][0]
+    assert obj["answers"] == ["Ship", "Hold", "Ask again"] and obj["chosen"] == "Hold"
+    assert decode_ask_record(encode_ask_record([with_answers], 5)).asks == (with_answers,)
+    # one answer is no choice, and a chosen that is none of them is dropped, never invented
+    one = json.loads(encode_ask_record([_ask(3, answers=("only",), chosen="only")], 5))["asks"][0]
+    assert "answers" not in one and "chosen" not in one
+    stray = json.loads(encode_ask_record([_ask(4, answers=("a", "b"), chosen="c")], 5))["asks"][0]
+    assert stray["answers"] == ["a", "b"] and "chosen" not in stray
+
+
+@pytest.mark.parametrize("extra", [
+    {"answers": ["only"]}, {"answers": ["a", ""]}, {"answers": "ab"}, {"answers": ["a"] * 5},
+    {"answers": ["a", "b"], "chosen": "c"}, {"chosen": "a"}, {"answers": ["a", "b"], "chosen": 1},
+    {"answers": ["a\nb", "c"]}, {"answers": ["x" * 121, "c"]}, {"props": {}},
+])
+def test_the_decoder_refuses_bad_answers(extra: dict[str, Any]) -> None:
+    obj = json.loads(encode_ask_record([_ask(1)], 5))
+    obj["asks"][0].update(extra)
+    with pytest.raises(MessageError):
+        decode_ask_record(json.dumps(obj).encode())
+
+
+def test_a_reactions_choice_is_kept_for_the_record() -> None:
+    asks.add(UID, _id(7), "dembaca", _id(7), title="Which?", kind="question", answers=["A", "B", "C"])
+    asks.answered(UID, _id(7), time.time(), chosen="B")
+    row = next(r for r in asks.records(UID) if r[0] == _id(7))
+    assert row[5] is True and row[6] == ["A", "B", "C"] and row[7] == "B"

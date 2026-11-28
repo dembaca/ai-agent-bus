@@ -50,3 +50,14 @@ export function SearchIcon() {
     </svg>
   )
 }
+
+/** A speech bubble, hand-drawn: the mark of a thread. Labelled, so a button that
+ * holds only a number still says what the number counts. */
+export function SpeechBubbleIcon({ size = 14, label = "Thread" }: { size?: number; label?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" role="img" aria-label={label}>
+      <path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-5 4v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" />
+    </svg>
+  )
+}

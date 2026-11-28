@@ -1,16 +1,20 @@
 // What the console remembers per person and ask for the red count (#285): up to
-// where the thread was read, as the number of posts the operator had seen when the
-// thread was last open. Kept in this browser's localStorage under the operator's
+// where the thread was read, as the number of replies by others the operator had
+// seen when the thread was last open (the ask's own post, the thread's root, and the
+// operator's own posts never count). Kept in this browser's localStorage under the operator's
 // name, like prefs.ts: the server has no per-person store and the console has no
 // write path to the bus, so the browser is the simplest place that needs neither.
 // Storage can be missing or throw (a private window): then every post of a thread
 // counts as new and the console still works. A stored value that is no count is
 // dropped, never trusted.
 
+import type { Operator, Post } from "./api/types"
+
 export type Reads = Record<string, number>
 
 const MAX_READS = 500
-const keyOf = (person: string): string => `choirbus.console.reads.${person}`
+// v2: the stored number counts replies by others, where it once counted every post
+const keyOf = (person: string): string => `choirbus.console.reads.v2.${person}`
 
 export function loadReads(person: string | null): Reads {
   if (!person) return {}
@@ -38,7 +42,20 @@ export function saveReads(person: string | null, reads: Reads): void {
   }
 }
 
-/** The posts of a thread the operator has not seen: all, when it was never opened. */
-export function unread(total: number, reads: Reads, ask: string): number {
-  return Math.max(0, total - (reads[ask] ?? 0))
+/** The replies in a thread that count for the red number: those of others. Neither
+ * the thread's root (the ask's own post) nor a post of the operator counts; with no
+ * operator known none is taken for theirs. */
+export function repliesByOthers(posts: readonly Post[], rootId: string, operator: Operator | null): number {
+  const mine = new Set<string>()
+  for (const name of [operator?.username, operator?.displayName]) {
+    if (name) mine.add(name.trim().toLowerCase())
+  }
+  return posts.filter((p) =>
+    p.id !== rootId && p.rootId !== null && !mine.has(p.author.trim().toLowerCase())).length
+}
+
+/** The replies by others the operator has not seen: all of them when the thread was
+ * never opened. */
+export function unread(others: number, reads: Reads, ask: string): number {
+  return Math.max(0, others - (reads[ask] ?? 0))
 }

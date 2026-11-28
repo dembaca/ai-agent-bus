@@ -154,7 +154,7 @@ def test_the_app_side_shapes_split_by_seam() -> None:
     exactly the two seams http.ts maps (the ask row itself is built from
     an MCP server's record in test_the_ask_row_the_fixture_states)."""
     ask = FIXTURE["ask"]
-    assert set(ask) >= {"for_me", "may_answer", "display_name", "thread_id"}
+    assert set(ask) >= {"for_me", "may_answer", "display_name", "thread_id", "answers", "chosen"}
     me = FIXTURE["me"]
     assert set(me) == {"username", "display_name", "groups", "build"}
     assert set(me["build"]) == {"version", "revision"}  # #182: the footer's version
@@ -171,7 +171,8 @@ def test_the_ask_row_the_fixture_states(fleet_scenario) -> None:
 
     ask = FIXTURE["ask"]
     record = encode_ask_record([OpenAsk(mm=ask["id"], kind=ask["kind"], human="dembaca",
-                                        title=ask["need"], asked=ask["at"] // 1000)], 1763980800)
+                                        title=ask["need"], asked=ask["at"] // 1000,
+                                        answers=tuple(ask["answers"]))], 1763980800)
     assert fleet_scenario.on_delivery(f"presence.ask.{ask['home']}.{ask['by']}", record,
                                       ack(5, 5, 1763980800.0), "PRESENCE", "console")
     assert fleet_scenario.asks() == [ask]

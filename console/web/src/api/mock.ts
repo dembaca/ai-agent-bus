@@ -113,6 +113,7 @@ const asks = (): AskWire[] => [
     need: "Is today's bridge the documented interim: every agent mirrors its own NATS posts into Mattermost?",
     at: now() - 14 * minute, end: "open", forMe: true, mayAnswer: true, agentGone: false,
     threadId: "8xqk3b1zwtrd5mfy6nqpe4hc1o",
+    answers: ["Yes, the documented interim", "No, another way", "Ask again later"], chosen: null,
   },
   {
     id: "3hq9t1c6pzbuxk8e7wj2r5dn4a", by: "agent-mac-ai-agent-b7ccf7", home: "ai-agent-bus-dev",
@@ -120,20 +121,21 @@ const asks = (): AskWire[] => [
     need: "Which strategy should smart-compact use in your Claude sessions?",
     at: now() - 38 * minute, end: "answered", forMe: true, mayAnswer: true, agentGone: false,
     threadId: "3hq9t1c6pzbuxk8e7wj2r5dn4a",
+    answers: ["Compact at 80 percent", "Compact at turn end"], chosen: "Compact at turn end",
   },
   {
     id: "p4n8c2vxk7mq1zr6d3wy5ehb9t", by: "agent-mac-chat-next-3b92c9", home: "chat-next",
     kind: "approval", human: "somebody-else",
     need: "Does the pilot console show the guest channels read-only, or only the homes?",
     at: now() - 31 * 60 * minute, end: "expired", forMe: false, mayAnswer: true, agentGone: true,
-    threadId: "p4n8c2vxk7mq1zr6d3wy5ehb9t",
+    threadId: "p4n8c2vxk7mq1zr6d3wy5ehb9t", answers: [], chosen: null,
   },
   {
     id: "z7k2m9q4w1x8c5v3b6n0rjtyhd", by: "agent-mac-ai-agent-b7ccf7", home: "ai-agent-bus-dev",
     kind: "approval", human: "dembaca",
     need: "Pull the login service image digest into the lab answer?",
     at: now() - 26 * 60 * minute, end: "expired", forMe: true, mayAnswer: true, agentGone: false,
-    threadId: "z7k2m9q4w1x8c5v3b6n0rjtyhd",
+    threadId: "z7k2m9q4w1x8c5v3b6n0rjtyhd", answers: [], chosen: null,
   },
 ]
 
@@ -462,7 +464,7 @@ const liveAsk = (end: Ask["end"]): AskWire => ({
   kind: "approval", human: "dembaca",
   need: "Run the end-to-end NATS test against the shared nats-server too?",
   at: now() - minute, end, forMe: true, mayAnswer: true, agentGone: false,
-  threadId: "k5w8r2n7c4x1q9m3t6v0bzjdya",
+  threadId: "k5w8r2n7c4x1q9m3t6v0bzjdya", answers: [], chosen: null,
 })
 
 /** The mock as a ConsoleApi. `onEvent` gets a snapshot first, then the

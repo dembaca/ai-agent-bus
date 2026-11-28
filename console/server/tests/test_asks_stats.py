@@ -69,10 +69,23 @@ def test_the_asks_list_marks_nothing_without_the_operators_own_anchor() -> None:
     assert rows[0] == {"id": mm(1), "by": A, "display_name": "agent-a", "home": "dev", "kind": "approval",
                        "human": "carol", "need": "Merge PR 118?", "at": (int(NOW) - 60) * 1000,
                        "end": "open", "for_me": None, "may_answer": None, "agent_gone": False,
-                       "thread_id": mm(1)}
+                       "thread_id": mm(1), "answers": [], "chosen": None}
     assert rows[1]["end"] == "answered" and rows[1]["need"] == "Which branch?"
     assert rows[1]["human"] == "dembaca" and rows[2]["human"] is None
     assert all(r["for_me"] is None and r["may_answer"] is None for r in rows)
+
+
+def test_the_row_carries_the_asks_own_answers_and_the_picked_one_as_plain_text() -> None:
+    """`answers` in the order the ask was posted with, `chosen` the one a reaction
+    picked; [] and None when the record says none (never invented, never go / no-go)."""
+    rec = encode_ask_record([
+        OpenAsk(mm(1), "question", "-", "Which?", int(NOW) - 60, answered=True,
+                answers=("Ship\u202e it", "Hold", "Ask"), chosen="Hold"),
+        OpenAsk(mm(2), "approval", "-", "Go?", int(NOW) - 30, answered=True),
+    ], int(NOW))
+    rows = fleet_with((A, "dev", rec, NOW)).asks()
+    assert rows[0]["answers"] == ["Ship it", "Hold", "Ask"] and rows[0]["chosen"] == "Hold"
+    assert rows[1]["answers"] == [] and rows[1]["chosen"] is None
 
 
 def test_with_the_operators_anchor_for_me_and_may_answer_compare_anchors() -> None:

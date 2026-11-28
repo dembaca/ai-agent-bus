@@ -18,8 +18,9 @@ image.
   (the answer box, "Chat with agent"), the thread opens as a drawer with its
   posts. The answer buttons and the drawer's reply field are visibly disabled
   ("answer in the chat for now"); no write endpoint, publish right or answer
-  binding exists before the human security review. The red count of new posts
-  uses the read position per person and ask, kept in this browser's
+  binding exists before the human security review. The red count of replies by
+  others (never the ask's own post or the operator's own) uses the read position
+  per person and ask, kept in this browser's
   `localStorage` (`src/reads.ts`), since the server has no per-person store.
 - **The look**: the design the owner agreed on 2026-11-25, in the website's
   Choirbus brand — tokens in `src/app.css` after `site/src/page.css`, the

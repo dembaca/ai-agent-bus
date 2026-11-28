@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
-import type { Ask, ConsoleApi, Post } from "../api/types"
+import type { Ask, ConsoleApi, Operator, Post } from "../api/types"
+import { repliesByOthers } from "../reads"
 import { PostRow } from "./Detail"
 import { loadThread } from "./threadPosts"
 import { since } from "../clock"
@@ -10,11 +11,14 @@ export const ANSWER_DISABLED = "answer in the chat for now"
  * only. The reply field is disabled and says why: no write path to the bus is
  * built before the human security review (ADR-015, RT-6.43). Opening it marks
  * the posts shown as read (`onRead`). */
-export function ThreadDrawer({ api, ask, onClose, onRead, onFail }: {
+export function ThreadDrawer({ api, ask, operator = null, onClose, onRead, onFail }: {
   api: ConsoleApi
   ask: Ask
+  /** Who is reading: their own posts never count as new. */
+  operator?: Operator | null
   onClose: () => void
-  onRead: (ask: string, posts: number) => void
+  /** The replies by others now in the thread, which the operator has seen. */
+  onRead: (ask: string, others: number) => void
   onFail: (what: string, error: unknown) => void
 }) {
   const [posts, setPosts] = useState<Post[] | null>(null)
@@ -24,10 +28,10 @@ export function ThreadDrawer({ api, ask, onClose, onRead, onFail }: {
     loadThread(api, ask.threadId).then((all) => {
       if (gone) return
       setPosts(all)
-      onRead(ask.id, all.length)
+      onRead(ask.id, repliesByOthers(all, ask.threadId, operator))
     }).catch((error: unknown) => { if (!gone) onFail("thread", error) })
     return () => { gone = true }
-  }, [api, ask.id, ask.threadId, onRead, onFail])
+  }, [api, ask.id, ask.threadId, operator, onRead, onFail])
   return (
     <div className="threadd">
       <div className="threadd__head">

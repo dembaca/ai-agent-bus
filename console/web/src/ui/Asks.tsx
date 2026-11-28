@@ -1,29 +1,36 @@
 import { useEffect, useState } from "react"
-import type { AgentCard, Ask, ConsoleApi } from "../api/types"
+import type { AgentCard, Ask, ConsoleApi, Operator } from "../api/types"
 import { askerName } from "./agents"
 import { AgentLabel } from "./AgentList"
 import { loadThread } from "./threadPosts"
 import { ANSWER_DISABLED } from "./ThreadDrawer"
 import { since } from "../clock"
-import { unread, type Reads } from "../reads"
+import { repliesByOthers, unread, type Reads } from "../reads"
+import { SpeechBubbleIcon } from "./icons"
 import "./Asks.css"
 
 const MAX_COUNTED = 50
 
+/** What the console counts of an ask's thread: all its posts (the small button's
+ * number) and the replies by others (the red number's base). */
+interface Counts { total: number; others: number }
+
 /** The posts of each ask's thread, read from the API (GET /v1/threads/<id>), again
  * whenever the asks are read again. An ask whose thread cannot be read has no entry:
  * no count, never a guessed 0. */
-function useCounts(api: ConsoleApi, asks: Ask[]): Record<string, number> {
-  const [counts, setCounts] = useState<Record<string, number>>({})
+function useCounts(api: ConsoleApi, asks: Ask[], operator: Operator | null): Record<string, Counts> {
+  const [counts, setCounts] = useState<Record<string, Counts>>({})
   useEffect(() => {
     let gone = false
     for (const ask of asks.slice(0, MAX_COUNTED)) {
       loadThread(api, ask.threadId).then((posts) => {
-        if (!gone) setCounts((was) => ({ ...was, [ask.id]: posts.length }))
+        if (gone) return
+        const row = { total: posts.length, others: repliesByOthers(posts, ask.threadId, operator) }
+        setCounts((was) => ({ ...was, [ask.id]: row }))
       }).catch(() => { /* no count for this ask until the next read */ })
     }
     return () => { gone = true }
-  }, [api, asks])
+  }, [api, asks, operator])
   return counts
 }
 
@@ -33,32 +40,51 @@ export function NewBadge({ n }: { n: number }) {
   return n > 0 ? <span className="asks__new" aria-label={`${n} new`}>{n}</span> : null
 }
 
-/** The answers the approval's buttons would carry: go or no go (RT-6.11 step 3).
- * A question's own answers (their letters A to D) are not on the bus the console
- * reads; with none known, no button is drawn. */
-const APPROVAL_ANSWERS = ["go", "no go"]
+/** An approval that was posted with no answers of its own reads go / no-go
+ * (RT-6.11); a question with none has no fixed answer, so none is drawn. The
+ * console never makes up answers. */
+const APPROVAL_ANSWERS = ["go", "no-go"]
+const KEYS = ["A", "B", "C", "D"]
+
+export function answersOf(ask: Ask): string[] {
+  if (ask.answers.length > 0) return ask.answers
+  return ask.kind === "approval" ? APPROVAL_ANSWERS : []
+}
+
+/** The state column after an answer: "answered: go" for two answers (the word),
+ * "answered: A" for more (the key cap), "answered" when the answer was a reply or
+ * the bus did not say which one. */
+export function answeredText(ask: Ask): string {
+  const list = answersOf(ask)
+  const at = ask.chosen === null ? -1 : list.indexOf(ask.chosen)
+  if (at < 0) return "answered"
+  return list.length > 2 ? `answered: ${KEYS[at]}` : `answered: ${list[at]}`
+}
 
 /** The asks (#285): one row each with "for you" (the strongest mark, in every
  * view) or "may answer" (weaker), the need with agent, home, asked human and kind
- * below it, the age, the state, and the thread button with its post count and the
- * red count of posts new since the operator last opened the thread. A click on the
+ * below it, the age, the state ("answered: go" replaces it once answered), and the
+ * thread button with its post count and the red count of replies by others since
+ * the operator last opened the thread. A click on the
  * row unfolds it: the need's decision, the answer box and "Chat with agent". Asks
  * older than 24 h are expired; those of an agent without fresh presence "agent
  * gone" (RT-6.43 step 6). Everything that writes is disabled (ADR-015, addition of
  * 2026-11-28): the answer buttons say "answer in the chat for now". The need is
  * plain text, never markup. */
-export function Asks({ api, asks, cards = [], reads = {}, onThread }: {
+export function Asks({ api, asks, cards = [], reads = {}, operator = null, onThread }: {
   api: ConsoleApi
   asks: Ask[]
   /** The flock: an ask shows its agent's name as the list does (#199). */
   cards?: readonly AgentCard[]
   /** Per ask, the posts the operator had seen when the thread was last open. */
   reads?: Reads
+  /** Who is looking: their own posts in a thread never count as new. */
+  operator?: Operator | null
   onThread: (ask: Ask) => void
 }) {
   const rows = [...asks].sort((a, b) =>
     Number(b.forMe) - Number(a.forMe) || a.at - b.at)
-  const counts = useCounts(api, asks)
+  const counts = useCounts(api, asks, operator)
   const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(new Set())
   const toggle = (id: string) => setUnfolded((was) => {
     const next = new Set(was)
@@ -84,8 +110,9 @@ export function Asks({ api, asks, cards = [], reads = {}, onThread }: {
         <ul className="asks__list">
           {rows.map((ask) => {
             const isOpen = unfolded.has(ask.id)
-            const total = counts[ask.id]
-            const fresh = total === undefined ? 0 : unread(total, reads, ask.id)
+            const count = counts[ask.id]
+            const total = count?.total
+            const fresh = count === undefined ? 0 : unread(count.others, reads, ask.id)
             return (
               <li key={ask.id} className="asks__item">
                 <div className="asks__row" role="button" tabIndex={0} aria-expanded={isOpen}
@@ -114,13 +141,14 @@ export function Asks({ api, asks, cards = [], reads = {}, onThread }: {
                     {ask.end === "expired"
                       ? <span className="chip chip--expired" title="older than 24 h, a yes approves nothing">expired</span>
                       : ask.end === "open" ? <span className="chip chip--open">open</span>
-                      : ask.end}
+                      : answeredText(ask)}
                     {ask.agentGone && <span className="chip chip--expired" title="no fresh presence of the asking agent">agent gone</span>}
                   </span>
                   <button type="button" className="asks__thread" title="Open the thread"
                     aria-label={`Thread, ${total ?? "n/a"} posts, ${fresh} new`}
                     onClick={(e) => { e.stopPropagation(); onThread(ask) }}>
-                    {total ?? "–"} posts
+                    <SpeechBubbleIcon />
+                    <span className="num">{total ?? "–"}</span>
                     <NewBadge n={fresh} />
                   </button>
                 </div>
@@ -135,12 +163,13 @@ export function Asks({ api, asks, cards = [], reads = {}, onThread }: {
   )
 }
 
-/** What the unfolded row shows of an ask. The API sends the need only: the
- * context, the recommendation, where, and the agent's own answers with their
- * letters are not on the bus the console reads, so none is drawn (never invented).
- * The answer box is shown to the asked human and to those the asking agent trusts
- * ("may answer"); everybody else reads. Its buttons are disabled. */
-function Unfolded({ ask, fresh, onThread }: {
+/** What the unfolded row shows of an ask: the need's decision and the ask's own
+ * answers, as the bus carries them. The API sends no context, recommendation or
+ * "where" (the ask record holds a title and the answers, never the ask's body), so
+ * none is drawn, and no caption stands over nothing. The answer box is shown to the
+ * asked human and to those the asking agent trusts ("may answer"); everybody else
+ * reads, and sees the answers as plain text. The box's buttons are disabled. */
+export function Unfolded({ ask, fresh, onThread }: {
   ask: Ask
   fresh: number
   onThread: (ask: Ask) => void
@@ -148,6 +177,7 @@ function Unfolded({ ask, fresh, onThread }: {
   const mine = ask.forMe === true || ask.mayAnswer === true
   const expired = ask.end === "expired"
   const answered = ask.end === "answered"
+  const list = answersOf(ask)
   return (
     <div className="asks__unfolded">
       <div className="asks__unfolded-main">
@@ -160,25 +190,59 @@ function Unfolded({ ask, fresh, onThread }: {
             )}
             {!ask.forMe && ask.human &&
               <p className="muted small">Meant for {ask.human}; you may answer because the asking agent trusts you.</p>}
-            {ask.kind === "approval" && !expired && (
-              <div className="asks__answers asks__answers--side">
-                {APPROVAL_ANSWERS.map((word) => (
-                  <button key={word} type="button" disabled title={ANSWER_DISABLED}>{word}</button>
-                ))}
-              </div>
-            )}
+            {!expired && list.length > 0 && <AnswerButtons answers={list} />}
             <p className="muted small asks__why">
               {expired ? "Expired: older than 24 hours, an answer approves nothing."
                 : `Disabled: ${ANSWER_DISABLED}.`}
             </p>
           </div>
         )}
-        {answered && <p className="muted">Answered; the answer stands in the thread.</p>}
+        {(!mine || answered) && list.length > 0 && <AnswersText ask={ask} answers={list} />}
+        {answered && <p className="muted">{answeredText(ask)}; the answer stands in the thread.</p>}
         {!mine && <p className="muted">This ask is not meant for you; you read it.</p>}
       </div>
       <button type="button" className="asks__chat" onClick={() => onThread(ask)}>
         Chat with agent <NewBadge n={fresh} />
       </button>
+    </div>
+  )
+}
+
+/** Exactly two answers stand side by side, without letters; more stand below each
+ * other with a key cap A to D and the full text. Always disabled. */
+function AnswerButtons({ answers }: { answers: string[] }) {
+  if (answers.length === 2) {
+    return (
+      <div className="asks__answers asks__answers--side">
+        {answers.map((a) => <button key={a} type="button" disabled title={ANSWER_DISABLED}>{a}</button>)}
+      </div>
+    )
+  }
+  return (
+    <div className="asks__answers asks__answers--stack">
+      {answers.map((a, i) => (
+        <button key={a} type="button" disabled title={ANSWER_DISABLED}>
+          <kbd className="asks__key">{KEYS[i]}</kbd><span>{a}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** The answers as plain text, for a reader who may not answer and for an answered
+ * ask; the picked one in bold. */
+function AnswersText({ ask, answers }: { ask: Ask; answers: string[] }) {
+  return (
+    <div className="asks__plain">
+      <p className="small muted">Answers</p>
+      <ul>
+        {answers.map((a, i) => (
+          <li key={a}>
+            {answers.length > 2 && <kbd className="asks__key">{KEYS[i]}</kbd>}
+            {a === ask.chosen ? <strong>{a}</strong> : a}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

@@ -501,6 +501,11 @@ class Fleet:
                     "may_answer": (me in names) if me else None,
                     "agent_gone": gone,
                     "thread_id": ask.mm,
+                    # the ask's own answers in the order it was posted with ([] for none:
+                    # an approval then reads go / no-go) and the one a reaction picked
+                    # (None for none or a reply); plain text, read only
+                    "answers": [card_text(a, natsbus.ASK_ANSWER_MAX) or "" for a in ask.answers],
+                    "chosen": card_text(ask.chosen, natsbus.ASK_ANSWER_MAX) or None,
                 })
         return sorted(rows, key=lambda r: (not r["for_me"], r["at"]))
 

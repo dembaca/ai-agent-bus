@@ -153,7 +153,7 @@ when its presence is not fresh. "For me" and "may answer" compare the
 operator's anchor from the login's own record with the asked human's
 anchor, never a login name (point 4 of the console decision's addition of
 2026-11-25); until that record came they are `null` (`n/a`) and mark
-nothing. Read-only: no answer, no thread text. `/v1/stats?range=24h|7d|30d|90d|12m` (7 days
+nothing. Each row also carries `answers` (the ask's own answers in order, `[]` for none) and `chosen` (the one a reaction picked, `null` for none or a reply) from the record, plain text. Read-only: no answer, no thread text. `/v1/stats?range=24h|7d|30d|90d|12m` (7 days
 without it, another value a 400, #284) answers the reports, each over the
 range (the activity card, `activity`: the agents' own posts by bus word in
 four groups, one bar per hour (24 h, from `stats.hours_of`, with `hours`: `lines` of `of` the lines that carried hours), day, week or month; 24 h with no line carrying hours says "no hourly data yet" and why (`unavailable`, `reason`);

@@ -122,8 +122,17 @@ before 0.5.0 are described in the git history.
   read position per person and ask in the browser. The answer buttons and the drawer's
   reply field are shown disabled with "answer in the chat for now": no write path, no
   publish right and no answer binding is built before the human security review.
-  Context, recommendation, where and the agent's own answers show once the bus carries
-  them; today the console shows the need only.
+  The console shows exactly the ask's own answers in their order and words (an approval
+  posted with none reads go / no-go; none is invented): two stand side by side, more as
+  rows with the key caps A to D; "answered: go" or "answered: A" replaces the state; the
+  red count counts replies by others only (never the ask's own post or the operator's
+  own); the "for you" chip stays in a narrow window; an ask that is not the operator's
+  to answer shows its answers as plain text and has no answer box; the thread button is
+  a speech-bubble icon with the number alone. For this the ask record on NATS gains the
+  optional keys `answers` and `chosen` (sent only for an ask with answers; an older
+  console refuses a record that carries them, so update the console server with the
+  agents) and `GET /v1/asks` the read-only fields of the same names. Context,
+  recommendation and "where" are not on the bus the console reads, so they are not shown.
 
 ### Breaking
 

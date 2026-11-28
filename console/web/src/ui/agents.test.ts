@@ -55,7 +55,7 @@ describe("the open asks on top", () => {
   const ask = (id: string, at: number, extra: Partial<Ask> = {}): Ask => ({
     id, by: "agent-a", displayName: "agent-a", home: "~bus-dev", kind: "approval",
     human: null, need: id, at, end: "open", forMe: false, mayAnswer: false,
-    agentGone: false, threadId: id, ...extra,
+    agentGone: false, threadId: id, answers: [], chosen: null, ...extra,
   })
 
   it("puts the operator's first, then those it may answer, then the oldest", () => {
