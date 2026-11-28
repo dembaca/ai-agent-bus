@@ -33,6 +33,12 @@ before 0.5.0 are described in the git history.
   A 200 answer of Mattermost's username lookup whose body does not decode was taken as
   a failure to retry, which stopped the home's mirror; it now counts as no person and
   the mention is plain.
+- **The bridge refuses a history window the client could never read** (#278, RT-6.43).
+  With piece 5 (history) on, a channel read whose one `create_at` holds posts adding up
+  to more than the 4 MiB the MCP client takes of one answer was answered over that cap,
+  and the client refused every retry. The bridge now answers a `too large` error and logs
+  it. This changes nothing with piece 5 off.
+
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
   RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
   the reaction's stream sequence over the copy's entry in the map from Mattermost posts
