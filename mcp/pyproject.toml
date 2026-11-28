@@ -12,7 +12,13 @@ dependencies = [
   "websockets>=13.0",
   "cryptography>=42",
   "nkeys>=0.2",
-  # natsbus's WebSocketTransport subclass copies its __init__: it matches this pin, recheck on update
+  # natsbus's WebSocketTransport subclass copies its __init__: it matches this pin, recheck on update.
+  # natsbus also reads nats-py's private Client._reading_task, Client._subs,
+  # Subscription._wait_for_msgs_task and sets Client._public_nkey and Client._transport
+  # (the silent-close watch of #221, the host key, the WebSocket subclass): on an upgrade,
+  # rerun on purpose
+  # test_a_connection_closed_without_its_callbacks_still_reconnects
+  # and test_the_nats_py_private_fields_the_bus_relies_on_exist.
   "nats-py==2.16.0",
   # nats-py's WebSocket transport (ws://, wss://, RT-6.36); imported only then
   "aiohttp>=3.14",

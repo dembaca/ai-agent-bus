@@ -1963,6 +1963,24 @@ async def test_a_connection_closed_without_its_callbacks_still_reconnects() -> N
             await bus.stop()
 
 
+async def test_the_nats_py_private_fields_the_bus_relies_on_exist() -> None:
+    """#221: the silent-close watch (`_watch_read_loop`), the subscription cleanup
+    (`_drop_subscriptions`), the host key and the WebSocket transport (`_open`) use nats-py's private fields and
+    skip quietly where one is missing. A nats-py that renamed one must fail here, loudly,
+    not degrade the reconnect without a word (the pin note in mcp/pyproject.toml)."""
+    from nats.aio.client import Client
+    from nats.aio.subscription import Subscription
+
+    nc = Client()
+    assert hasattr(nc, "_reading_task"), "nats-py has no Client._reading_task"
+    assert isinstance(getattr(nc, "_subs", None), dict), "nats-py has no Client._subs dict"
+    assert hasattr(nc, "_public_nkey"), "nats-py has no Client._public_nkey"
+    # the WebSocket subclass is set here; nats-py keeps a transport only under this name
+    assert hasattr(nc, "_transport"), "nats-py has no Client._transport"
+    sub = Subscription(nc)
+    assert hasattr(sub, "_wait_for_msgs_task"), "nats-py has no Subscription._wait_for_msgs_task"
+
+
 async def test_a_closed_clients_subscription_tasks_end_with_it() -> None:
     """#221: `_close_old` on a client already closed (nats-py's `close()` returns at once)
     cancels each subscription's pending message task and clears `_subs`; a live client's
