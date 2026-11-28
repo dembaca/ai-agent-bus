@@ -28,6 +28,7 @@ import (
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/agentbots"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/commands"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/config"
+	"github.com/dembaca/ai-agent-bus/services/bridge/internal/files"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/history"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/inbound"
 	"github.com/dembaca/ai-agent-bus/services/bridge/internal/links"
@@ -103,7 +104,8 @@ func run(log *slog.Logger) error {
 	p9 := newPiece9(cfg, log, client, bots, snapshot, planb)
 	// The request scaffold (ADR-014 phase 5): requests on <req>.<kind>.<agent>
 	// get this phase's "not built" answer on deliver.<agent>.req.<request id>
-	// until a piece is wired in; piece 5 answers the history read. A lost
+	// until a piece is wired in; piece 5 answers the history read and piece 8
+	// the files. A lost
 	// message fails the request; the handler retries a refused subscription
 	// once a minute and only reports why it is not answering, so an image
 	// rolled out before the lab's NATS rights leaves requests unanswered and
@@ -116,6 +118,12 @@ func run(log *slog.Logger) error {
 			hist.Bots = bots
 		}
 		handlers["history"] = hist.Piece
+		fh := &files.Handler{Log: log, Team: cfg.MMTeam, Bridge: client, Presence: snapshot,
+			Switches: planb, People: accounts}
+		if bots != nil {
+			fh.Bots = bots
+		}
+		handlers["file"] = fh.Piece
 		rq := &requests.Handler{Log: log, Prefix: cfg.ReqPrefix, Handlers: handlers}
 		h.requests = rq
 		wg.Add(1)

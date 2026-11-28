@@ -127,10 +127,10 @@ from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import a2a, config, lease, natsbus, owners, planb
+from . import a2a, config, files, lease, natsbus, natsfiles, owners, planb
 from .events import ChatEvent, EventSource, EventStream, MembershipEvent, PostEvent, ReactionEvent
 from .ids import _ID, NATS_POST, dm_seq
-from .model import Channel, NotFound, Post, Reaction, Thread, UnreadChannel
+from .model import Channel, FileInfo, NotFound, Post, Reaction, Thread, UnreadChannel
 from .natsbus import BOT_RE, DM_SINCE, Attestation, Event, NameMismatch, NatsBus, NatsBusError, NatsSettings
 from .port import AttestedCircle
 
@@ -1427,6 +1427,41 @@ class NatsPort:
         me = self._bus.name if self._bus is not None else ""
         bot = self.inner.bot_id
         return bot if bot and sender == me else sender
+
+    # --- files (plan B piece 8, RT-6.23, RT-6.33) -----------------------------------
+
+    def _files_on(self, channel_id: str) -> str:
+        """The channel's token when piece 8 is switched on for it ('' when off,
+        unknown or unresolved): files go over the bridge only there."""
+        if not channel_id:
+            return ""
+        try:
+            name = self._name_now(channel_id)
+        except NatsPortError:
+            return ""
+        return name if name and planb.on(8, name) else ""
+
+    async def upload_file(self, channel_id: str, name: str, data: bytes) -> FileInfo:
+        """An agent's upload (RT-6.33 step 4), over the bridge in parts when
+        piece 8 is on for the channel (ADR-014 phase 5): no Mattermost call,
+        the bridge uploads with the agent's own bot; a failure raises, no
+        fallback. Otherwise the Mattermost adapter's, unchanged."""
+        bus = self._bus
+        token = self._files_on(channel_id)
+        if bus is None or not isinstance(bus, natsbus.NatsBus) or not token or not bus.connected:
+            return await self.inner.upload_file(channel_id, name, data)
+        return await natsfiles.upload(bus, token, name, data)
+
+    async def fetch_file(self, file_id: str) -> files.Fetched | None:
+        """A person's file over the bridge (RT-6.23 steps 2–4) when piece 8 is
+        on for a channel a seen post carried the file in; None keeps today's
+        path (files.fetch), also for a file no seen post names."""
+        bus = self._bus
+        token = self._files_on(files.channel_of(file_id))
+        if bus is None or not isinstance(bus, natsbus.NatsBus) or not token or not bus.connected:
+            return None
+        return await natsfiles.fetch(bus, file_id)
+
 
     # --- sending ---------------------------------------------------------------------
     async def post(self, message: str, *, channel_id: str | None = None,
