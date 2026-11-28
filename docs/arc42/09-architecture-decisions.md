@@ -6311,39 +6311,51 @@ person they went to and to no one else.
 
 *A record of its own, in a stream of its own.* Recommended: the session's MCP
 server publishes its open prompts as one record on `<prompt>.<anchor>.<name>`,
-`<prompt>` a prefix of its own (default `prompt`, different from the others,
-as the `STATS` prefix is), `<anchor>` the anchor of the agent's owner in its
-subject form (`.` written as `~`, as in the ask record's `human`), `<name>` the
-agent's NATS name. The owner alone: on NATS the host's login requires the
-token's person to be the responsible human (RT-6.34 step 5), so the attested
-owner is the responsible human, and a prompt whose responsible human is
-another person is not on the record (over the bridge the DM may also go to a
-trusted human; the record does not follow it there). The login service grants
-each agent exactly that one subject, for its own name and its attested owner
-(RT-6.41), and none when the owner's subject token is `-` (an anchor outside
-the token's characters, `ownerToken` in the login service), so no two people
-share a subject; such a person's prompts stay in the DM and the terminal. The
-stream, `PROMPTS`, is the login service's, made at its start as `STATS` is:
-memory storage, subjects `<prompt>.>`, one message per subject, `max_age` 35
-minutes (the record's 30 minutes of validity and a margin), messages of at
-most 4 KiB, and `max_bytes` for one full record per agent (4 MiB: a thousand
-agents). Why: the subject names the one person, so NATS keeps the record from
-everyone else. Each login gets one consumer of its own on `PROMPTS`, filtered
-on `<prompt>.<its own anchor>.*` and delivering to the login's own deliver
-subject, the only one an operator's credential subscribes to; no agent, bridge
-or unattended reading has a consumer there, and none is made for an anchor
-whose token is `-`; the prefix lies outside `<presence>.>`, so no `PRESENCE`
-consumer reaches it, not even one widened by hand. A test pins these filters
-and rights at the build. In memory, the prompts leave no copy on disk or in a
-backup, outlive a crashed session by at most 35 minutes and cannot push
-presence out of its stream. Alternatives: `PRESENCE` itself, rejected for its
-disk, its 24 h and its 16 MiB shared with presence; a kind `permission` in the
-ask record, rejected: unlike the ask card (the previous addition), which every
-login that may see the agent's home receives and only the console server keeps
-from the others, a tool input that may be confidential must not reach another
-person's consumer at all, and prompts would crowd the asks and their cards out
-of its 4 KiB; a record per prompt, rejected as for asks: subjects without
-bound.
+`<prompt>` a prefix of its own (default `prompt`), which must differ from each
+of the others as the `STATS` prefix does: the bus's (`bus`), presence's
+(`presence`), the `STATS` one (`stats`), the request prefix (`req`, under which
+the bridge subscribes `<req>.>`) and `deliver`; `<anchor>` the anchor of the
+agent's owner in its subject form (`.` written as `~`, as in the ask record's
+`human`), `<name>` the agent's NATS name. The owner alone: on NATS the host's
+login requires the token's person to be the responsible human (RT-6.34 step 5),
+so the attested owner is the responsible human, and a prompt whose responsible
+human is another person is not on the record (over the bridge the DM may also
+go to a trusted human; the record does not follow it there). The login service
+grants each agent exactly that one subject, for its own name and its attested
+owner (RT-6.41), and none when the owner's subject token is `-` (an anchor
+outside the token's characters, `ownerToken` in the login service), so no two
+people share a subject; such a person's prompts stay in the DM and the
+terminal. The stream, `PROMPTS`, is the login service's, made at its start as
+`STATS` is: memory storage, subjects `<prompt>.>`, one message per subject,
+`max_age` 35 minutes (the record's 30 minutes of validity and a margin),
+messages of at most 4 KiB, and `max_bytes` for one full record per agent (4
+MiB: a thousand agents). At its start the service checks an existing `PROMPTS`
+as it checks the other streams, with the opposite storage rule (memory, where
+they must be file), and refuses one on disk or with other subjects or limits,
+so a `PROMPTS` made by hand on disk is never used. The service's JetStream user
+is configured by hand in the NATS server (RT-6.35 step 6,
+`services/auth/nats-server.example.conf`), so the build needs it to get
+`$JS.API.STREAM.CREATE.PROMPTS`, `$JS.API.STREAM.INFO.PROMPTS`,
+`$JS.API.CONSUMER.*.PROMPTS` and `$JS.API.CONSUMER.*.PROMPTS.>`, and its
+release a `Needs:` line (RT-6.30). Without these rights, or with a `PROMPTS`
+refused, the service starts all the same: it grants no prompt subject, the
+console shows no prompts, and no login is refused. Why: the subject names the
+one person, so NATS keeps the record from everyone else. Each login gets one
+consumer of its own on `PROMPTS`, filtered on `<prompt>.<its own anchor>.*` and
+delivering to the login's own deliver subject, the only one an operator's
+credential subscribes to; no agent, bridge or unattended reading has a consumer
+there, and none is made for an anchor whose token is `-`; the prefix lies
+outside `<presence>.>`, so no `PRESENCE` consumer reaches it, not even one
+widened by hand. A test pins these filters and rights at the build. In memory,
+the prompts leave no copy on disk or in a backup, outlive a crashed session by
+at most 35 minutes and cannot push presence out of its stream. Alternatives:
+`PRESENCE` itself, rejected for its disk, its 24 h and its 16 MiB shared with
+presence; a kind `permission` in the ask record, rejected: unlike the ask card
+(the previous addition), which every login that may see the agent's home
+receives and only the console server keeps from the others, a tool input that
+may be confidential must not reach another person's consumer at all, and
+prompts would crowd the asks and their cards out of its 4 KiB; a record per
+prompt, rejected as for asks: subjects without bound.
 
 *What it holds.* Format v1: `prompts`, the open prompts newest first, at most
 8, each with `id` (Claude Code's request id), `tool`, `desc`, `input` and
