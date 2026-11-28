@@ -811,6 +811,41 @@ func TestARunOfEqualCreateAtIsNeverCut(t *testing.T) {
 	}
 }
 
+// One create_at holding more than the client takes in one answer is refused
+// with an explicit error; just under the bound it is carried whole (#278).
+func TestARunOverTheClientsBoundIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		n       int
+		refused bool
+	}{{8, false}, {9, true}} {
+		r := newRig(t, 5)
+		base := r.now.Add(-12 * time.Hour).UnixMilli()
+		big := map[string]any{"x": strings.Repeat("y", 500<<10)}
+		for i := 0; i < tc.n; i++ {
+			p := post("h"+strconv.Itoa(i), "u-alice", base)
+			p["props"] = big
+			r.mm.posts[cid] = append(r.mm.posts[cid], p)
+		}
+		replies, err := r.ask(t, fmt.Sprintf(`{"channel":%q,"since":%d,"limit":200}`, channel, base))
+		if tc.refused {
+			if err == nil || !strings.Contains(err.Error(), "too large") {
+				t.Fatalf("%d posts: got %v, want a too large error", tc.n, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%d posts: %v", tc.n, err)
+		}
+		got := 0
+		for _, part := range results(t, replies) {
+			got += len(part.Posts)
+		}
+		if got != tc.n {
+			t.Fatalf("%d posts answered %d", tc.n, got)
+		}
+	}
+}
+
 // One history read per agent at a time: a second request while one runs is
 // told busy, and the first goes on.
 func TestASecondReadOfTheSameAgentIsBusy(t *testing.T) {
