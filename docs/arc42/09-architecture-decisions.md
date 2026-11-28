@@ -4436,8 +4436,8 @@ which each piece reads for itself.
        back. Lab: a person posts while the session is stopped; after its
        start the post and its thread are there, and an ask answered
        meanwhile counts.
-     - Built in part (Unreleased, #244 piece 5a, the bridge's side). The
-       payload is `{"channel": "<channel token>", "since": <epoch ms>,
+     - Built in part (Unreleased, #244 pieces 5a and 5b, the bridge's side
+       and the session's). The payload is `{"channel": "<channel token>", "since": <epoch ms>,
        "limit": <posts>}` or, instead of since, `"thread": "<Mattermost
        post id>"`; `limit` is 1 to 200, 200 without it, and an unknown key
        is refused. The channel is the token the membership subject and
@@ -4481,8 +4481,14 @@ which each piece reads for itself.
        names `next`, the create_at to ask on from (a thread read names
        none: `more` alone says it goes on). While the bridge's
        account records are not read yet, the read is refused (`ask
-       again`). Not built: the MCP server's side (piece 5b), so a session
-       still reads people on Mattermost; and the read of a post's files,
+       again`). The session's side (piece 5b) is built too: with the switch
+       on, its reads of that channel's people (`channel_posts`,
+       `list_recent`, `posts_after`, a person's `thread`, `reactions`) come
+       from this answer and make no Mattermost call for the channel; a
+       person's post is `hu:<anchor>` with the record judged as a live
+       event's (a stale one names the person and approves nothing), a bot's
+       post stays Mattermost's (an ask), `more`/`next` pages forward and a
+       failed answer reads nothing. Not built: the read of a post's files,
        which piece 8 owns (a post's `file_count` is in the answer, its
        `mm` id lets `get_file` fetch them).
   6. **Asks to humans and the answer** (RT-6.11), the reply and the
@@ -4713,6 +4719,50 @@ which each piece reads for itself.
         still reaches the session, else it times out as today.
       - Test: an answer counts only from the responsible human's anchor.
         Lab: a tool prompt answered by DM.
+      - Built 2026-11-28, behind the switch (#244 piece 10, RT-6.13 step 7):
+        `planb.on(10, home)`, off by default. The lane first (#282): the
+        agent's `<name>_dm` consumer also filters `<bus>.hu.dm.<name>.*`,
+        which only the bridge may publish. The session sends the prompt as
+        a request, `<req>.permission.<agent>` (op `prompt`, naming the
+        responsible human's anchor and attested name from its own
+        attestation), only while the bridge's fresh signal names piece 10
+        in `pieces`, else it stays in the terminal and `bus_info` says so;
+        no Mattermost call either way. The bridge (`internal/permission`)
+        takes it only from an agent whose fresh attestation (read through
+        its own consumer `bridge_attest`) states that home, with a fresh
+        membership there, for its attested owner or a trusted human, within
+        16 open prompts per agent, 32 per owner and 6 a minute, and DMs the
+        one account the login service binds to the anchor (piece 4's proof
+        when on), under the agent's own bot or the bridge bot,
+        polls that DM and carries only that account's reaction on the
+        prompt, reply in its thread or `yes`/`no` naming its id as a
+        person's event on `<bus>.hu.dm.<agent>.<anchor>`; the session
+        counts it only from the very anchor the prompt went to, an
+        attested trusted one who approves, within 24 h, and the lines
+        under the prompt go back as op `note`. Where the build differs
+        from the text above: a person's other DMs to the agent are not
+        carried (they stay on Mattermost, read by nobody over NATS: a
+        later piece), and the bridge polls the DM rather than reading a
+        WebSocket, since an agent's own bot has none. Tests in
+        `mcp/tests/test_planb_piece10.py`, one against a real
+        `nats-server`, and `services/bridge/internal/permission`. Before
+        switching it on in a home: the bridge and every host there on
+        this release (an older session drops the lane's messages with a
+        warning and keeps the Mattermost DM; an older bridge never names
+        piece 10, so no session sends it a prompt); piece 4 on there first
+        or with it, and then the bridge's admin token
+        (`CB_BRIDGE_MM_ADMIN_TOKEN_FILE`), else every prompt is refused;
+        the bridge's right to create `bridge_attest`
+        (`$JS.API.CONSUMER.CREATE.PRESENCE.bridge_attest.presence.attest.*.v1`,
+        `services/auth/nats-server.example.conf`) in the lab, else it reads
+        no attestation and refuses every prompt;
+        the agents' own bots (RT-6.44), or the owner's word that prompts
+        under the bridge bot are fine; the lab check, a prompt answered by
+        DM, by reaction and from the terminal, and one after a bridge
+        restart. The way back is fail-closed: a session that read piece 10
+        on, or holds a record naming it that went stale, keeps its prompts
+        in the terminal once the switch is off, until it restarts; it never
+        falls back to the Mattermost DM meanwhile.
   11. **People's events where no bridge signal is fresh** (RT-6.42).
       - Moves: onto NATS alone. Without a fresh signal the session no
         longer reads people on Mattermost but says that people are not

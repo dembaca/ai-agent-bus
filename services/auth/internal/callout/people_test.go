@@ -140,6 +140,9 @@ func TestNoAgentMayPublishPeopleAccountRecordsOrTheBridgesSignal(t *testing.T) {
 	}
 	for _, subj := range []string{
 		"bus.hu.home.bob", "bus.hu.home." + bob.name, "bus.hu.home.-", "bus.hu.secret.alice",
+		// a person's direct message to an agent (plan B piece 10): the bridge carries it,
+		// the named agent reads it, nobody writes it
+		"bus.hu.dm.bob.alice", "bus.hu.dm.bob.-", "bus.hu.dm.-.alice",
 		"presence.account.mattermost." + testrealm.ChatID("bob") + ".v1",
 		"presence.account.mattermost." + testrealm.ChatID("bob") + ".auth.v1", // its proof (#266)
 		"presence.bridge.home.v1", "presence.bridge.secret.v1",

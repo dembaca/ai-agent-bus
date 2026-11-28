@@ -22,8 +22,54 @@ before 0.5.0 are described in the git history.
   `mm-agent-post.sh --file` are called as before, so the shell needs no change. A
   file id no seen post named takes today's path, as does the switch off in every
   channel; a send that fails with the switch on is an error, never a fallback.
+- **Plan B piece 10, first part: the lane for a person's direct message to one agent**
+  (#244, ADR-014 phase 5, RT-6.13). The agent's direct-message consumer (`<name>_dm`) now
+  also filters `<bus>.hu.dm.<name>.*`, the subject on which the bridge carries a person's
+  direct message to that agent - a permission prompt's answer among them - and the bridge
+  may publish `bus.hu.dm.*.*`. The agent's name is the subject's third token, so no other
+  agent's consumer sees it, and no agent may publish there.
+- **Permission prompts by DM over the bridge: plan B piece 10** (#244, ADR-014 phase 5,
+  RT-6.13 step 7). In a home over NATS with `planb.on(10, home)` on, the session makes no
+  Mattermost call for a tool permission prompt: it asks the bridge on
+  `<req>.permission.<agent>` (op `prompt`) to DM it to the responsible human, taken from
+  the session's own attestation, only while the bridge's fresh signal names piece 10;
+  else the prompt stays in the terminal and `bus_info` says so. The bridge
+  (`internal/permission`) DMs the one account the login service binds to that person
+  (piece 4's proof when on), under the agent's own bot or the bridge bot, polls the DM
+  and carries only that person's reaction on the prompt, reply in its thread or
+  `yes`/`no` naming its id onto the lane. It takes a prompt only from an agent whose
+  fresh attestation (its new consumer `bridge_attest`) states that home, with a fresh
+  membership there, for its attested owner or a trusted human, within 16 open prompts
+  per agent, 32 per owner and 6 a minute, refused beyond. A switch the session cannot
+  tell off keeps the terminal. A verdict counts only from the very person the
+  prompt went to, an attested trusted human who approves, within 24 h; a `yes <id>` read
+  on Mattermost never answers such a prompt. The lines under the prompt go to the bridge
+  (op `note`). With the switch off nothing changes. Rollout: the bridge and every host
+  of the home on this release before the switch goes on; piece 4 with it and the
+  bridge's admin token, and the bridge's right to create `bridge_attest`, else the bridge
+  refuses every prompt; the bridge keeps open
+  prompts in memory, so a restart drops their answers (the terminal still answers).
+  Rollback is fail-closed: a session that read piece 10 on (or holds a record naming
+  it that went stale) keeps its prompts in the terminal after the switch goes off,
+  until that session restarts; it never falls back to the Mattermost DM meanwhile.
 
 ### Fixed
+
+- **A retried ask no longer spends its mention twice, and an undecodable lookup answer
+  is no longer retried for ever** (#287, RT-6.11). In the bridge's mirror of an ask,
+  which runs with every plan B switch off for a home over NATS, the sender's limit of
+  20 kept mentions an hour was taken before the copy was created, so a create that
+  failed and was tried again used a second unit; the same message now counts once.
+  A 200 answer of Mattermost's username lookup whose body does not decode was taken as
+  a failure to retry, which stopped the home's mirror; it now counts as no person and
+  the mention is plain. Only an answer that cannot be decoded is no person (the same
+  holds for the lookup of a post and its author before an agent's reply or reaction);
+  a body cut short or a read that fails mid-answer is retried, as no answer is.
+- **The bridge refuses a history window the client could never read** (#278, RT-6.43).
+  With piece 5 (history) on, a channel read whose one `create_at` holds posts adding up
+  to more than the 4 MiB the MCP client takes of one answer was answered over that cap,
+  and the client refused every retry. The bridge now answers a `too large` error and logs
+  it. This changes nothing with piece 5 off.
 
 - **A mirrored reaction no longer replaces its post's way back in the bridge** (#297,
   RT-6.36 step 6). When the bridge mirrored an agent's reaction to Mattermost, it wrote
@@ -145,6 +191,29 @@ before 0.5.0 are described in the git history.
   the trusted humans, else look the name up as before.
 
 ### Added
+
+- **Plan B piece 5b: a session reads people's history through the bridge**
+  (#244, ADR-014 phase 5, RT-6.42 step 11). With piece 5 switched on for a home
+  over NATS, `channel_posts`, `list_recent`, `posts_after`, a person's `thread`
+  and `reactions` read that channel's people from the bridge's history answer
+  (`<req>.history.<agent>`) instead of Mattermost. A person's post keeps its
+  Mattermost id and is authored `hu:<anchor>`, with the account record the
+  bridge answers beside it; a stale record still names the person but approves
+  nothing, as a live event's would. An answer's `bot` posts are the Mattermost
+  ones (an ask), its reactions carry their senders' anchors and records, and
+  `more`/`next` pages the read forward, with the posts deduped by id;
+  `posts_after` honours the caller's `max_pages`, a read still `more` at the cap
+  logs that it carries the oldest window, and a cursor older than the bridge's
+  14 days is clamped to its bound. A newest-N read without a cursor starts one
+  day back and widens to three, then fourteen, only while it has too few, so a
+  busy home's newest posts are not served as the oldest window. The unread
+  watermark's copy pass reads the same history answer, so its mark can pass the
+  bridge's copies. Only a bot post whose author check passes is a copy, so a
+  forged `<prefix>nats_id` re-roots nothing, and a checked copy's reactions count
+  on the NATS post. History only adds to `unapproved`, never lifts a live
+  judgement; a person's file read makes no Mattermost call for a switched
+  channel. A failed request reads nothing and never falls back to Mattermost;
+  off, nothing changes. The NATS memory is merged as before.
 
 - **Plan B piece 11: people's events where no bridge signal is fresh, from NATS
   alone, behind a switch that is off** (#244, ADR-014 phase 5, RT-6.42 step 12).

@@ -335,6 +335,38 @@ the piece is on there and it saw that post in that channel itself (the id is the
 sender's word); otherwise the reply is top-level and the reaction dropped. With it off, as a session before it does: the reply top-level,
 the reaction dropped.
 
+## Over NATS: a permission prompt by DM
+
+With plan B piece 10 on in a home (tool permission prompts by DM over the bridge,
+[arc42 §6.13 step 7](arc42/06-runtime-view.md#613-permission-prompts-answered-from-mattermost)),
+the session asks the bridge on `<req>.permission.<agent>` with the request scaffold's
+envelope (kind `permission`), in one of two payloads, strict JSON:
+
+```json
+{"op": "prompt", "channel": "home", "id": "abcde", "to": "dembaca", "name": "dembaca",
+ "text": "🔒 **Permission for `Bash`?** · id `abcde` …"}
+{"op": "note", "channel": "home", "id": "abcde", "text": "✅ allowed by dembaca …", "close": true}
+```
+
+| Field | In | Meaning |
+|-------|----|---------|
+| `op` | both | `prompt`: DM the prompt; `note`: a line under it |
+| `channel` | both | The session's home, one the bridge serves with piece 10 on |
+| `id` | both | Claude Code's request id: five letters `a`-`z` without `l` |
+| `to` | prompt | The responsible human's anchor; the bridge DMs the one account the login service's record binds to it |
+| `name` | prompt | The anchor's attested name; the record must name the account so |
+| `text` | both | At most 16 000 characters (a note 2 000); every mention is made plain |
+| `close` | note | `true`: the bridge forgets the prompt once the line is posted |
+
+The answers are `{"v": 1, "post": "<Mattermost post id>"}` and `{"v": 1, "posted": true}`.
+The bridge takes either only from an agent whose fresh attestation states `channel` as
+its home, with a fresh membership there, and a prompt only for `to` its attested owner
+or one of its trusted humans, within its limits (§6.13 step 7).
+The person's answer comes back on `<bus>.hu.dm.<agent>.<anchor>` in the format of a
+person's event above, with `mm` the person's post, or the prompt post for a reaction,
+and `mm_root` the prompt post for a reply in its thread; only the bridge may publish
+there and only that agent's DM consumer reads it.
+
 ## Over NATS: the bridge's bot record
 
 Which Mattermost bot the central bridge made for an agent

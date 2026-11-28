@@ -459,6 +459,56 @@ func TestPerson(t *testing.T) {
 	}
 }
 
+// An answer that does not decode is no person (404), not a failure to retry
+// for ever (#287).
+func TestPersonAnswerThatDoesNotDecodeIsNoPerson(t *testing.T) {
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("<html>not json")) })
+	_, err := c.Person(context.Background(), "dembaca")
+	var st *StatusError
+	if !errors.As(err, &st) || st.Status != http.StatusNotFound {
+		t.Fatalf("got %v, want a 404 StatusError", err)
+	}
+}
+
+// A 200 whose body is cut short (the connection drops mid-answer) is no
+// person and no post: it stays an error that is no StatusError, which the
+// mirror's transient() retries, not a 404 (#287).
+func TestCutBodyIsRetriedNotNoPerson(t *testing.T) {
+	cut := func(w http.ResponseWriter, body string) {
+		w.Header().Set("Content-Length", "500")
+		_, _ = w.Write([]byte(body))
+		w.(http.Flusher).Flush()
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			conn.Close()
+		}
+	}
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/posts/p1":
+			_, _ = w.Write([]byte(`{"id":"p1","user_id":"u1","channel_id":"c1"}`))
+		case "/api/v4/users/u1":
+			cut(w, `{"id":"u1","user`)
+		case "/api/v4/posts/p2":
+			cut(w, `{"id":"p2","user_i`)
+		default:
+			cut(w, `[{"id":"u1","user`)
+		}
+	})
+	_, err := c.Person(context.Background(), "dembaca")
+	check := func(name string, err error) {
+		t.Helper()
+		var st *StatusError
+		if err == nil || errors.As(err, &st) {
+			t.Fatalf("%s: got %v, want a plain (retried) error, not a StatusError", name, err)
+		}
+	}
+	check("Person", err)
+	_, err = c.Target(context.Background(), "p2")
+	check("Target post", err)
+	_, err = c.Target(context.Background(), "p1")
+	check("Target user", err)
+}
+
 func TestMember(t *testing.T) {
 	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -685,5 +735,43 @@ func TestPostByID(t *testing.T) {
 	}
 	if _, err := c.PostByID(context.Background(), "gone123"); err == nil {
 		t.Fatal("a missing post is no error")
+	}
+}
+
+// RT-6.13, plan B piece 10: DirectChannel posts [own id, other id] and returns
+// the channel's id; an empty id and a refusal are errors.
+func TestDirectChannel(t *testing.T) {
+	var got []string
+	status := http.StatusCreated
+	id := "dm1"
+	c := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/users/me":
+			json.NewEncoder(w).Encode(map[string]any{"id": "bot1"})
+		case "/api/v4/channels/direct":
+			if r.Method != "POST" {
+				t.Errorf("method %s", r.Method)
+			}
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]any{"id": id})
+		}
+	})
+	ch, err := c.DirectChannel(context.Background(), "u2")
+	if err != nil || ch != "dm1" {
+		t.Fatalf("got %q, %v", ch, err)
+	}
+	if len(got) != 2 || got[0] != "bot1" || got[1] != "u2" {
+		t.Fatalf("body %v", got)
+	}
+	id = ""
+	if _, err := c.DirectChannel(context.Background(), "u2"); err == nil {
+		t.Fatal("an empty id is an error")
+	}
+	id, status = "dm1", http.StatusBadRequest
+	_, err = c.DirectChannel(context.Background(), "u2")
+	var rf *mirror.Refused
+	if !errors.As(err, &rf) {
+		t.Fatalf("want a refusal, got %v", err)
 	}
 }

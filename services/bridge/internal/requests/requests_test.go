@@ -444,3 +444,26 @@ func TestTheHandlerAnswersItsOwnPrefix(t *testing.T) {
 		t.Fatalf("answer on %s, want %s", m.Subject, want)
 	}
 }
+
+// RT-6.13, plan B piece 10: "permission" is a scaffold kind; without a piece
+// it gets the "not built" answer, with one its result is the answer.
+func TestRT613PermissionIsAScaffoldKind(t *testing.T) {
+	srv, nc := start(t)
+	ch := watch(t, nc)
+	startHandler(t, srv, nc, &Handler{Log: quiet, Prefix: "req",
+		Handlers: map[string]Piece{"permission": func(_ context.Context, agent string, req Request) ([]Reply, error) {
+			return []Reply{{Result: json.RawMessage(`{"v":1,"posted":true}`)}}, nil
+		}}})
+	publish(t, nc, "req.permission.alice", body("permission", goodID))
+	m := want(t, ch, time.Second)
+	var a answer
+	if err := json.Unmarshal(m.Data, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Kind != "permission" || a.Error != "" || string(a.Result) != `{"v":1,"posted":true}` {
+		t.Fatalf("the permission answer: %s", m.Data)
+	}
+	if !kindOK("permission") || kindOK("permissions") {
+		t.Fatal("kindOK")
+	}
+}

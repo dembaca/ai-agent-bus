@@ -22,6 +22,11 @@ closes every prompt still open, with a note in the DM.
 
 Each step leaves one JSON line in the relay log (`note`), so a prompt that got
 no DM can be told from one Claude Code never sent.
+
+In a home over NATS with plan B piece 10 on (RT-6.13 step 7) the session makes no
+Mattermost call for a prompt: the bridge DMs it to the responsible human and carries
+their answer back on `<bus>.hu.dm.<agent>.<anchor>`; a verdict counts only from that
+very person (`Pending.to`), one of the session's attested trusted anchors who approves.
 """
 
 from __future__ import annotations
@@ -186,6 +191,10 @@ class Pending:
     post_id: str
     tool: str
     at: float
+    # Plan B piece 10 (RT-6.13 step 7): the anchor of the person the bridge DMed the prompt
+    # to, and their attested name; "" for a prompt DMed on Mattermost.
+    to: str = ""
+    name: str = ""
 
 
 class Relay:
@@ -199,9 +208,13 @@ class Relay:
         for rid in [r for r, p in self.pending.items() if now - p.at > MAX_AGE_SEC]:
             del self.pending[rid]
 
-    def add(self, request_id: str, post_id: str, tool: str) -> None:
+    def add(self, request_id: str, post_id: str, tool: str, *, to: str = "", name: str = "") -> None:
         self._expire()
-        self.pending[request_id] = Pending(post_id, tool, time.time())
+        self.pending[request_id] = Pending(post_id, tool, time.time(), to, name)
+
+    def get(self, request_id: str) -> Pending | None:
+        self._expire()
+        return self.pending.get(request_id)
 
     def __contains__(self, request_id: str) -> bool:
         self._expire()

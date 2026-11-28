@@ -1475,6 +1475,8 @@ class NatsBus:
         # Notices already told (replay, redelivery): (anchor, kind, sid, iat) -> monotonic.
         self._notice_seen: dict[tuple[str, str, str, float], float] = {}
         self.on_person_gap: Callable[[str], None] | None = None  # a gap on a person's consumer (RT-6.42)
+        # A person's direct message to this agent (plan B piece 10, RT-6.13): `where` is DM_SINCE.
+        self.on_person_dm: PersonCallback | None = None
         self._heartbeat_sec = heartbeat_sec
         self._gap_sec = gap_reconnect_sec
         self._connect_timeout = connect_timeout
@@ -2567,6 +2569,11 @@ class NatsBus:
         self._see(ack.time)
         gap = self._gaps.observe(where, ack.consumer_seq)  # every delivery counts, dropped or not
         tokens = subject.split(".")
+        if where == DM_SINCE and tokens[:4] == [self._s.bus, "hu", "dm", self.name]:
+            # Plan B piece 10 (RT-6.13): a person's direct message to this very agent, which the
+            # bridge carries on the DM consumer's second filter, `<bus>.hu.dm.<name>.<anchor>`.
+            await self._on_person_dm_deliver(tokens, ack, data, gap)
+            return
         sender = tokens[-1]
         expect = [self._s.bus, "ch", where] if where != DM_SINCE else [self._s.bus, "dm", self.name]
         if tokens[:-1] != expect or not self.agent_ok(sender):
@@ -2600,6 +2607,46 @@ class NatsBus:
             log.warning("nats bus: event callback failed: %s", type(exc).__name__)
             return  # not handed: the cursor stays before it
         self._handed(where, ack.stream_seq, at)
+
+    async def _on_person_dm_deliver(self, tokens: list[str], ack: Any, data: bytes, gap: bool) -> None:
+        """A person's direct message to this agent (plan B piece 10, RT-6.13) from `<name>_dm`:
+        the subject is `<bus>.hu.dm.<name>.<anchor>`, the person its last token, never the
+        body's; the body is a person's event of format v1 (decode_person, strict). It shares
+        the DM consumer's sequence: a gap is the DMs' gap, a repeat after a restart from `since`
+        is dropped, and it is handed like a DM so the cursor passes it."""
+        at = int(ack.time * 1000)
+        if len(tokens) != 5:
+            log.warning("nats bus: dropped a person's direct message with an unexpected subject")
+            return
+        anchor = tokens[4] if tokens[4] == UNBOUND else owner_of_token(tokens[4])
+        if not anchor:
+            log.warning("nats bus: dropped a person's direct message: the sender is no anchor")
+            return
+        if gap:
+            self._gap(DM_SINCE)
+        if DM_SINCE in self._stale:
+            return
+        self._stream_reset(DM_SINCE, ack.consumer_seq, ack.stream_seq, at)
+        if ack.stream_seq <= self._last_seq.get(DM_SINCE, 0):
+            return  # a repeat after a restart from `since`
+        try:
+            message = decode_person(data)
+        except MessageError as exc:
+            log.warning("nats bus: dropped a malformed person's direct message (seq %d): %s", ack.stream_seq, exc)
+            self._handed(DM_SINCE, ack.stream_seq, at)
+            return
+        callback = self.on_person_dm
+        if callback is not None:
+            try:
+                res = callback(PersonEvent(DM_SINCE, anchor, ack.stream_seq, ack.time, message))
+                if inspect.isawaitable(res):
+                    await res
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("nats bus: person's direct message callback failed: %s", type(exc).__name__)
+                return  # not handed: the cursor stays before it
+        self._handed(DM_SINCE, ack.stream_seq, at)
 
     def _person_handler(self, channel: str) -> Callable[[Any], Awaitable[None]]:
         async def handle(msg: Any) -> None:
@@ -2723,6 +2770,12 @@ class NatsBus:
         if got is None or self._iat() - got[1] >= PLANB_STALE_SEC:  # server time, carried on by the monotonic clock
             return frozenset()  # off is fail-safe: a record no credential renewed is no longer read
         return got[2]
+
+    def planb_held(self, channel: str) -> frozenset[int]:
+        """The pieces of the plan B record this bus holds for `channel`, stale or not (plan B
+        piece 10, RT-6.13 step 7): a piece in a record that went stale is not known off."""
+        got = self._planb.get(channel) or self._planb_prev.get(channel)
+        return got[2] if got is not None else frozenset()
 
     async def _on_presence_msg(self, msg: Any) -> None:
         ack = parse_ack(msg.reply, PRESENCE_STREAM, f"{self.name}_presence")
