@@ -95,6 +95,12 @@ def harness(name: str | None = None) -> str:
 
 
 def _me() -> str:
+    """The key of the counters: the env's bot id, but for a session decided without a bot the
+    name nobot.hold set (a stale CB_MM_BOT_USER_ID must not key its counters, review of #342)."""
+    from . import nobot  # nobot sets the user: imported late
+
+    if _uid and nobot.held():
+        return _uid
     return config.env("CB_MM_BOT_USER_ID") or _uid
 
 

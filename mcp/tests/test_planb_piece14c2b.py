@@ -457,13 +457,27 @@ async def test_a_name_that_goes_mid_route_is_a_503_never_a_stale_bot_id(
         await hookapi._uid(bl.port)
     monkeypatch.setattr(hookapi, "served", lambda client: True)  # the race: served, then gone
     _, h = await serve(bl.port)
-    keyed = ("/v1/me", "/v1/last-post", "/v1/ask-reactions", "/v1/stat", "/v1/reminded", "/v1/turn-end",
-             "/v1/wake", "/v1/handoff")  # the routes that key by the session's own identity
-    for method, path, body in ROUTES:
-        if path.split("?")[0] in keyed:
-            r = await h.request(method, path, json=body)
-            assert r.status_code == 503 and r.json()["no_bot"] == hookapi.NO_NAME, (path, r.status_code)
+    seen = {path.split("?")[0]: (await h.request(method, path, json=body)).status_code
+            for method, path, body in ROUTES}  # every route of the table, the keyed and the others
+    # the routes that key by the session's identity: a 503 with the reason; the two that read no key
+    # answer (usage, waiting); a post has no bus to go to: 502, and nothing under a stale id
+    assert seen == {"/v1/me": 503, "/v1/pending": 503, "/v1/last-post": 503, "/v1/posts": 503,
+                    "/v1/ask-reactions": 503, "/v1/presence": 503, "/v1/usage": 200, "/v1/stat": 503,
+                    "/v1/reminded": 503, "/v1/post": 502, "/v1/turn-end": 503, "/v1/wake": 503,
+                    "/v1/handoff": 503, "/v1/waiting": 200}
     r = await h.get("/v1/me")
     assert r.status_code == 503 and r.json()["no_bot"] == hookapi.NO_NAME
     assert bl.calls == []
 
+
+async def test_the_counters_of_a_session_without_a_bot_are_keyed_by_its_name(
+        bl: BotLess, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.9, RT-6.2 step 9 (review of #342): a stale CB_MM_BOT_USER_ID must not key the counters of
+    a session decided without a bot; before the decision, and with a bot, the env still comes first."""
+    from mattermost_ai_agent_bus import stats
+
+    monkeypatch.setenv("CB_MM_BOT_USER_ID", "u" * 26)
+    assert stats.bot_id() == NAME_ME  # held without a bot: the name nobot.hold set
+    nobot.reset()  # no decision (the key stays set): as before, the env first
+    stats.set_user(NAME_ME)
+    assert stats.bot_id() == "u" * 26
