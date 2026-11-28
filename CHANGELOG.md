@@ -65,6 +65,15 @@ before 0.5.0 are described in the git history.
   its sweeping of a bot's `stats-<bot id>.jsonl.moving-<pid>`, and `mm_state_key`'s check of
   the server's pid.
 
+- **A stranded counter claim keeps the takeover open: plan B piece 14c-1c** (#244, RT-6.2
+  step 9), behind piece 2's switch. A claim the counter move leaves behind (its pid runs
+  again, or an append whose journal line failed) no longer lets the takeover be marked
+  done: the intent (`CB_TAKING`, `CB_APPENDING`) stays, the source gets no `CB_TAKEN_BY`,
+  and a later start finishes it. A start re-reads under a predecessor's lock whether another
+  start began to take it, and an unfinished takeover whose source another name took
+  meanwhile drops its intent instead of taking it again. RT-6.1 step 7 says why the
+  workspace tie's lock is never swept. Switch off: nothing differs.
+
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads
   `GET <address>/register/v1/release` from the bridge (`https`, or `http` only to a
