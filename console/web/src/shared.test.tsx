@@ -47,9 +47,9 @@ describe("a shared name keeps its mark", () => {
     expect(needs).toContain(MARK)
   })
 
-  it("in the asks table", async () => {
+  it("in the asks list", async () => {
     const { cards, ask } = await sharedFleet()
-    const html = renderToStaticMarkup(<Asks asks={[ask]} cards={cards} onOpen={noop} />)
+    const html = renderToStaticMarkup(<Asks api={mockApi()} asks={[ask]} cards={cards} onThread={noop} />)
     expect(html).toContain(">agent-same</span>")
     expect(html).toContain(MARK)
   })

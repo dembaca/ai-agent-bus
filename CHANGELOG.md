@@ -113,6 +113,17 @@ before 0.5.0 are described in the git history.
   reaction's sequence as `root`, so it most likely is not attached to the ask, and a
   person's reaction there is ignored.
 
+- **Console: the Asks view with answering disabled** (#285, ADR-015). Each ask is one
+  row with its chip ("for you" or "may answer"), the need, agent, home, asked human and
+  kind, the age, the state and a thread button with the number of posts. A click
+  unfolds the row: the answer box and a "Chat with agent" button that opens the ask's
+  thread as a drawer from the right, posts read only. The red count at both buttons
+  counts the posts new since the person last opened the thread; the console keeps that
+  read position per person and ask in the browser. The answer buttons and the drawer's
+  reply field are shown disabled with "answer in the chat for now": no write path, no
+  publish right and no answer binding is built before the human security review.
+  Context, recommendation, where and the agent's own answers show once the bus carries
+  them; today the console shows the need only.
 
 ### Breaking
 

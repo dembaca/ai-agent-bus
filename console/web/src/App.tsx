@@ -9,6 +9,8 @@ import { Footer } from "./ui/Footer"
 import { AgentList } from "./ui/AgentList"
 import { Asks } from "./ui/Asks"
 import { Detail } from "./ui/Detail"
+import { ThreadDrawer } from "./ui/ThreadDrawer"
+import { loadReads, saveReads, type Reads } from "./reads"
 import { Glance } from "./ui/Glance"
 import { Stats } from "./ui/Stats"
 import { isOpen, statsByAgent } from "./ui/agents"
@@ -21,8 +23,8 @@ import { useTheme } from "./theme"
  * the chosen view, an agent's or an ask's detail as a drawer from the right
  * (not modal, the open agent in the address), and the footer
  * with the console's build (#182). Read-only (ADR-015 stage 1): nothing here
- * posts, an ask gets no answer button — answers stay in the humans' chat
- * until the owner opens answering.
+ * posts; the answer buttons and the thread's reply field are visibly disabled
+ * (#285) and answers stay in the humans' chat until the human security review.
  *
  * One connection state for the whole app (Fable's point 6): the flock
  * stream's own state shows in the top bar, every view's failed load in the
@@ -210,15 +212,23 @@ export function App({ api }: { api: ConsoleApi }) {
   const openAgent = useCallback((card: AgentCard) => {
     const now = placeNow.current
     // a second click on the same agent closes the drawer
+    setThreadAsk(null)
     go(now.agent === card.name && !now.ask ? { view: now.view } : { view: now.view, agent: card.name })
   }, [go])
   const openAsk = useCallback((row: Ask) => {
     const now = placeNow.current
+    setThreadAsk(null)
     go(now.ask === row.id ? { view: now.view } : { view: now.view, ask: row.id, agent: row.by })
   }, [go])
-  const closeDetail = useCallback(() => { go({ view: placeNow.current.view }) }, [go])
+  // The thread drawer of an ask (#285, read only): the ask's id, not in the
+  // address; it takes the drawer's place and closes with it.
+  const [threadAsk, setThreadAsk] = useState<string | null>(null)
+  const closeDetail = useCallback(() => {
+    setThreadAsk(null)
+    go({ view: placeNow.current.view })
+  }, [go])
   // a view picked in the top bar closes the drawer
-  const setView = useCallback((next: View) => { go({ view: next }) }, [go])
+  const setView = useCallback((next: View) => { setThreadAsk(null); go({ view: next }) }, [go])
   const [listQuery, setListQuery] = useState("")
   const { theme, toggle } = useTheme()
 
@@ -240,6 +250,18 @@ export function App({ api }: { api: ConsoleApi }) {
   const [narrow] = useState(() => {
     try { return window.matchMedia("(max-width: 899px)").matches } catch { return false }
   })
+  // up to where each ask's thread was read, per person (reads.ts): the red count
+  const [reads, setReadsState] = useState<Reads>({})
+  useEffect(() => { setReadsState(loadReads(person)) }, [person])
+  const onRead = useCallback((ask: string, posts: number) => {
+    setReadsState((was) => {
+      if (was[ask] === posts) return was
+      const { [ask]: _old, ...rest } = was
+      const next = { ...rest, [ask]: posts }
+      saveReads(personNow.current, next)
+      return next
+    })
+  }, [])
   const panelFolded = prefs.panel === null ? narrow : prefs.panel === "folded"
 
   // The groups and the panel's numbers (`GET /v1/groups`), counted by the
@@ -270,7 +292,8 @@ export function App({ api }: { api: ConsoleApi }) {
   // The agents of the list in the order shown (AgentList), for the arrow keys.
   const order = useRef<string[]>([])
   const onVisible = useCallback((names: string[]) => { order.current = names }, [])
-  const detail = agent !== null || askRow !== null
+  const threadRow = threadAsk ? asks.find((a) => a.id === threadAsk) ?? null : null
+  const detail = agent !== null || askRow !== null || threadRow !== null
   // Esc closes the drawer; arrow up and down move to the next agent of the list
   // — never while the keys belong to a field.
   useEffect(() => {
@@ -326,7 +349,8 @@ export function App({ api }: { api: ConsoleApi }) {
                 </div>
               </div>
             )}
-            {view === "asks" && <Asks asks={asks} cards={cards} onOpen={openAsk} />}
+            {view === "asks" && <Asks api={api} asks={asks} cards={cards} reads={reads}
+              onThread={(row) => setThreadAsk(row.id)} />}
             {view === "stats" && <Stats api={api} onFail={fail} range={prefs.range} onRange={(range) => setPrefs({ range })} />}
           </div>
         </div>
@@ -335,8 +359,10 @@ export function App({ api }: { api: ConsoleApi }) {
           behind stays usable, a click on another agent swaps its content */}
       {detail && (
         <aside className="drawer" aria-label="Detail">
-          <Detail api={api} card={agent} ask={askRow} asks={asks} stats={agentStats}
-            onClose={closeDetail} onFail={fail} />
+          {threadRow
+            ? <ThreadDrawer api={api} ask={threadRow} onClose={closeDetail} onRead={onRead} onFail={fail} />
+            : <Detail api={api} card={agent} ask={askRow} asks={asks} stats={agentStats}
+                onClose={closeDetail} onFail={fail} />}
         </aside>
       )}
       <Footer build={me?.build ?? null} />
