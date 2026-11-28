@@ -289,6 +289,16 @@ def test_the_port_s_classifier_trusts_only_a_bound_account(
     assert got == {"author": "bridge-x", "from_trusted_human": False, "from_agent": True}
 
 
+def test_a_person_s_file_is_not_trusted_without_an_attestation(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """NatsPort._file_author with the real rule (`_account_approves` not stubbed) and no
+    own attestation (RT-6.41 step 6): nothing counts, fail closed."""
+    monkeypatch.setattr(NatsPort, "_own_attestation", lambda self: None)
+    port, _ = _port()
+    got = port._file_author({"author": "u-carol", "author_name": "carol"})
+    assert got == {"author": "carol", "from_trusted_human": False, "from_agent": False}
+
+
 @pytest.mark.parametrize("missing,broken", [
     ("length", None), ("sha256", None), (None, {"length": "5"}),
     (None, {"length": True}), (None, {"length": -1}), (None, {"sha256": "not a sum"}),

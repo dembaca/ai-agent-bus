@@ -15,9 +15,9 @@
 // A download (the get op) is one request; the bridge answers in parts, the
 // runner numbering them 1..n and marking the last: part 1 is the file's
 // metadata — what Mattermost keeps about it, its channel, and its author
-// with the anchor and record the login service's account records bind, so
-// the session classifies the author itself (RT-6.16) — with the length and
-// the SHA-256 hash of the bytes that follow; parts 2..n+1 are those bytes,
+// with the anchor and record the login service's account records bind, for
+// display; the session judges the author by its own records (RT-6.41 step 6)
+// — with the length and the SHA-256 hash of the bytes that follow; parts 2..n+1 are those bytes,
 // base64 in parts of at most 700 KiB. The piece serves what the MCP side's
 // files.kind decides: an image's preview when it has one, else the original
 // png/jpeg/gif/webp up to 5 MB; a text file's first 80 KB (files.TEXT_MAX*4);
@@ -764,8 +764,10 @@ type filePart struct {
 	Data string `json:"data"`
 }
 
-// answerRecord is the login service's account record, in its own shape: what
-// the session checks by RT-6.42's freshness rule.
+// answerRecord is the login service's account record, in its own shape, as the
+// history read's answer carries it. The session does not judge by it: a file's
+// author is trusted by the session's own read of the records (RT-6.41 step 6),
+// so this is for display only.
 type answerRecord struct {
 	V        int    `json:"v"`
 	Account  string `json:"account"`
