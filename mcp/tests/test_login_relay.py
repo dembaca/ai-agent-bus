@@ -54,14 +54,12 @@ def shown(ok: bool, issuer: str = ISSUER):
 
 async def test_the_first_start_runs_the_device_flow_and_opens_a_browser(caplog):
     show, opener, err = shown(True)
-    dm = Note()
     store = keystore.Ephemeral()
-    lg = mk(store, transport=httpx.MockTransport(Device()), notifier=login_notice.Combined(show, dm))
+    lg = mk(store, transport=httpx.MockTransport(Device()), notifier=show)
     with caplog.at_level(logging.DEBUG):
         await lg.run()
     assert opener.opened == [LINK]                       # the issuer's own link, nothing else
     assert "a browser was opened" in err.getvalue() and "ABCD-EFGH" in err.getvalue()
-    assert dm.events[:2] == ["start", "waiting"]         # and the DM to the responsible human
     assert stored(store)                                 # the token is kept for the next start
     assert DEVICE not in err.getvalue() + caplog.text
 
@@ -192,8 +190,7 @@ async def _host(monkeypatch, relayed):
 
 
 async def test_the_relay_holds_the_login_and_the_host_gets_tokens_and_the_key(monkeypatch, caplog):
-    dm = Note()
-    relayed = login_relay.RelayedLogin(login.Settings(ISSUER, "agent-bus", "host"), notifier=dm,
+    relayed = login_relay.RelayedLogin(login.Settings(ISSUER, "agent-bus", "host"),
                                        human=lambda: "alice")
     port, serving, listener = await _host(monkeypatch, relayed)
     sent: list[bytes] = []
@@ -215,19 +212,14 @@ async def test_the_relay_holds_the_login_and_the_host_gets_tokens_and_the_key(mo
     try:
         with caplog.at_level(logging.DEBUG):
             token = await asyncio.wait_for(relayed.access_token(), 5)
-            for _ in range(50):
-                if "settled:approved" in dm.events:
-                    break
-                await asyncio.sleep(0.02)
         assert login.payload_of(token)["preferred_username"] == "alice"
         # the sandbox keeps the refresh token; it never crosses the channel
         assert stored(store) == "refresh-secret-1"
         wire = b"".join(sent).decode()
         assert "refresh-secret" not in wire and DEVICE not in wire
-        # the relay shows the approval itself; the host DMs a link it built for the same code
+        # the relay shows the approval itself; approved, no line of it stays (RT-6.34)
         assert LINK in err.getvalue()
-        assert dm.events[:1] == ["waiting"] and dm.grants[0].verification_uri_complete == f"{ISSUER}/device?user_code=ABCD-EFGH"
-        assert "settled:approved" in dm.events
+        assert relayed.pending() is None
         # the host signs with the sandbox's key
         key = relayed.nkey()
         assert key.public_key == holder.login.nkey().public_key
@@ -247,9 +239,9 @@ async def test_the_relay_holds_the_login_and_the_host_gets_tokens_and_the_key(mo
         await listener.aclose()
 
 
-def _relayed(dm=None, clock=None, **kw):
+def _relayed(clock=None, **kw):
     now = (lambda: clock[0]) if clock else time.monotonic
-    return login_relay.RelayedLogin(login.Settings(ISSUER, "agent-bus"), notifier=dm,
+    return login_relay.RelayedLogin(login.Settings(ISSUER, "agent-bus"),
                                     human=lambda: "alice", now=now, **kw)
 
 
@@ -257,26 +249,24 @@ def _relayed(dm=None, clock=None, **kw):
     {"uri": "https://kc.example.test/realms/bus/x\n\n[click](https://evil.example)", "code": "ABCD-EFGH"},
     {"code": "ABCD-EFGH\n[click](https://evil.example)"},
     {"code": "AB CD"}, {"code": "abcd-efgh"}, {"code": ""}, {"code": 1234}])
-async def test_the_host_dms_only_its_own_link_with_a_strict_user_code(event):
+async def test_the_host_builds_its_own_link_and_takes_only_a_strict_user_code(event):
     """RT-6.34, #154: the agent holds the session key and can open a login channel;
-    nothing it writes but a plain user code reaches the human's DM."""
-    dm = Note()
-    relayed = _relayed(dm)
+    nothing it writes but a plain user code reaches the terminal's line."""
+    relayed = _relayed()
     await relayed._on({"event": "waiting", "complete": event.get("uri", ""), **event})
     await asyncio.sleep(0)
     if "\n" in str(event["code"]) or event["code"] != "ABCD-EFGH":
-        assert dm.grants == []
+        assert relayed.pending() is None
     else:  # a link of the sandbox's is ignored: the host builds its own
-        (grant,) = dm.grants
-        assert grant.verification_uri == f"{ISSUER}/device"
-        assert grant.verification_uri_complete == f"{ISSUER}/device?user_code=ABCD-EFGH"
+        link, code, _ = relayed.pending_line()
+        assert link == f"{ISSUER}/device?user_code=ABCD-EFGH" and code == "ABCD-EFGH"
 
 
 async def test_the_relayed_grant_serves_the_terminal_and_ends_with_its_approval():
     """RT-6.34 step 4: the sandbox's terminal shows the host-built link once, and a
     finished approval leaves no link behind."""
-    dm, clock = Note(), [1000.0]
-    relayed = _relayed(dm, clock=clock)
+    clock = [1000.0]
+    relayed = _relayed(clock=clock)
     assert relayed.pending_line() is None
     await relayed._on({"event": "waiting", "code": "ABCD-EFGH", "expires_in": 600})
     await asyncio.sleep(0)
@@ -294,48 +284,6 @@ async def test_the_relayed_grant_serves_the_terminal_and_ends_with_its_approval(
     await relayed._on({"event": "settled", "outcome": "approved"})
     await asyncio.sleep(0)
     assert relayed.pending() is None
-    # A host without a notifier (no chat) still serves the line and drops it (#198).
-    quiet = _relayed()
-    await quiet._on({"event": "waiting", "code": "WXYZ-1234"})
-    assert quiet.pending_line() is not None
-    await quiet._on({"event": "settled", "outcome": "denied"})
-    assert quiet.pending() is None
-
-
-async def test_one_open_approval_at_a_time_and_one_per_cooldown_and_refusals_rate_limited():
-    dm, clock = Note(), [1000.0]
-    relayed = _relayed(dm, clock)
-    waiting = {"event": "waiting", "code": "ABCD-EFGH", "expires_in": 600}
-    for _ in range(5):
-        await relayed._on(dict(waiting))
-    await asyncio.sleep(0)
-    assert dm.events == ["waiting"]                    # one DM, one ask, not five
-    await relayed._on({"event": "settled", "outcome": "expired"})
-    await relayed._on({"event": "settled", "outcome": "expired"})   # nothing open: ignored
-    await relayed._on(dict(waiting))                   # within the cooldown: deferred, not now
-    clock[0] += login.COOLDOWN_SEC
-    await relayed._on(dict(waiting))
-    for _ in range(3):
-        await relayed._on({"event": "refused"})
-    clock[0] += login.COOLDOWN_SEC
-    await relayed._on({"event": "refused"})
-    await asyncio.sleep(0)
-    assert dm.events == ["waiting", "settled:expired", "waiting", "refused", "refused"]
-
-
-async def test_a_new_approval_settles_the_earlier_ask_in_the_home(tmp_path, monkeypatch):
-    from fakes import FakeChat
-
-    from mattermost_ai_agent_bus import asks
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    chat = FakeChat(people={"u1": "alice"}, post_id="ask1")
-    note = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
-    grant = login.DeviceGrant(f"{ISSUER}/device", "", "ABCD-EFGH", 600)
-    await note.waiting(grant)
-    assert asks.is_open(chat.me.id, "ask1")
-    chat.post_id = "ask2"
-    await note.waiting(grant)
-    assert not asks.is_open(chat.me.id, "ask1") and asks.is_open(chat.me.id, "ask2")
 
 
 async def _channel(relayed, reply):
@@ -392,7 +340,7 @@ async def test_the_relay_sends_the_kind_of_its_login_error():
 
 
 async def test_without_a_login_channel_the_host_warns_and_a_token_request_fails(caplog):
-    relayed = _relayed(Note(), channel_wait_sec=0.05)
+    relayed = _relayed(channel_wait_sec=0.05)
     with caplog.at_level(logging.WARNING):
         await relayed.run()
     assert "no login channel from the relay" in caplog.text
@@ -401,7 +349,7 @@ async def test_without_a_login_channel_the_host_warns_and_a_token_request_fails(
 
 
 async def test_two_login_channels_at_once_get_one_slot(monkeypatch):
-    relayed = _relayed(Note())
+    relayed = _relayed()
     port, serving, listener = await _host(monkeypatch, relayed)
     try:
         async def handshake():
@@ -532,9 +480,9 @@ def test_two_threads_asking_for_the_key_get_one():
     assert len(set(keys)) == 1 and lg.export_seed()
 
 
-async def test_a_relay_that_dies_mid_approval_settles_its_ask_and_the_next_gets_a_dm():
-    dm, clock = Note(), [1000.0]
-    relayed = _relayed(dm, clock)
+async def test_a_relay_that_dies_mid_approval_leaves_no_line_and_the_next_one_shows():
+    clock = [1000.0]
+    relayed = _relayed(clock)
     lines: asyncio.Queue[bytes] = asyncio.Queue()
 
     async def send_line(data: bytes) -> None:
@@ -547,42 +495,19 @@ async def test_a_relay_that_dies_mid_approval_settles_its_ask_and_the_next_gets_
     await lines.put(b"")                               # the relay is gone
     await asyncio.gather(serving, return_exceptions=True)
     await asyncio.sleep(0)
-    assert dm.events == ["waiting", "settled:failed"] and not relayed.busy()
-    clock[0] += login.COOLDOWN_SEC
+    assert relayed.pending() is None and not relayed.busy()
     await relayed._on({"event": "waiting", "code": "WXYZ-QRST", "expires_in": 600})
-    await asyncio.sleep(0)
-    assert dm.events[-1] == "waiting" and dm.grants[-1].user_code == "WXYZ-QRST"
+    assert relayed.pending_line()[1] == "WXYZ-QRST"
 
 
-async def test_a_restart_within_the_cooldown_gets_its_dm_when_it_ends():
-    dm, clock, waited = Note(), [1000.0], []
-
-    async def sleep(sec):
-        waited.append(sec)
-        clock[0] += sec
-
-    relayed = _relayed(dm, clock, sleep=sleep)
-    await relayed._on({"event": "waiting", "code": "ABCD-EFGH", "expires_in": 600})
-    await relayed._on({"event": "settled", "outcome": "failed"})   # the relay restarted
-    clock[0] += 10
-    await relayed._on({"event": "waiting", "code": "IJKL-MNOP", "expires_in": 600})
-    await relayed._on({"event": "waiting", "code": "WXYZ-QRST", "expires_in": 600})  # the newest wins
-    for _ in range(5):
-        await asyncio.sleep(0)
-    assert waited == [login.COOLDOWN_SEC - 10]            # the floor stays
-    assert dm.events == ["waiting", "settled:failed", "waiting"]
-    assert dm.grants[-1].user_code == "WXYZ-QRST" and dm.grants[-1].expires_in == 550
-
-
-async def test_an_open_approval_ends_at_its_expiry():
-    dm, clock = Note(), [1000.0]
-    relayed = _relayed(dm, clock)
+async def test_the_line_ends_with_its_time_and_a_newer_one_replaces_it():
+    clock = [1000.0]
+    relayed = _relayed(clock)
     await relayed._on({"event": "waiting", "code": "ABCD-EFGH", "expires_in": 120})
     clock[0] += 120
+    assert relayed.pending_line() is None                 # its time is over
     await relayed._on({"event": "waiting", "code": "WXYZ-QRST", "expires_in": 120})
-    for _ in range(3):
-        await asyncio.sleep(0)
-    assert dm.events == ["waiting", "settled:expired", "waiting"]
+    assert relayed.pending_line()[1] == "WXYZ-QRST"
 
 
 def test_the_host_moves_the_old_host_store_to_its_own_but_never_onto_itself(tmp_path, monkeypatch):
@@ -606,8 +531,8 @@ def test_the_host_moves_the_old_host_store_to_its_own_but_never_onto_itself(tmp_
 
 
 async def test_warnings_the_sandbox_can_repeat_are_rate_limited(caplog):
-    dm, clock = Note(), [1000.0]
-    relayed = _relayed(dm, clock)
+    clock = [1000.0]
+    relayed = _relayed(clock)
     with caplog.at_level(logging.WARNING):
         for _ in range(5):
             await relayed._on({"event": "waiting", "code": "bad code"})
@@ -615,8 +540,7 @@ async def test_warnings_the_sandbox_can_repeat_are_rate_limited(caplog):
         for _ in range(5):
             await relayed._on({"event": "waiting", "code": "WXYZ-QRST", "expires_in": 600})
     warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert warned.count("login: the sandbox's user code is not one; no DM") == 1
-    assert warned.count("login: an approval is already open; no second DM") == 1
+    assert warned.count("login: the sandbox's user code is not one; no line") == 1
     clock[0] += login.COOLDOWN_SEC
     caplog.clear()
     with caplog.at_level(logging.WARNING):

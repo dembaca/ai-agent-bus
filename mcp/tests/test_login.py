@@ -13,9 +13,8 @@ import nkeys
 import pytest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from fakes import FakeChat
 
-from mattermost_ai_agent_bus import asks, keystore, login, login_notice
+from mattermost_ai_agent_bus import keystore, login, login_notice
 
 ISSUER = "https://kc.example.test/realms/bus"
 SECRETS = ("access-secret", "refresh-secret")
@@ -96,7 +95,7 @@ def test_nkey_store_setting(monkeypatch, caplog):
 
 
 async def test_start_without_settings_runs_nothing():
-    assert login.start(lambda: asyncio.sleep(0, None)) is None
+    assert login.start() is None
     assert login.current() is None
 
 
@@ -353,45 +352,6 @@ async def test_run_never_raises_and_the_current_login_is_reachable(monkeypatch, 
     with caplog.at_level(logging.WARNING):
         await lg.run()
     assert "login" in caplog.text
-
-
-# --- the notice: the link in a DM only ----------------------------------------
-
-@pytest.fixture
-def state(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-
-
-async def test_the_link_goes_to_the_human_by_dm_and_the_home_only_gets_the_ask(state):
-    chat = FakeChat(people={"u1": "alice"}, post_id="ask1")
-    note = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
-    grant = login.DeviceGrant("https://kc/device", "https://kc/device?user_code=ABCD-EFGH", "ABCD-EFGH", 600)
-    await note.waiting(grant)
-    dm, home = chat.posted
-    assert dm["channel_id"] == "dmu1"
-    assert "https://kc/device?user_code=ABCD-EFGH" in dm["message"] and "ABCD-EFGH" in dm["message"]
-    assert home["channel_id"] is None
-    assert "kc/device" not in home["message"] and "ABCD" not in home["message"]
-    assert "@alice" in home["message"] and "direct messages" in home["message"]
-    assert asks.is_open(chat.me.id, "ask1")
-    assert [h for h in asks.waiting(chat.me.id)] and asks.waiting(chat.me.id)[0][2] == "alice"
-    await note.settled("approved")
-    assert not asks.is_open(chat.me.id, "ask1")
-
-
-async def test_a_human_the_chat_does_not_know_gets_no_link_and_no_ask(state):
-    chat = FakeChat(post_id="ask1")
-    note = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
-    with pytest.raises(login.NotifyError):
-        await note.waiting(login.DeviceGrant("u", "u", "c", 600))
-    assert chat.posted == []
-
-
-async def test_a_refusal_goes_to_the_dm_without_a_name_or_token(state):
-    chat = FakeChat(people={"u1": "alice"})
-    await login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice").refused()
-    (dm,) = chat.posted
-    assert dm["channel_id"] == "dmu1" and "not you" in dm["message"]
 
 
 # --- sessions of one OS user: one lock, one token per (issuer, client, human) ----
@@ -672,9 +632,9 @@ async def test_start_is_idempotent(monkeypatch):
 
     monkeypatch.setattr(login.Login, "run", run)
     try:
-        first = login.start(lambda: asyncio.sleep(0, None))
+        first = login.start()
         await first
-        assert login.start(lambda: asyncio.sleep(0, None)) is first
+        assert login.start() is first
         assert len(ran) == 1
     finally:
         login.stop()
@@ -719,15 +679,14 @@ def _login_env(monkeypatch, tmp_path):
 
 def _check_current():
     """RT-6.34, #154: the stdio server logs in itself, on keystore.default(), and
-    tells the human at this machine (browser, stderr) and by DM."""
+    tells the human at this machine only (a browser, else stderr; the harness's
+    hooks show the line in the terminal). No DM, no ask (piece 14c-3)."""
     lg = login.current()
     assert isinstance(lg, login.Login)
     assert isinstance(lg._store, login.Deferred)          # chosen off the event loop, on first use
     assert lg._store.resolve() is keystore.default()     # the store keystore chose
     assert lg._migrate                                   # outside corral: the old store moves once
-    assert isinstance(lg._notifier, login_notice.Combined)
-    kinds = [type(p) for p in lg._notifier._parts]
-    assert kinds == [login_notice.Shown, login_notice.DMNotifier]
+    assert isinstance(lg._notifier, login_notice.Shown)
 
 
 def _check_relayed():
@@ -737,7 +696,7 @@ def _check_relayed():
     lg = login.current()
     assert isinstance(lg, login_relay.RelayedLogin)
     assert not hasattr(lg, "_store")
-    assert isinstance(lg._notifier, login_notice.DMNotifier)   # the DM still goes from here
+    assert not hasattr(lg, "_notifier")     # the relay shows it; the line is the hooks' (14c-3)
 
 
 async def _quiet_services(monkeypatch):
@@ -812,38 +771,6 @@ async def test_without_login_settings_neither_wiring_starts_anything(monkeypatch
         await asyncio.sleep(0)
         assert not spy.started.is_set() and login.current() is None
     assert spy.stopped == []
-
-
-# --- the notice: an ask that fails, an orphan ----------------------------------------
-
-async def test_a_failing_ask_in_the_home_does_not_abort_the_approval(state, caplog):
-    class NoHome(FakeChat):
-        async def post(self, message, channel_id=None, **kw):
-            if channel_id is None:
-                raise RuntimeError("home is down")
-            return await super().post(message, channel_id=channel_id, **kw)
-
-    chat = NoHome(people={"u1": "alice"}, post_id="ask1")
-    note = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
-    grant = login.DeviceGrant("https://kc/device", "https://kc/device?user_code=ABCD", "ABCD", 600)
-    with caplog.at_level(logging.WARNING):
-        await note.waiting(grant)                      # no exception
-    assert len(chat.posted) == 1 and chat.posted[0]["channel_id"] == "dmu1"
-    assert "was not posted" in caplog.text
-    await note.settled("approved")                     # nothing to settle, no error
-
-
-async def test_an_orphaned_ask_is_settled_at_start(state):
-    chat = FakeChat(people={"u1": "alice"}, post_id="ask1")
-    old = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
-    await old.waiting(login.DeviceGrant("https://kc/d", "https://kc/d?c=1", "ABCD", 600))
-    asks.add(chat.me.id, "other", "alice", "other", title="Something else")   # not the login's
-    assert asks.is_open(chat.me.id, "ask1")
-    # the session ended mid-approval; a new process starts
-    fresh = login_notice.DMNotifier(lambda: asyncio.sleep(0, chat), lambda: "alice")
-    await fresh.start()
-    assert not asks.is_open(chat.me.id, "ask1") and asks.is_open(chat.me.id, "other")
-    await fresh.start()                                 # nothing left, no error
 
 
 async def test_run_settles_an_orphan_before_it_asks_for_a_token():
