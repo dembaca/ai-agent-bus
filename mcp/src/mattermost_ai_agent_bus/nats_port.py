@@ -1465,19 +1465,20 @@ class NatsPort:
         return await natsfiles.fetch(bus, file_id, token, self._file_author)
 
     def _file_author(self, answer: Mapping[str, Any]) -> dict[str, Any]:
-        """The fetched file's author, judged as the port judges a person over
-        NATS (RT-6.42 step 9): a bot account is an agent's; a person's file is
-        trusted only when the login service's record binds the account to an
-        anchor of the session's own fresh attestation (_account_anchor, a
-        fresh record by the binding it reads); unsure stays not trusted
-        (RT-6.16), and a foreign owner is not told apart here."""
+        """The fetched file's author, judged by the rule a Mattermost account
+        approves by (_account_approves, RT-6.41 step 6): a bot account is an
+        agent's; a person's file is trusted only when the login service's
+        record binds the posting person's account to one of this session's
+        attested trusted anchors; without a fresh own attestation, or unsure,
+        it stays not trusted (RT-6.16), and a foreign owner is not told apart
+        here."""
         out: dict[str, Any] = {"author": str(answer.get("author_name") or answer.get("author") or ""),
                               "from_trusted_human": False, "from_agent": False}
         if answer.get("bot"):
             out["from_agent"] = True
             return out
         uid = str(answer.get("author") or "")
-        out["from_trusted_human"] = bool(uid) and bool(self._account_anchor(uid))
+        out["from_trusted_human"] = bool(uid) and self._account_approves(uid)
         return out
 
 

@@ -20,8 +20,10 @@ whose channel the session has not seen take today's path unchanged.
 The author of a person's file is classified without a Mattermost read:
 ``bot`` marks a bot account (an agent's file); a person is trusted only when
 the port's own classifier says so — the login service's record binding the
-account to an anchor of the session's own fresh attestation (RT-6.42 step 9,
-``NatsPort._file_author``); unsure stays not trusted (RT-6.16). A foreign
+posting person's account to one of the session's attested trusted anchors,
+the rule a Mattermost account approves by (RT-6.41 step 6,
+``NatsPort._file_author`` through ``NatsPort._account_approves``); unsure
+stays not trusted (RT-6.16). A foreign
 owner is not told apart here (the answer's data does not carry it), which
 touches nothing: the flags say "agent", "trusted" or "data", never "peer".
 """
@@ -67,8 +69,8 @@ def _image_format(mime_type: str, has_preview: bool) -> str:
 def _author_fields(answer: Mapping[str, Any],
                    author_of: AuthorOf | None = None) -> dict[str, Any]:
     """The uploader as an event names an author (RT-6.16), from the bridge's
-    answer alone. The port's classifier decides trust (attested anchor plus a
-    fresh record); without one — or without a word — a bot's file is an
+    answer alone. The port's classifier decides trust (the account bound to an
+    attested trusted anchor); without one — or without a word — a bot's file is an
     agent's and a person's is never trusted: unsure stays data (RT-6.16)."""
     out: dict[str, Any] = {
         "author": str(answer.get("author_name") or answer.get("author") or ""),

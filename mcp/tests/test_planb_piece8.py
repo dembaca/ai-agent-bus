@@ -275,11 +275,12 @@ async def test_fetch_trusts_an_author_only_its_classifier_names(
 def test_the_port_s_classifier_trusts_only_a_bound_account(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """NatsPort._file_author: a bot's file is an agent's; a person's is trusted
-    only when the login service's record binds the account to an anchor of the
-    session's own fresh attestation (_account_anchor), never a configured name."""
+    only when the login service's record binds the posting person's account to
+    one of the session's attested trusted anchors, by the rule an account
+    approves by (_account_approves, RT-6.41 step 6), never a configured name."""
     port, _ = _port()
-    monkeypatch.setattr(NatsPort, "_account_anchor",
-                        lambda self, uid: "a1" if uid == "u-carol" else "")
+    monkeypatch.setattr(NatsPort, "_account_approves",
+                        lambda self, uid: uid == "u-carol")
     got = port._file_author({"author": "u-carol", "author_name": "carol"})
     assert got == {"author": "carol", "from_trusted_human": True, "from_agent": False}
     got = port._file_author({"author": "u-other", "author_name": "other"})

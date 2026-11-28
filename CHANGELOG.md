@@ -15,7 +15,10 @@ before 0.5.0 are described in the git history.
   (at most 16 across all agents, an unfinished one dropped after 60 s) and uploads
   with the agent's own bridge bot; `get_file` asks the same subject for a person's
   file, answered in parts with the metadata and the bytes, checked by length and
-  hash before anything is served. `attach`, `POST /v1/files` and
+  hash before anything is served; the file's author counts as a trusted human only
+  when the login service's record binds the posting person's account to one of the
+  session's attested trusted anchors, the rule a Mattermost account approves by
+  (RT-6.41 step 6). `attach`, `POST /v1/files` and
   `mm-agent-post.sh --file` are called as before, so the shell needs no change. A
   file id no seen post named takes today's path, as does the switch off in every
   channel; a send that fails with the switch on is an error, never a fallback.
