@@ -34,7 +34,28 @@ describe("Stats (#284)", () => {
     expect(html).not.toMatch(/fleet/i)
   })
 
-  it("says why 24 h has no bars, and when nothing was counted", () => {
+  it("24 h shows its hourly bars with the note on how many lines carried hours", () => {
+    const bars: ActivityBar[] = Array.from({ length: 24 }, (_, i) => ({
+      start: 1763942400 + i * 3600, groups: { working: i === 23 ? 3 : 0, finished: 0, asking: 0, organising: 0 },
+      words: (i === 23 ? { ACK: 3 } : {}) as Record<string, number> }))
+    const html = renderToStaticMarkup(
+      <ActivityChart activity={{ bucket: "hour", groups, bars, hours: { lines: 3, of: 5 } }} />)
+    expect(html.match(/activity__col/g)).toHaveLength(24)
+    expect(html).toContain("Hours from 3 of 5 lines. Running sessions are still to come:")
+    expect(html).toContain("their hours arrive only with their next daily part.")
+    expect(html).not.toContain("n/a")
+    const dayChart = renderToStaticMarkup(<ActivityChart activity={{ bucket: "day", groups, bars }} />)
+    expect(dayChart).not.toContain("Running sessions")
+  })
+
+  it("the mock's 24 h card has the bars and the note", async () => {
+    const act = (await mockApi().stats("24h"))[0].activity!
+    expect(act.bars).toHaveLength(24)
+    expect(act.hours).toEqual({ lines: 3, of: 5 })
+    expect(act.unavailable).toBeUndefined()
+  })
+
+  it("says why 24 h has no bars when no line carries hours, and when nothing was counted", () => {
     const why = "hourly figures need agents that publish hourly"
     const html = renderToStaticMarkup(
       <ActivityChart activity={{ bucket: "hour", groups, bars: [], unavailable: "no hourly data yet", reason: why }} />)
@@ -42,6 +63,7 @@ describe("Stats (#284)", () => {
     expect(html).toContain(why)
     expect(html).not.toMatch(/>0</)
     expect(html).not.toContain("activity__col")
+    expect(html).not.toContain("Running sessions")
     const none = renderToStaticMarkup(<ActivityChart activity={{ bucket: "day", groups, bars: [] }} />)
     expect(none).toContain("no posts counted in this range")
   })

@@ -77,8 +77,9 @@ image.
     one time range at the top right (24 h, 7, 30, 90 days, 12 months) for
     every card, the first card the activity chart (stacked bars of the agents'
     own posts in four groups, the exact bus words on hovering a bar; "24 h"
-    says "no hourly data yet", as hourly figures need agents that publish
-    hourly); below it four cards in one look (a grid of cards, thin bars, no
+    shows hourly bars and says under them how many lines carried hours
+    and that running sessions are still to come; with no such line it says
+    "no hourly data yet", as hourly figures need agents that publish hourly); below it four cards in one look (a grid of cards, thin bars, no
     chart libraries): the bus overhead share per version (a bar whose full width
     is 20 %), "asks to humans" as one table with a row for the range and a muted
     row for the range before (n/a with its reason where the stream does not hold

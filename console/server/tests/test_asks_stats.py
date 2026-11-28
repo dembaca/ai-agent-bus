@@ -688,7 +688,7 @@ WORDS = {"ACK": [4, 10], "PROGRESS": [2, 10], "RESULT": [1, 5], "DONE": [3, 5], 
 def test_the_activity_bars_bundle_the_bus_words_in_four_groups() -> None:
     """#284: one bar per day (7, 30 days), week (90 days) or month (12 months), the agents'
     own posts by bus word in four groups with every word kept for the hover; a part counts
-    in the bucket it was received in; no names; 24 h says why it has no bars."""
+    in the bucket it was received in; no names; 24 h without hours says why it has no bars (the hourly test below)."""
     book = book_with((A, LINE | {"post_words": WORDS}, NOW - 600), (B, LINE | {"post_words": {"ACK": [1, 1]}}, NOW - 3 * 86400),
                      (C, LINE | {"post_words": {"DONE": [7, 1]}}, NOW - 100 * 86400), (A, LINE, NOW - 50))
     act = book.reports("7d")[0]
@@ -703,8 +703,8 @@ def test_the_activity_bars_bundle_the_bus_words_in_four_groups() -> None:
     assert book.reports("90d")[0]["activity"]["bucket"] == "week"
     assert sum(b["groups"]["finished"] for b in book.reports("12m")[0]["activity"]["bars"]) == 4 + 7
     assert sum(b["groups"]["finished"] for b in book.reports("90d")[0]["activity"]["bars"]) == 4
-    hour = book.reports("24h")[0]["activity"]
-    assert hour["bucket"] == "hour" and hour["bars"] == [] and hour["unavailable"] == "no hourly data yet" and "publish hourly" in hour["reason"]
+    hour = book.reports("24h")[0]["activity"]   # no line carries hours: n/a with its reason
+    assert hour["bucket"] == "hour" and hour["bars"] == [] and hour["unavailable"] == "no hourly data yet" and "publish hourly" in hour["reason"] and "hours" not in hour
     assert A not in json.dumps(book.reports("12m")) and B not in json.dumps(book.reports("12m"))
 
 
@@ -716,3 +716,34 @@ def test_buckets_start_at_midnight_monday_and_the_first_of_the_month_utc() -> No
     assert iso(_bucket_starts(now, "day", 7)[-1]) == "2026-03-04"
     assert iso(_bucket_starts(now, "week", 13)[-1]) == "2026-03-02"
     assert [iso(t) for t in _bucket_starts(now, "month", 3)] == ["2026-01-01", "2026-02-01", "2026-03-01"]
+
+
+def test_24h_draws_the_hours_of_the_lines_that_carry_them_and_says_from_how_many() -> None:
+    """#284, #290: "24 h" has 24 hourly bars up to the current hour from `stats.hours_of`, a post
+    in the hour it was made in (not the one its part arrived); `hours` says `lines` of `of`, so a
+    chart of the lines that carry hours does not look complete; hours out of the 24 are left out."""
+    hour = int(NOW) // 3600
+    mine = LINE | {"post_words": WORDS, "post_hours": {
+        str(hour): {"ACK": 2, "DONE": 1}, str(hour - 5): {"ask": 1, "BLOCKED": 2}, str(hour - 30): {"ACK": 9}}}
+    plain = LINE | {"post_words": {"ACK": [1, 1]}}   # a line before the hourly buckets
+    book = book_with((A, mine, NOW - 600), (B, plain, NOW - 300), (C, plain, NOW - 3 * 86400))
+    act = book.reports("24h")[0]["activity"]
+    assert act["bucket"] == "hour" and len(act["bars"]) == 24 and "unavailable" not in act
+    assert act["hours"] == {"lines": 1, "of": 2}   # the line of 3 days back is not in the range
+    assert [b["start"] for b in act["bars"]][-1] == hour * 3600
+    assert all(b["start"] % 3600 == 0 for b in act["bars"])
+    assert act["bars"][-1]["groups"] == {"working": 2, "finished": 1, "asking": 0, "organising": 0}
+    assert act["bars"][-6]["groups"] == {"working": 0, "finished": 0, "asking": 1, "organising": 2}
+    assert act["bars"][-6]["words"] == {"ask": 1, "BLOCKED": 2}
+    assert sum(sum(b["groups"].values()) for b in act["bars"]) == 6   # the hour of 30 hours back is out
+    assert A not in json.dumps(act)
+
+
+def test_24h_with_every_line_carrying_hours_says_so_and_with_none_is_na() -> None:
+    """#284: all lines with hours: `lines` equals `of`; a book without any line: n/a, never 0."""
+    hour = int(NOW) // 3600
+    full = LINE | {"post_words": {"ACK": [1, 1]}, "post_hours": {str(hour): {"ACK": 1}}}
+    act = book_with((A, full, NOW - 60)).reports("24h")[0]["activity"]
+    assert act["hours"] == {"lines": 1, "of": 1} and len(act["bars"]) == 24
+    empty = StatsBook().reports("24h")[0]["activity"]
+    assert empty["bars"] == [] and empty["unavailable"] == "no hourly data yet" and "hours" not in empty

@@ -156,7 +156,7 @@ anchor, never a login name (point 4 of the console decision's addition of
 nothing. Read-only: no answer, no thread text. `/v1/stats?range=24h|7d|30d|90d|12m` (7 days
 without it, another value a 400, #284) answers the reports, each over the
 range (the activity card, `activity`: the agents' own posts by bus word in
-four groups, one bar per day, week or month, none for 24 h, which says "no hourly data yet" and why (`unavailable`, `reason`);
+four groups, one bar per hour (24 h, from `stats.hours_of`, with `hours`: `lines` of `of` the lines that carried hours), day, week or month; 24 h with no line carrying hours says "no hourly data yet" and why (`unavailable`, `reason`);
 the bus overhead share of all tokens per version, estimated; the asks over
 the range and the range before it (n/a with `unavailable`, every figure `null`,
 where the stream does not hold it: 12 months, or before the oldest line held); the bus traffic by category, exact counts

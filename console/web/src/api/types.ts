@@ -291,12 +291,14 @@ export interface ActivityBar {
 }
 
 /** The first card (#284): one bar per hour, day, week or month. `unavailable` says
- * why there are no bars (hourly figures need agents that publish hourly). */
+ * why there are no bars (24 h and no line carries hours). */
 export interface Activity {
   bucket: "hour" | "day" | "week" | "month"
   groups: { id: string; label: string }[]
   bars: ActivityBar[]
   unavailable?: string
+  /** "24 h": how many of the lines held carried hours (`lines` of `of`); running sessions' hours come with their next daily part. */
+  hours?: { lines: number; of: number }
   /** The short reason behind `unavailable` ("hourly figures need agents that publish hourly"). */
   reason?: string
 }

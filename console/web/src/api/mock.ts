@@ -252,12 +252,12 @@ const SPLIT_NOTE = "estimated: exact totals per token type from the harness (Cla
 const RANGE_LABEL: Record<RangeKey, string> = {
   "24h": "24 h", "7d": "7 d", "30d": "30 d", "90d": "90 d", "12m": "12 mo",
 }
-const BAR_COUNT: Record<RangeKey, number> = { "24h": 0, "7d": 7, "30d": 30, "90d": 13, "12m": 12 }
+const BAR_COUNT: Record<RangeKey, number> = { "24h": 24, "7d": 7, "30d": 30, "90d": 13, "12m": 12 }
 const BUCKET: Record<RangeKey, Activity["bucket"]> = {
   "24h": "hour", "7d": "day", "30d": "day", "90d": "week", "12m": "month",
 }
 
-// The activity card (#284): the mock's bars, a steady wave; 24 h has none, with the reason.
+// The activity card (#284): the mock's bars, a steady wave; 24 h has hourly bars and the note on the lines that carried hours.
 const activity = (range: RangeKey): Report => {
   const n = BAR_COUNT[range]
   const end = Date.UTC(2026, 10, 28)
@@ -279,7 +279,7 @@ const activity = (range: RangeKey): Report => {
       groups: [{ id: "working", label: "working on it" }, { id: "finished", label: "finished something" },
                { id: "asking", label: "asking a human" }, { id: "organising", label: "organising" }],
       bars,
-      ...(range === "24h" ? { unavailable: "no hourly data yet", reason: "hourly figures need agents that publish hourly" } : {}),
+      ...(range === "24h" ? { hours: { lines: 3, of: 5 } } : {}),
     },
   }
 }

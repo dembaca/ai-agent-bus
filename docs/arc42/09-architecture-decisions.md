@@ -6173,12 +6173,14 @@ finished something (`RESULT`, `DONE`), asking a human (`ask`) and organising
 hovering a bar, and people's posts are not in it. **The console reads the
 whole STATS history**: the login service's per-login stats consumer starts
 365 days back (the stream's age, RT-6.45) instead of 7 days; the unattended
-page's consumer stays at a week. **Not built, the data side**: hourly bars
-need hourly buckets by bus word in the agents' STATS lines (a part carries
-`post_words` for the whole part, at most a day, and a session publishes one
-part a day and one at its end), and a session publishing more often than
-once a day, within the 8 KiB limit of a line; until then "24 h" shows no
-bars and says "no hourly data yet" with that reason. A part counts in the bucket it was received in. Rejected:
+page's consumer stays at a week. **"24 h"**: the hourly bars come from the
+hourly buckets by bus word in the agents' STATS lines (`post_hours`, #290,
+`stats.hours_of`), 24 bars up to the current hour. Since a running session's
+hours arrive only with its next daily part, "24 h" must not look complete: the
+card says under the chart how many of the lines held carried hours (`lines` of
+`of`) and that running sessions are still to come; when no line carries hours
+it is n/a with its reason ("no hourly data yet", `unavailable`), never 0 and
+never an empty chart (answer of the design contact). A part counts in the bucket it was received in. Rejected:
 a slider or free date range, and figures by agent, home or owner on this
 page (point 15). In the wording, many agents are a flock, never a fleet.
 

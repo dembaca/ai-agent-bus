@@ -30,6 +30,8 @@ let shapes: {
   ask: Omit<WireAsk, "end" | "kind"> & { end: string; kind: string }
   report: ReportShape
   activity: ReportShape
+  activity24h: ReportShape
+  activityNoHours: ReportShape
   asksBefore: ReportShape
   agentStats: AgentStatsRow[]
   groups: GroupsAnswer
@@ -65,6 +67,18 @@ if (!import.meta.env.PROD) {
   if (!report.window || activity.id !== "activity" || !activity.activity
       || !["hour", "day", "week", "month"].includes(activity.activity.bucket)) {
     throw new Error("wire fixture: the report window or the activity card is missing")
+  }
+  // 24 h (#284, #290): hourly bars and the note's numbers, or n/a with its reason when no line carries hours
+  const activity24h = fixture.activity24h as unknown as ReportShape
+  const activityNoHours = fixture.activityNoHours as unknown as ReportShape
+  const hours = activity24h.activity?.hours
+  if (activity24h.activity?.bucket !== "hour" || activity24h.activity.bars.length !== 24
+      || !hours || hours.lines > hours.of || activity24h.activity.unavailable) {
+    throw new Error("wire fixture: the 24 h activity card lacks its hourly bars or its hours note")
+  }
+  if (!activityNoHours.activity?.unavailable || !activityNoHours.activity.reason
+      || activityNoHours.activity.bars.length > 0 || activityNoHours.activity.hours) {
+    throw new Error("wire fixture: the 24 h card without hours is not n/a with its reason")
   }
   const asksBefore: ReportShape = fixture.asksBefore satisfies ReportShape
   if (asksBefore.id !== "asks-before" || !asksBefore.unavailable
@@ -115,7 +129,7 @@ if (!import.meta.env.PROD) {
       }
     }
   }
-  shapes = { card, page, events, ask, report, activity, asksBefore, agentStats, groups }
+  shapes = { card, page, events, ask, report, activity, activity24h, activityNoHours, asksBefore, agentStats, groups }
 }
 
 export const wire_shapes = shapes

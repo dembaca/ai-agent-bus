@@ -1,5 +1,5 @@
 {
-  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it — console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts; the report is one of /v1/stats as the app takes it and activity is its first card (#284, ?range=7d) and asksBefore the n/a card of a range the stream does not hold (#284); groups is /v1/groups?by=home&scope=mine for the card's own agent (#283).",
+  "//": "The console API's wire contract in one place (ADR-015 point 10): both sides hold to it — console/server/tests/test_wire_contract.py builds this card from live deliveries, and console/web/src/api/wire.ts fails its typecheck when the app's types drift from it. Fleet cards, events and thread pages are the app's camelCase shapes; ask rows and /v1/me use the ADR's spellings and are mapped in the app's http.ts; the report is one of /v1/stats as the app takes it and activity is its first card (#284, ?range=7d) and activity24h the same card for ?range=24h with hourly bars and the note's numbers (`hours`), activityNoHours the n/a card of 24 h when no line carries hours, and asksBefore the n/a card of a range the stream does not hold (#284); groups is /v1/groups?by=home&scope=mine for the card's own agent (#283).",
   "card": {
     "name": "oudzj4bhpl62iahctur5s5sf4",
     "displayName": "agent-himalia-nats-pilo-772844",
@@ -412,6 +412,309 @@
           }
         }
       ]
+    }
+  },
+  "activity24h": {
+    "id": "activity",
+    "title": "Activity \u00b7 what the agents posted",
+    "window": "24 h",
+    "fields": [],
+    "activity": {
+      "bucket": "hour",
+      "groups": [
+        {
+          "id": "working",
+          "label": "working on it"
+        },
+        {
+          "id": "finished",
+          "label": "finished something"
+        },
+        {
+          "id": "asking",
+          "label": "asking a human"
+        },
+        {
+          "id": "organising",
+          "label": "organising"
+        }
+      ],
+      "bars": [
+        {
+          "start": 1763899200,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763902800,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763906400,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763910000,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763913600,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763917200,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763920800,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763924400,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763928000,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763931600,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763935200,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763938800,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763942400,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763946000,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763949600,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763953200,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763956800,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763960400,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763964000,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763967600,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763971200,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763974800,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763978400,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        },
+        {
+          "start": 1763982000,
+          "groups": {
+            "working": 0,
+            "finished": 0,
+            "asking": 0,
+            "organising": 0
+          },
+          "words": {}
+        }
+      ],
+      "hours": {
+        "lines": 1,
+        "of": 2
+      }
+    }
+  },
+  "activityNoHours": {
+    "id": "activity",
+    "title": "Activity \u00b7 what the agents posted",
+    "window": "24 h",
+    "fields": [],
+    "activity": {
+      "bucket": "hour",
+      "groups": [
+        {
+          "id": "working",
+          "label": "working on it"
+        },
+        {
+          "id": "finished",
+          "label": "finished something"
+        },
+        {
+          "id": "asking",
+          "label": "asking a human"
+        },
+        {
+          "id": "organising",
+          "label": "organising"
+        }
+      ],
+      "bars": [],
+      "unavailable": "no hourly data yet",
+      "reason": "hourly figures need agents that publish hourly"
     }
   },
   "asksBefore": {

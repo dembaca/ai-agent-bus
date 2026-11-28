@@ -51,7 +51,8 @@ RANGES: dict[str, tuple[str, int, str]] = {
 }
 DEFAULT_RANGE = "7d"
 BARS = {"day": {"7d": 7, "30d": 30}, "week": {"90d": 13}, "month": {"12m": 12}}
-# "24 h" has no hourly data yet (answer of the design contact, #284): n/a, never 0, with the reason.
+# "24 h" shows the hourly bars of the lines that carry hours (`stats.hours_of`, #290); when no
+# line does it is n/a with the reason, never 0 and never an empty chart (design contact, #284).
 HOURLY_NA = "no hourly data yet"
 HOURLY_NOTE = "hourly figures need agents that publish hourly"
 
@@ -202,7 +203,9 @@ class StatsBook:
         """The first card (#284): the agents' own posts by bus word, one bar per bucket, the
         words bundled into four groups (`ACTIVITY_GROUPS`) and every word kept for the hover.
         A part counts in the bucket it was received in, by the server's time (UTC). A part
-        covers up to a day, so there are no hourly bars: "24 h" says why instead."""
+        covers up to a day, so "24 h" draws the hours of `stats.hours_of` (a post's own hour,
+        UTC) over the 24 hours up to now and says from how many of the lines held they come
+        (`hours`: `lines` of `of`); no line with hours is n/a with its reason."""
         label, _sec, bucket = RANGES[range_key]
         card: dict[str, Any] = {
             "id": "activity", "title": "Activity · what the agents posted", "window": label,
@@ -210,8 +213,23 @@ class StatsBook:
                 "bucket": bucket, "groups": [{"id": g, "label": name} for g, name, _w in ACTIVITY_GROUPS],
                 "bars": []}}
         if bucket == "hour":
-            card["activity"]["unavailable"] = HOURLY_NA
-            card["activity"]["reason"] = HOURLY_NOTE
+            got = _safe(stats.hours_of, [line for at, _seq, _agent, line in lines if at >= now - DAY_SEC])
+            if not got:
+                card["activity"]["unavailable"] = HOURLY_NA
+                card["activity"]["reason"] = HOURLY_NOTE
+                return card
+            first = int(now // 3600) * 3600 - 23 * 3600
+            bars = [{"start": first + 3600 * i, "groups": {g: 0 for g, _n, _w in ACTIVITY_GROUPS}, "words": {}}
+                    for i in range(24)]
+            for start, words in got["hours"].items():
+                if start < first or start >= first + 24 * 3600:
+                    continue
+                bar = bars[(start - first) // 3600]
+                for word, n in words.items():
+                    bar["words"][word] = bar["words"].get(word, 0) + n
+                    bar["groups"][_GROUP_OF.get(word, "organising")] += n
+            card["activity"]["bars"] = bars
+            card["activity"]["hours"] = {"lines": got["lines"], "of": got["of"]}
             return card
         starts = _bucket_starts(now, bucket, BARS[bucket][range_key])
         bars = [{"start": s, "groups": {g: 0 for g, _n, _w in ACTIVITY_GROUPS}, "words": {}}

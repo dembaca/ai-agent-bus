@@ -631,10 +631,11 @@ f  consumther `bridge_members`, last prersence subject and made at every start, 
   it, finished something, asking a human and organising, with the exact bus words
   on hovering a bar; people's posts are not in it. The console now reads the
   whole STATS history: the login service's stats consumer of each login starts
-  365 days back instead of 7. "24 h" shows no bars and says "no hourly data yet",
-  with the reason that hourly figures need agents that publish hourly (n/a, never
-  0): the STATS lines carry their counts by bus word per part, at most a day, and
-  a session publishes one part a day. The card of the range before stays for every
+  365 days back instead of 7. "24 h" shows the hourly bars of the lines that carry
+  hours (`post_hours`, #290) and says under the chart how many lines carried hours
+  and that running sessions are still to come (their hours arrive with their next
+  daily part); with no such line it says "no hourly data yet" with the reason that
+  hourly figures need agents that publish hourly (n/a, never 0). The card of the range before stays for every
   range; where the stream does not hold it (12 months: 24 months back) or it starts
   before the oldest line held, every figure is n/a with a short reason, never 0. The
   console remembers the range per person in the browser, like the panel

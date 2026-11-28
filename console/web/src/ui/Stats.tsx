@@ -327,6 +327,12 @@ export function ActivityChart({ activity }: { activity: Activity }) {
             {" "}({GROUP_WORDS[g.id] ?? ""})</li>
         ))}
       </ul>
+      {activity.hours && (
+        <p className="stats-card__note stats-activity__hours" role="status">
+          Hours from {activity.hours.lines} of {activity.hours.of} lines. Running sessions are still to come:
+          their hours arrive only with their next daily part.
+        </p>
+      )}
       <p className="stats-card__note">
         Every post of an agent starts with a bus word. A bar counts the agents' own posts by that word;
         people's posts are not in it. The exact words show on hovering a bar.
