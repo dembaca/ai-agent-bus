@@ -7,6 +7,75 @@ before 0.5.0 are described in the git history.
 
 ### Added
 
+- **A stranded counter claim keeps the takeover open: plan B piece 14c-1c** (#244, RT-6.2
+  step 9), behind piece 2's switch. A claim the counter move leaves behind (its pid runs
+  again, or an append whose journal line failed) no longer lets the takeover be marked
+  done: the source gets no `CB_TAKEN_BY`, the intent narrows to the counters (`CB_MOVING`,
+  the `CB_APPENDING` lines kept), and a later start moves only the counters, so a file the
+  name deleted while it ran does not come back. An append cut short by a full disk is cut
+  back to its journaled size. A start re-reads under a predecessor's lock whether another
+  start began to take it, and an unfinished takeover whose source another name took
+  meanwhile drops its intent instead of taking it again. RT-6.1 step 7 says why the
+  workspace tie's lock is never swept. Switch off: nothing differs.
+
+## 0.105.0
+
+Needs: login service, bridge and hosts on the same release.
+Needs: login service and bridge users with their new rights from the example config, before their upgrade.
+Needs: nats server with a gibibyte more jetstream file store, before the login service starts.
+Needs: console server updated before the agents, or it shows no ask of an updated agent.
+
+Released 2026-11-28. Plan B (#244, ADR-014 phase 5) ships built and switched off:
+its pieces 1 to 13, each behind its switch per home or channel and off by default;
+the decision whether a session needs a Mattermost bot (piece 14a), which registers
+every bot as before until piece 14c; the update notice from the bridge's signed
+release record (piece 14b), read only with `CB_RECORDS_URL` set; and the kept state
+keyed by the NATS name (piece 14c-1) with its follow-up, the hardened takeover (piece
+14c-1b), both only with piece 2 on. Every switch is off. With the switches off
+every session still registers its Mattermost bot. The old setting names of 0.103.0
+still work in this release, with their deprecation warning; they go in 0.106.0, the
+cutover release (the owner's decision of 2026-11-28, which moved them from 0.105.0;
+[docs/env-names.md](docs/env-names.md#the-reading-rule)).
+
+Rollout, in this order:
+
+1. **The login service first.** Its JetStream user publishes the account proofs
+   (`presence.account.mattermost.*.auth.v1`) before it starts, or every agent login
+   with an OpenID or LDAP proven Mattermost account is refused (#266). Raise the NATS
+   server's `max_file_store` by 1 GiB before it starts: it grows the `STATS` stream
+   from 64 MiB to 1 GiB (#310, #314, #319). While its log shows `consumers: stats
+   stream size not raised`, the stream keeps 64 MiB and the console's 12 months are
+   not covered on that server. Until the login service runs this release, the
+   console's Stats shows 7 days (#284, #291).
+2. **The bridge.** Its user's consumer create rights for `bridge_accounts` and
+   `bridge_planb` (`services/auth/nats-server.example.conf`) are in place before it
+   starts; without them it reads no account records or no plan B switches and
+   carries no home (#266, #249). An ask still open whose Mattermost copy carries an
+   agent's reaction (a receipt or a done mark) is asked again after the bridge is
+   updated: a copy the old bridge overwrote stays wrong for answers (#297, #298).
+3. **The console server before the agents.** An older console server refuses an ask
+   record with unknown keys and shows no ask of an updated agent that carries a card
+   (#285, #307). The console's server and web app ship in one image and go out
+   together, so `GET /v1/graph` leaves the server with the web app that no longer
+   reads it (#283, #288, #289).
+4. **The hosts.** The login service, the bridge and the hosts run the same release,
+   since NATS names lose their `agent-` prefix (#274, see Breaking).
+
+What changes for everyone, with every switch off:
+
+- Every agent sends `post_hours` in its `STATS` parts from this release on; an older
+  console ignores the key (#290, #309).
+- The check of a release record (`attest.verify_release`) is stricter, the host's
+  self-update included: each number of a version has at most six digits, and a
+  malformed `needs`, `withdrawn` or `breaking` refuses the record (#312, #325).
+- `CB_NATS_HOMES` and `MM_NATS_HOMES` set to different values refuse the bus in the
+  start hook too, as they did in the MCP server already (#313).
+- Before plan B piece 2 or piece 14c goes on anywhere later, every host runs 0.105.0
+  or newer, its hooks and MCP server of one version (#337): a server before this release
+  writes no `CB_STATE_KEY` (#323, #328).
+
+### Added
+
 - **Every kept state file keyed by the NATS name: plan B piece 14c-1** (#244, RT-6.2
   step 9, ADR-014). Behind piece 2's switch (`planb.on(2, home)`, off by default; no new
   switch), the asks, the read watermark, reminders, the gate, the stall and release-notice
@@ -64,17 +133,6 @@ before 0.5.0 are described in the git history.
   sweep's day rule removes them. Switch off: nothing differs but the sweep's shared probe,
   its sweeping of a bot's `stats-<bot id>.jsonl.moving-<pid>`, and `mm_state_key`'s check of
   the server's pid.
-
-- **A stranded counter claim keeps the takeover open: plan B piece 14c-1c** (#244, RT-6.2
-  step 9), behind piece 2's switch. A claim the counter move leaves behind (its pid runs
-  again, or an append whose journal line failed) no longer lets the takeover be marked
-  done: the source gets no `CB_TAKEN_BY`, the intent narrows to the counters (`CB_MOVING`,
-  the `CB_APPENDING` lines kept), and a later start moves only the counters, so a file the
-  name deleted while it ran does not come back. An append cut short by a full disk is cut
-  back to its journaled size. A start re-reads under a predecessor's lock whether another
-  start began to take it, and an unfinished takeover whose source another name took
-  meanwhile drops its intent instead of taking it again. RT-6.1 step 7 says why the
-  workspace tie's lock is never swept. Switch off: nothing differs.
 
 - **The release notice from the bridge's signed record: plan B piece 14b** (#244,
   RT-6.30, ADR-014). With `CB_RECORDS_URL` set, the MCP server reads
@@ -1033,6 +1091,9 @@ Needs: settings renamed to the new prefix before 0.105.0, the old names still wo
 The old setting names of 0.103.0 still work in this release, with their
 deprecation warning; they go in 0.105.0, the removal release
 ([docs/env-names.md](docs/env-names.md#the-reading-rule)).
+
+*Note of 2026-11-28:* the owner moved the removal of the old names to 0.106.0, the
+cutover release; 0.105.0 still reads them, with their deprecation warning.
 
 ### Added
 
