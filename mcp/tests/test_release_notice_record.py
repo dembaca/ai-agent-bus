@@ -128,7 +128,8 @@ async def test_an_unknown_kid_a_bad_signature_or_a_malformed_answer_is_no_notice
     assert release.info("1.3.0")["record"] == "not read: refused: key not pinned"
 
     head, payload, _ = record().split(".")
-    await release.refresh_record(transport=_answer(f"{head}.{payload}.{_b64(b'\x00' * 64)}"))
+    zeros = _b64(bytes(64))
+    await release.refresh_record(transport=_answer(f"{head}.{payload}.{zeros}"))
     out = release.info("1.3.0")
     assert "notice" not in out and "bad signature" in out["record"]
 
