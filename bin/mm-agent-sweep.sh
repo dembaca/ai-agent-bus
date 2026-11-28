@@ -32,6 +32,16 @@
 # live session keeps writing them, and one whose token was exported by hand has
 # no session file but would lose its crown lease if they went sooner.
 #
+# Since plan B piece 2b (RT-6.2 step 9) a session keys its kept state by its NATS
+# name (25 lower-case base32 characters) instead of the bot id: any
+# <kind>-<name>.env/.jsonl/.log, by that pattern, whatever the kind, so files
+# that move to the name later need no change here (RT-6.1 step 7). Only the
+# marker copied-<name>.env ties a name to its bots (CB_COPIED_FROM=<bot id>, one
+# line per bot that used it). A name's files go when its marker names no bot
+# with a session file or a running MCP server and none of them was touched for
+# a day; without a marker nothing ties the name to a session, so they stay
+# (--force includes them by the day rule).
+#
 # A keyless corral session (RT-6.18) has its MCP server running on the host:
 # its session file records CB_BUS_HOST_PID, and the process keeps its files in
 # <sid>.host.json, <sid>.host.log and hosted/<sid>/. While that process runs,
@@ -62,7 +72,7 @@ for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=1 ;;
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,51p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -96,7 +106,18 @@ STATE_RE='^(asks|coord|gate|last|listen|nonce|presence|turn|update)-[a-z0-9]{26}
 # leaves one, and nothing else would ever remove it (review of #34).
 ENDPOINT_RE='^endpoint-(sid-)?[0-9a-f]{16}\.env(\.tmp)?$'
 is_state_file() { [[ "$(basename "$1")" =~ $STATE_RE ]]; }
-not_a_session() { is_state_file "$1" || [[ "$(basename "$1")" =~ $ENDPOINT_RE ]]; }
+# Per-agent state keyed by the NATS name (RT-6.1 step 7, RT-6.2 step 9): any kind, by
+# pattern (natsbus.NAME_HASH_LEN characters of lower-case base32, no prefix since #274),
+# so the kinds that move to the name later are covered without a list. A file holding
+# a bot's token or registration name is a session, whatever its name.
+NAME_STATE_RE='^[a-z]+-[a-z2-7]{25}\.(env|jsonl|log)$'
+is_name_state_file() {
+  [[ "$(basename "$1")" =~ $NAME_STATE_RE ]] || return 1
+  ! grep -Eq '^(export )?(CB_MM_BOT_TOKEN|MM_BOT_TOKEN|MM_REG_BOT_NAME|MM_BOT_NAME)=' "$1" 2>/dev/null
+}
+not_a_session() {
+  is_state_file "$1" || [[ "$(basename "$1")" =~ $ENDPOINT_RE ]] || is_name_state_file "$1"
+}
 
 # The registrar's username prefix (arc42 §7.1): this shell's own bot tells it,
 # else the first session file that does, else the default "agent-".
@@ -244,6 +265,11 @@ shopt -s nullglob
 for f in "$STATE_DIR"/*.env; do
   not_a_session "$f" || KEEP_UIDS+="$(field "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID) "
 done
+# So do the bots of MCP servers that still run (their endpoint file, RT-6.17).
+for f in "$STATE_DIR"/endpoint-*.env; do
+  [[ "$(basename "$f")" =~ $ENDPOINT_RE ]] || continue
+  is_live "$(field "$f" CB_BUS_PID MM_BUS_PID)" && KEEP_UIDS+="$(field "$f" CB_MM_BOT_USER_ID MM_BOT_USER_ID) "
+done
 stale=0
 for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/stats-*.jsonl "$STATE_DIR"/permission-*.log "$STATE_DIR"/crown-*.log; do
   is_state_file "$f" || continue
@@ -260,6 +286,55 @@ if (( stale > 0 )); then
   else
     echo "would remove ${stale} state file(s) of bots without a session"
   fi
+fi
+
+# --- 3b. state files keyed by a NATS name (RT-6.1 step 7, RT-6.2 step 9) ------
+# A name is in use while its marker copied-<name>.env names a bot kept above, or
+# while any of its files was touched within a day. Without a marker nothing ties
+# the name to a session: its files stay, unless --force.
+shopt -s nullglob
+NAMES=" "
+for f in "$STATE_DIR"/*-*.env "$STATE_DIR"/*-*.jsonl "$STATE_DIR"/*-*.log; do
+  is_name_state_file "$f" || continue
+  n="$(basename "$f")"; n="${n#*-}"; n="${n%%.*}"
+  [[ "$NAMES" == *" $n "* ]] || NAMES+="$n "
+done
+named=0
+untied=0
+for n in $NAMES; do
+  files=()
+  for f in "$STATE_DIR"/*-"$n".env "$STATE_DIR"/*-"$n".jsonl "$STATE_DIR"/*-"$n".log; do
+    is_name_state_file "$f" && files+=("$f")
+  done
+  marker="$STATE_DIR/copied-$n.env"
+  if [[ -f "$marker" && ! -L "$marker" ]]; then
+    tied=0
+    while IFS='=' read -r k v; do
+      [[ "$k" == CB_COPIED_FROM && "$v" =~ ^[a-z0-9]{26}$ && "$KEEP_UIDS" == *" $v "* ]] && tied=1
+    done <"$marker"
+    [[ "$tied" -eq 1 ]] && continue
+  elif [[ "$FORCE" -eq 0 ]]; then
+    untied=$((untied + ${#files[@]}))
+    continue
+  fi
+  fresh=0
+  for f in "${files[@]}"; do
+    [[ -n "$(find "$f" -mtime +0 2>/dev/null)" ]] || fresh=1   # touched within a day
+  done
+  [[ "$fresh" -eq 1 ]] && continue
+  named=$((named + ${#files[@]}))
+  [[ "$APPLY" -eq 1 ]] && rm -f "${files[@]}"
+done
+shopt -u nullglob
+if (( named > 0 )); then
+  if [[ "$APPLY" -eq 1 ]]; then
+    note "removed ${named} state file(s) keyed by a NATS name no session uses"
+  else
+    echo "would remove ${named} state file(s) keyed by a NATS name no session uses"
+  fi
+fi
+if (( untied > 0 )); then
+  note "left ${untied} state file(s) keyed by a NATS name without copied-<name>.env (no session tied to them) — use --force to include those untouched for a day"
 fi
 
 # --- 4. endpoint files of servers that are gone ------------------------------

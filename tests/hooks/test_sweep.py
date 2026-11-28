@@ -255,3 +255,92 @@ def test_a_dead_takeovers_claim_goes_back(mm, run):
     r = run(SWEEP, "--apply", MM_BOT_TOKEN=None)
     assert "KEPT    mac-proj-kept3" in r.stderr
     assert f.exists() and not claim.exists() and not copy.exists()
+
+
+# --- state keyed by the NATS name (RT-6.1 step 7, RT-6.2 step 9, plan B piece 2b) ---
+
+NAME = "g" * 25  # a NATS name: 25 lower-case base32 characters, no prefix (#274)
+OTHER = "h" * 25
+DEAD_UID = "d" * 26
+# Today's name-keyed kinds and those plan B piece 14c moves to the name (any kind counts).
+NAME_KINDS = ("last", "threads", "unanswered", "listen", "update", "presence", "coord", "turn",
+              "asks", "gate", "watermark", "reminders")
+
+
+def name_state(run, name: str, *, uid: str | None, days_old: float) -> list[str]:
+    """The files of one NATS name, aged; with `uid` the marker copied-<name>.env naming it."""
+    files = [state_file(run, f"{k}-{name}.env", days_old=days_old) for k in NAME_KINDS]
+    files.append(state_file(run, f"stats-{name}.jsonl", days_old=days_old))
+    files.append(state_file(run, f"crown-{name}.log", days_old=days_old))
+    if uid is not None:
+        m = run.state_dir / f"copied-{name}.env"
+        m.write_text(f"CB_COPIED_FROM={uid}\n")
+        t = os.path.getmtime(run.state_dir / files[0])
+        os.utime(m, (t, t))
+        files.append(m.name)
+    return files
+
+
+def test_name_keyed_state_of_bots_without_a_session_is_removed(mm, run):
+    """RT-6.1 step 7: a name whose marker names only bots without a session file, none of
+    its files touched for a day, loses all of them, every kind, the marker too."""
+    files = name_state(run, NAME, uid=DEAD_UID, days_old=3)
+    dry = run(SWEEP, MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    n = len(files)
+    assert f"would remove {n} state file(s) keyed by a NATS name" in dry.stdout
+    assert all((run.state_dir / f).exists() for f in files)
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert f"removed {n} state file(s) keyed by a NATS name" in r.stderr
+    assert "skip" not in r.stderr and deletes(mm) == []
+    assert not any((run.state_dir / f).exists() for f in files)
+
+
+def test_name_keyed_state_of_a_live_session_stays(mm, run):
+    """RT-6.1 step 7: the marker ties the name to a bot whose session file is there: kept,
+    however old the files; so does a bot whose MCP server still runs (its endpoint file)."""
+    session(run, "mac-proj-ggg777", pid=str(os.getpid()))
+    f = run.state_dir / "mac-proj-ggg777.env"
+    f.write_text(f.read_text() + f"MM_BOT_USER_ID={LIVE}\n")
+    kept = name_state(run, NAME, uid=LIVE, days_old=3)
+    served_uid = "s" * 26
+    (run.state_dir / f"endpoint-sid-{'e' * 16}.env").write_text(
+        f"CB_BUS_ENDPOINT=http://127.0.0.1:9\nCB_BUS_KEY=x\nCB_BUS_PID={os.getpid()}\n"
+        f"CB_MM_BOT_USER_ID={served_uid}\n")
+    served = name_state(run, OTHER, uid=served_uid, days_old=3)
+    m = run.state_dir / f"copied-{OTHER}.env"
+    m.write_text(f"CB_COPIED_FROM={DEAD_UID}\nCB_COPIED_FROM={served_uid}\n")  # one of two bots
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert "keyed by a NATS name" not in r.stderr
+    assert all((run.state_dir / x).exists() for x in kept + served)
+
+
+def test_name_keyed_state_touched_today_stays(mm, run):
+    """RT-6.1 step 7: one file of the name written within a day keeps the name's files."""
+    files = name_state(run, NAME, uid=DEAD_UID, days_old=3)
+    os.utime(run.state_dir / f"presence-{NAME}.env")
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert "keyed by a NATS name" not in r.stderr
+    assert all((run.state_dir / f).exists() for f in files)
+
+
+def test_name_keyed_state_without_a_marker_stays_unless_forced(mm, run):
+    """RT-6.1 step 7: without copied-<name>.env nothing ties the name to a session: left,
+    with a note; --force includes them by the day rule."""
+    files = name_state(run, NAME, uid=None, days_old=3)
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert f"left {len(files)} state file(s) keyed by a NATS name without copied-<name>.env" in r.stderr
+    assert all((run.state_dir / f).exists() for f in files)
+    r = run(SWEEP, "--apply", "--force", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert f"removed {len(files)} state file(s) keyed by a NATS name" in r.stderr
+    assert not any((run.state_dir / f).exists() for f in files)
+
+
+def test_a_session_file_with_a_name_like_name_is_still_a_session(mm, run):
+    """RT-6.1 step 7: a file that holds a bot's token is a session whatever its name; the
+    name-keyed sweep never removes it, and a 26-character bot id is no NATS name."""
+    f = session(run, "mac-" + "a" * 25, pid=str(os.getpid()))
+    os.utime(run.state_dir / f, (0, 0))
+    uid_file = state_file(run, f"presence-{LIVE}.env", days_old=0)
+    r = run(SWEEP, "--apply", MM_BOT_TOKEN=None, MM_BOT_USER_ID=None)
+    assert "ACTIVE  mac-" in r.stderr and "keyed by a NATS name" not in r.stderr
+    assert (run.state_dir / f).exists() and (run.state_dir / uid_file).exists()
