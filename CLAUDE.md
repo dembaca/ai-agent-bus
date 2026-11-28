@@ -115,8 +115,11 @@ merge without a new run when all of these hold:
   CHANGELOG lines read clean against `main`.
 
 A request under it names the base, `main`'s head, the areas of both diffs and the
-result of the two docs commands on a trial merge; the approver takes both file
-lists from GitHub and runs the script's `case` on them.
+result of the two docs commands on a trial merge, with the two commits it was made
+from (the PR's head and `main`'s head; a result for an older `main` does not count).
+A trial merge that needs a conflict resolved by hand turns the rule off for that PR:
+merge `main` in and rerun. The approver takes both file lists from GitHub and runs
+the script's `case` on them.
 
 **Conflicts.** Resolve a conflict in text by taking whole sides or writing it by
 hand, never with a character- or word-level merge script (one garbled the CHANGELOG
