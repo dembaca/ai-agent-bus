@@ -431,3 +431,62 @@ async def test_a_real_server_delivers_the_bot_record_and_refuses_an_agent_to_pub
                 "the server's refusal (the subjects the bus saw denied)")
     await asyncio.sleep(0.3)
     assert bus.bot_record(name).bot == BOT_A  # type: ignore[union-attr]  # nothing came of it
+
+
+def _attest_body(agent: str, home: str, owner: str = "alice") -> bytes:
+    """The login service's record with the hello's home (RT-6.41, #255), as it writes it."""
+    return json.dumps({"v": 1, "agent": agent, "home": home,
+                       "owner": {"anchor": owner, "name": owner}, "trusted": [], "cut": False,
+                       "iat": int(T0), "exp": int(T0) + 900}).encode()
+
+
+async def test_the_records_home_tells_home_from_guest_before_the_claim(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """RT-6.41, #255: the record states the hello's granted home and arrives with the credential,
+    before any claim - so a home agent is known at once. A record naming another home makes it a
+    guest here, and a record without a home (an older service) still falls back to the claim."""
+    port, bus, inner = await _world(monkeypatch, claims=())  # no claim: both guests today
+    assert {r["id"]: r["guest"] for r in await lease._rows(inner, WORK, "home")} == {  # type: ignore[arg-type]
+        AGENT_A: True, AGENT_B: True}
+
+    async def record(agent: str, home: str, seq: int) -> None:
+        await bus._on_presence_msg(FakeMsg(f"presence.attest.{agent}.v1",
+                                           _presence_reply(bus, seq, seq, T0), _attest_body(agent, home)))
+
+    await record(AGENT_A, "home", 50)
+    rows = {r["id"]: r for r in await lease._rows(inner, WORK, "home")}  # type: ignore[arg-type]
+    assert rows[AGENT_A]["home"] == "home" and rows[AGENT_A]["guest"] is False
+    assert rows[AGENT_B]["home"] == "" and rows[AGENT_B]["guest"] is True  # no record, no claim
+
+    await record(AGENT_B, "elsewhere", 51)  # another granted home: no home agent here
+    rows = {r["id"]: r for r in await lease._rows(inner, WORK, "home")}  # type: ignore[arg-type]
+    assert rows[AGENT_B]["home"] == "" and rows[AGENT_B]["guest"] is True
+
+    await record(AGENT_B, "", 52)  # an empty home: still a guest, and the claim is not consulted
+    await bus._on_presence_msg(FakeMsg(f"presence.crown.home.{AGENT_B}", _presence_reply(bus, 53, 53, T0),
+                                       natsbus.encode_claim()))
+    rows = {r["id"]: r for r in await lease._rows(inner, WORK, "home")}  # type: ignore[arg-type]
+    assert rows[AGENT_B]["home"] == "" and rows[AGENT_B]["guest"] is True
+
+
+async def test_an_older_records_missing_home_keeps_the_claim_and_ones_own_row(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """#255 with an older login service: a record without `home` states nothing, so the crown
+    claim still makes a home agent - and one's own row stays a home agent by its own name, as
+    before. The stated `''` is the only value that turns a claim-based home agent into a guest."""
+    port, bus, inner = await _world(monkeypatch, claims=(AGENT_A,))
+    old_format = json.dumps({"v": 1, "agent": AGENT_A, "owner": {"anchor": "alice", "name": "alice"},
+                             "trusted": [], "cut": False, "iat": int(T0), "exp": int(T0) + 900}).encode()
+    await bus._on_presence_msg(FakeMsg(f"presence.attest.{AGENT_A}.v1",
+                                       _presence_reply(bus, 60, 60, T0), old_format))
+    rows = {r["id"]: r for r in await lease._rows(inner, WORK, "home")}  # type: ignore[arg-type]
+    assert rows[AGENT_A]["home"] == "home" and rows[AGENT_A]["guest"] is False  # from the claim
+
+    # one's own row: present and a member, no record, no claim - still a home agent by its name
+    own = bus.name
+    await bus._on_presence_msg(FakeMsg(f"presence.alice.{own}", _presence_reply(bus, 61, 61, T0),
+                                       encode_presence("online")))
+    await bus._on_presence_msg(FakeMsg(f"presence.member.home.{own}", _presence_reply(bus, 62, 62, T0),
+                                       natsbus.encode_claim()))
+    rows = {r["id"]: r for r in await lease._rows(inner, WORK, "home")}  # type: ignore[arg-type]
+    assert rows[own]["home"] == "home" and rows[own]["guest"] is False

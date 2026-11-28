@@ -58,6 +58,7 @@ class FakeNats:
         self.presence: dict[str, str] = {}  # agent -> online | away (fresh), else offline
         self.attestations: dict[str, Attestation] = {}  # agent -> the login service's record
         self.bots: dict[str, str] = {}  # agent -> the bot its presence names
+        self.homes: dict[str, str] = {}  # agent -> the home its record states (RT-6.41, #255)
         self.synced = True
         self.members: set[tuple[str, str]] = set()  # (channel, agent)
         self.linked_bot = ""
@@ -92,6 +93,10 @@ class FakeNats:
 
     def presence_snapshot(self) -> dict[str, tuple[float, str]]:
         return {a: (self.server_now, s) for a, s in self.presence.items()}
+
+    def home_of(self, agent: str) -> str | None:
+        """The home a record states (RT-6.41, #255): this fake's map, absent as no word."""
+        return self.homes.get(agent)
 
     def claim_info(self, channel: str) -> dict[str, tuple[int, float]]:
         return dict(self.claims.get(channel, {}))

@@ -100,7 +100,7 @@ func TestAnAttestationNamesOwnerTrustedAndExpiry(t *testing.T) {
 		t.Errorf("subject %s", p.subject)
 	}
 	// Before the import the names are the anchors; the body is compact.
-	want := `"v":1,"agent":"` + a.name + `","owner":{"anchor":"alice","name":"alice"},` +
+	want := `"v":1,"agent":"` + a.name + `","home":"home","owner":{"anchor":"alice","name":"alice"},` +
 		`"trusted":[{"anchor":"bob","name":"bob"},{"anchor":"carol","name":"carol"}],"cut":false,"iat":`
 	if !strings.Contains(string(p.body), want) || strings.Contains(string(p.body), " ") {
 		t.Errorf("body %s", p.body)
@@ -404,5 +404,44 @@ func TestTheHostsOwnCutMakesTheAttestationCut(t *testing.T) {
 	p, got := f.last(t)
 	if !got.Cut || len(got.Trusted) != 1 || !strings.Contains(string(p.body), `"cut":true`) {
 		t.Errorf("attestation %s", p.body)
+	}
+}
+
+// The attestation states the hello's home (RT-6.41, #255): the same granted channel the
+// credential's crown claim is for, so a reader tells a home agent from a guest without
+// falling back to the claim. A hello that names no home, or one the human is no member
+// of, states "" - it got no crown claim either.
+func TestTheAttestationNamesTheGrantedHome(t *testing.T) {
+	l := newLab(t)
+	f := &fakeAttester{}
+	l.svc.SetAttester(f)
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "home"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	p, att := f.last(t)
+	if att.Home != "home" || !strings.Contains(string(p.body), `"home":"home"`) {
+		t.Errorf("attestation %s, home %q", p.body, att.Home)
+	}
+}
+
+func TestAnAttestationWithoutAGrantedHomeStatesItEmpty(t *testing.T) {
+	l := newLab(t)
+	f := &fakeAttester{}
+	l.svc.SetAttester(f)
+	// A home the human is no member of: grant drops it, so no crown claim and no home.
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{Home: "elsewhere"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	p, att := f.last(t)
+	if att.Home != "" || !strings.Contains(string(p.body), `"home":""`) {
+		t.Errorf("attestation %s, home %q", p.body, att.Home)
+	}
+	// A hello with no home at all.
+	if _, err := l.connect("alice", l.realm.Token("alice", nil), Hello{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	p, att = f.last(t)
+	if att.Home != "" || !strings.Contains(string(p.body), `"home":""`) {
+		t.Errorf("attestation %s, home %q", p.body, att.Home)
 	}
 }
