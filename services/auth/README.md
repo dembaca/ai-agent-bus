@@ -362,7 +362,7 @@ signed by the account key, valid 15 minutes from the check:
   into the stream. The streams must be created with `no_ack`, every `allow_*`
   switch off, `deny_delete`, `deny_purge` and a size limit (`max_bytes`); presence and crowns are a stream
   of their own, one message per subject, not a key-value bucket; the `STATS`
-  lines too (stream `STATS` on `stats.>`: 365 days, 64 MiB, 8 KiB per message,
+  lines too (stream `STATS` on `stats.>`: 365 days, 1 GiB, 8 KiB per message,
   at most 500 per subject, the oldest discarded; a stream that keeps more per
   subject or longer, takes other than 8 KiB per message or is not on file is
   refused at the start). The STATS history (RT-6.45): an existing `STATS`
